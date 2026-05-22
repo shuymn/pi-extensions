@@ -1,14 +1,5 @@
-# bun-template
+# pi-extensions
 
-<!-- template:start -->
-Minimal Bun template with:
-
-- `package.json` scripts as the single entrypoint for local commands, hooks, and CI
-- Biome linting and formatting
-- Lefthook automation for `pre-commit`, `pre-push`, and `commit-msg`
-- Shared GitHub Actions workflows from [`shuymn/github-actions`](https://github.com/shuymn/github-actions)
-- Starter docs for repository tooling, testing, and review expectations
-<!-- template:end -->
 
 ## Local Setup
 
