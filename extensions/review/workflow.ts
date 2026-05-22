@@ -7,7 +7,7 @@ import type {
   ReviewPhaseArtifact,
   ReviewPhaseArtifactPatch,
 } from "./artifacts";
-import { finalizeReviewPhaseArtifact, hasMaterialNextTasks } from "./artifacts";
+import { finalizeReviewPhaseArtifact, hasMaterialNextTasks } from "./artifact-reducer";
 import {
   DEDUPE_PHASE_FILE,
   GAPFILL_PHASE_FILE,
