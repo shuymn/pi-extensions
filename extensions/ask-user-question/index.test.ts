@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
+import { createFakePi } from "../../tests/support/fake-pi";
 import type { AskUserQuestionParams, QuestionAnswer, QuestionnaireResult } from "./types";
+import { createQuestionnaireComponent, type AskUiResult } from "./ui";
 
 mock.module("@earendil-works/pi-tui", () => ({
   Text: class {
@@ -64,19 +66,9 @@ type Theme = {
   bold: (text: string) => string;
 };
 
-function createFakePi() {
-  const tools = new Map<string, ToolDefinition>();
-  return {
-    tools,
-    registerTool(definition: ToolDefinition) {
-      tools.set(definition.name, definition);
-    },
-  };
-}
-
 async function loadTool() {
   const extension = (await import("./index")).default;
-  const pi = createFakePi();
+  const pi = createFakePi<ToolDefinition>();
   extension(pi as never);
   return pi.tools.get("ask_user_question")!;
 }
@@ -117,6 +109,33 @@ const theme: Theme = {
   fg: (name, text) => `<${name}>${text}</${name}>`,
   bold: (text) => `**${text}**`,
 };
+
+function createQuestionnaireHarness(params = validParams()) {
+  let result: AskUiResult | null | undefined;
+  let renderCount = 0;
+  const component = createQuestionnaireComponent(
+    params,
+    { requestRender: () => renderCount++ },
+    {
+      fg: (_name: string, text: string) => text,
+      bold: (text: string) => text,
+    },
+    { matches: () => false },
+    (value) => {
+      result = value;
+    },
+  );
+
+  return {
+    component,
+    get result() {
+      return result;
+    },
+    get renderCount() {
+      return renderCount;
+    },
+  };
+}
 
 describe("ask-user-question extension", () => {
   test("registers a fully described ask_user_question tool", async () => {
@@ -325,6 +344,124 @@ describe("ask-user-question extension", () => {
     expect(renderedLines).toContain("ask_user_question 1/1");
     expect(renderedLines).toContain("Database");
     expect(renderedLines).toContain("Which database should we use?");
+  });
+
+  test("questionnaire component records single-select answer and completes at summary", () => {
+    const harness = createQuestionnaireHarness(
+      validParams({ questions: [validParams().questions[0]] }),
+    );
+
+    harness.component.handleInput("enter");
+    expect(harness.component.render(80)).toContain("Ready to submit");
+    expect(harness.result).toBeUndefined();
+
+    harness.component.handleInput("enter");
+    expect(harness.result).toEqual({
+      status: "completed",
+      answers: [
+        {
+          questionIndex: 0,
+          question: "Which database should we use?",
+          kind: "option",
+          answer: "SQLite",
+          preview: "file.db",
+        },
+      ],
+    });
+  });
+
+  test("questionnaire component preserves custom answer edit and escape behavior", () => {
+    const harness = createQuestionnaireHarness(
+      validParams({ questions: [validParams().questions[0]] }),
+    );
+
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    harness.component.handleInput("enter");
+    harness.component.handleInput("ignored");
+    harness.component.handleInput("escape");
+    expect(harness.component.render(80)).toEqual(expect.arrayContaining(["> 3. Type something."]));
+
+    harness.component.handleInput("enter");
+    harness.component.handleInput("Use 🍱");
+    harness.component.handleInput("backspace");
+    harness.component.handleInput("DB");
+    harness.component.handleInput("enter");
+    harness.component.handleInput("enter");
+
+    expect(harness.result).toEqual({
+      status: "completed",
+      answers: [
+        {
+          questionIndex: 0,
+          question: "Which database should we use?",
+          kind: "custom",
+          answer: "Use DB",
+        },
+      ],
+    });
+  });
+
+  test("questionnaire component pauses from chat flow with optional message", () => {
+    const harness = createQuestionnaireHarness(
+      validParams({ questions: [validParams().questions[0]] }),
+    );
+
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    harness.component.handleInput("enter");
+    harness.component.handleInput("Need trade-offs");
+    harness.component.handleInput("enter");
+
+    expect(harness.result).toEqual({
+      status: "paused",
+      answers: [],
+      activeQuestionIndex: 0,
+      chatMessage: "Need trade-offs",
+    });
+  });
+
+  test("questionnaire component handles multi-select notice, order, and cancellation", () => {
+    const harness = createQuestionnaireHarness();
+
+    harness.component.handleInput("enter");
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    harness.component.handleInput("enter");
+    expect(harness.component.render(80)).toEqual(
+      expect.arrayContaining(["Select at least one option before continuing."]),
+    );
+
+    harness.component.handleInput("up");
+    harness.component.handleInput("space");
+    harness.component.handleInput("up");
+    harness.component.handleInput("space");
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    harness.component.handleInput("enter");
+    expect(harness.component.render(80)).toEqual(expect.arrayContaining(["Ready to submit"]));
+
+    harness.component.handleInput("escape");
+    expect(harness.result).toEqual({
+      status: "cancelled",
+      answers: [
+        {
+          questionIndex: 0,
+          question: "Which database should we use?",
+          kind: "option",
+          answer: "SQLite",
+          preview: "file.db",
+        },
+        {
+          questionIndex: 1,
+          question: "Which surfaces need tests?",
+          kind: "multi",
+          answer: null,
+          selected: ["API", "UI"],
+        },
+      ],
+    });
   });
 
   test("renders calls and results for terminal display", async () => {

@@ -1,12 +1,18 @@
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import { printableInput } from "../../lib/tui";
+import { accentBorder, printableInput } from "../../lib/tui";
 import {
-  type AskUserQuestionParams,
-  CHAT_ABOUT_THIS_LABEL,
-  NEXT_QUESTION_LABEL,
-  type QuestionAnswer,
-  TYPE_SOMETHING_LABEL,
-} from "./types";
+  createQuestionnaireState,
+  questionnaireActionLabel,
+  questionnaireSnapshot,
+  type AskUiResult,
+  type QuestionnaireAction,
+  type QuestionnaireSnapshot,
+  updateQuestionnaireState,
+} from "./state";
+import { CHAT_ABOUT_THIS_LABEL, NEXT_QUESTION_LABEL, TYPE_SOMETHING_LABEL } from "./types";
+import type { AskUserQuestionParams } from "./types";
+
+export type { AskUiResult } from "./state";
 
 type ThemeLike = {
   fg(name: string, text: string): string;
@@ -20,18 +26,6 @@ type KeybindingsLike = {
 type TuiLike = { requestRender: () => void };
 
 type Done = (result: AskUiResult | null) => void;
-
-export type AskUiResult =
-  | { status: "completed"; answers: QuestionAnswer[] }
-  | {
-      status: "paused";
-      answers: QuestionAnswer[];
-      activeQuestionIndex: number;
-      chatMessage?: string;
-    }
-  | { status: "cancelled"; answers: QuestionAnswer[] };
-
-type Mode = "select" | "custom" | "chat" | "summary";
 
 export function createQuestionnaireComponent(
   params: AskUserQuestionParams,
@@ -47,220 +41,80 @@ export function createQuestionnaireComponent(
     id: string,
     fallback: Parameters<typeof matchesKey>[1],
   ): boolean => (keybindings.matches?.(data, id) ?? false) || matchesKey(data, fallback);
-  let questionIndex = 0;
-  let selectedIndex = 0;
-  let mode: Mode = "select";
-  let inputDraft = "";
-  let notice: string | undefined;
-  const answers: QuestionAnswer[] = [];
-  const multiSelections = new Map<number, Set<number>>();
+  const state = createQuestionnaireState(params);
 
   function refresh() {
     tui.requestRender();
   }
 
-  function currentQuestion() {
-    return params.questions[questionIndex];
-  }
-
-  function getMultiSet(): Set<number> {
-    let set = multiSelections.get(questionIndex);
-    if (!set) {
-      set = new Set<number>();
-      multiSelections.set(questionIndex, set);
-    }
-    return set;
-  }
-
-  function itemCount(): number {
-    const q = currentQuestion();
-    return q ? q.options.length + 2 : 0;
-  }
-
-  function advanceOrComplete() {
-    if (questionIndex >= params.questions.length - 1) {
-      mode = "summary";
-      selectedIndex = 0;
-      refresh();
+  function apply(action: QuestionnaireAction) {
+    const result = updateQuestionnaireState(state, action);
+    if (result.terminal) {
+      done(result.terminal);
       return;
     }
-    questionIndex += 1;
-    selectedIndex = 0;
-    mode = "select";
-    refresh();
-  }
-
-  function saveOption(optionIndex: number) {
-    const q = currentQuestion();
-    const option = q.options[optionIndex];
-    if (!option) return;
-    notice = undefined;
-    answers.push({
-      questionIndex,
-      question: q.question,
-      kind: "option",
-      answer: option.label,
-      ...(option.preview ? { preview: option.preview } : {}),
-    });
-    advanceOrComplete();
-  }
-
-  function saveMulti() {
-    const q = currentQuestion();
-    const selected = Array.from(getMultiSet())
-      .sort((a, b) => a - b)
-      .map((index) => q.options[index]?.label)
-      .filter((label): label is string => Boolean(label));
-    if (selected.length === 0) {
-      notice = "Select at least one option before continuing.";
-      refresh();
-      return;
-    }
-    notice = undefined;
-    answers.push({
-      questionIndex,
-      question: q.question,
-      kind: "multi",
-      answer: null,
-      selected,
-    });
-    advanceOrComplete();
-  }
-
-  function enterCustom() {
-    mode = "custom";
-    inputDraft = "";
-    notice = undefined;
-    refresh();
-  }
-
-  function enterChat() {
-    mode = "chat";
-    inputDraft = "";
-    notice = undefined;
-    refresh();
-  }
-
-  function submitInput() {
-    const q = currentQuestion();
-    const trimmed = inputDraft.trim();
-    if (mode === "custom") {
-      notice = undefined;
-      answers.push({
-        questionIndex,
-        question: q.question,
-        kind: "custom",
-        answer: trimmed || null,
-      });
-      advanceOrComplete();
-      return;
-    }
-
-    done({
-      status: "paused",
-      answers: [...answers],
-      activeQuestionIndex: questionIndex,
-      ...(trimmed ? { chatMessage: trimmed } : {}),
-    });
-  }
-
-  function toggleSelectedMultiOption() {
-    const set = getMultiSet();
-    notice = undefined;
-    if (set.has(selectedIndex)) set.delete(selectedIndex);
-    else set.add(selectedIndex);
-    refresh();
-  }
-
-  function handleSelectEnter() {
-    const q = currentQuestion();
-    if (!q) return;
-    const isMulti = q.multiSelect === true;
-    if (isMulti) {
-      const submitIndex = q.options.length;
-      const chatIndex = q.options.length + 1;
-      if (selectedIndex < q.options.length) {
-        toggleSelectedMultiOption();
-        return;
-      }
-      if (selectedIndex === submitIndex) saveMulti();
-      if (selectedIndex === chatIndex) enterChat();
-      return;
-    }
-
-    const customIndex = q.options.length;
-    const chatIndex = q.options.length + 1;
-    if (selectedIndex < q.options.length) saveOption(selectedIndex);
-    else if (selectedIndex === customIndex) enterCustom();
-    else if (selectedIndex === chatIndex) enterChat();
+    if (result.changed) refresh();
   }
 
   function handleInput(data: string) {
-    if (mode === "summary") {
-      if (matchesSelect(data, "tui.select.confirm", Key.enter))
-        done({ status: "completed", answers: [...answers] });
-      else if (matchesSelect(data, "tui.select.cancel", Key.escape))
-        done({ status: "cancelled", answers: [...answers] });
+    const snapshot = questionnaireSnapshot(state);
+
+    if (snapshot.mode === "summary") {
+      if (matchesSelect(data, "tui.select.confirm", Key.enter)) apply({ type: "confirm" });
+      else if (matchesSelect(data, "tui.select.cancel", Key.escape)) apply({ type: "cancel" });
       return;
     }
 
-    if (mode === "custom" || mode === "chat") {
+    if (snapshot.mode === "custom" || snapshot.mode === "chat") {
       if (matchesKey(data, Key.enter)) {
-        submitInput();
+        apply({ type: "confirm" });
         return;
       }
       if (matchesKey(data, Key.escape)) {
-        mode = "select";
-        inputDraft = "";
-        refresh();
+        apply({ type: "cancel" });
         return;
       }
       if (matchesKey(data, Key.backspace) || matchesKey(data, Key.ctrl("h"))) {
-        inputDraft = [...inputDraft].slice(0, -1).join("");
-        refresh();
+        apply({ type: "backspace" });
         return;
       }
       const printable = printableInput(data);
-      if (printable) {
-        inputDraft += printable;
-        refresh();
-      }
+      if (printable) apply({ type: "appendInput", text: printable });
       return;
     }
 
     if (matchesSelect(data, "tui.select.cancel", Key.escape)) {
-      done({ status: "cancelled", answers: [...answers] });
+      apply({ type: "cancel" });
       return;
     }
     if (matchesSelect(data, "tui.select.up", Key.up)) {
-      selectedIndex = Math.max(0, selectedIndex - 1);
-      refresh();
+      apply({ type: "move", delta: -1 });
       return;
     }
     if (matchesSelect(data, "tui.select.down", Key.down)) {
-      selectedIndex = Math.min(itemCount() - 1, selectedIndex + 1);
-      refresh();
+      apply({ type: "move", delta: 1 });
       return;
     }
     if (
       matchesKey(data, Key.space) &&
-      currentQuestion()?.multiSelect === true &&
-      selectedIndex < currentQuestion().options.length
+      snapshot.currentQuestion?.multiSelect === true &&
+      snapshot.selectedIndex < snapshot.currentQuestion.options.length
     ) {
-      toggleSelectedMultiOption();
+      apply({ type: "toggle" });
       return;
     }
-    if (matchesSelect(data, "tui.select.confirm", Key.enter)) handleSelectEnter();
+    if (matchesSelect(data, "tui.select.confirm", Key.enter)) apply({ type: "confirm" });
   }
 
   function renderOptionLine(
+    snapshot: QuestionnaireSnapshot,
     width: number,
     index: number,
     label: string,
     description?: string,
     checked?: boolean,
   ): string[] {
-    const selected = index === selectedIndex;
+    const selected = index === snapshot.selectedIndex;
     const pointer = selected ? theme.fg("accent", "> ") : "  ";
     const checkbox =
       checked === undefined ? "" : checked ? theme.fg("success", "[✓] ") : theme.fg("dim", "[ ] ");
@@ -271,27 +125,28 @@ export function createQuestionnaireComponent(
   }
 
   function render(width: number): string[] {
-    const q = currentQuestion();
+    const snapshot = questionnaireSnapshot(state);
+    const q = snapshot.currentQuestion;
     const lines: string[] = [];
     const add = (line = "") => lines.push(truncateToWidth(line, width));
 
-    add(theme.fg("accent", "─".repeat(width)));
+    add(accentBorder(theme, width));
     add(
-      `${theme.fg("toolTitle", theme.bold("ask_user_question"))} ${theme.fg("muted", `${questionIndex + 1}/${params.questions.length}`)}`,
+      `${theme.fg("toolTitle", theme.bold("ask_user_question"))} ${theme.fg("muted", `${snapshot.questionIndex + 1}/${snapshot.questionCount}`)}`,
     );
     add("");
 
-    if (mode === "summary") {
+    if (snapshot.mode === "summary") {
       add(theme.fg("success", theme.bold("Ready to submit")));
       add("");
-      for (const answer of answers) {
+      for (const answer of snapshot.answers) {
         const value =
           answer.kind === "multi" ? answer.selected.join(", ") : (answer.answer ?? "(no response)");
         add(`Q${answer.questionIndex + 1}: ${value}`);
       }
       add("");
       add(theme.fg("dim", "Enter submit • Esc cancel"));
-      add(theme.fg("accent", "─".repeat(width)));
+      add(accentBorder(theme, width));
       return lines;
     }
 
@@ -304,45 +159,55 @@ export function createQuestionnaireComponent(
     add(theme.fg("text", theme.bold(q.question)));
     add("");
 
-    if (mode === "custom" || mode === "chat") {
+    if (snapshot.mode === "custom" || snapshot.mode === "chat") {
       add(
         theme.fg(
           "accent",
-          mode === "custom" ? "Type your answer:" : "What would you like to discuss or clarify?",
+          snapshot.mode === "custom"
+            ? "Type your answer:"
+            : "What would you like to discuss or clarify?",
         ),
       );
-      add(inputDraft || theme.fg("dim", "(empty)"));
+      add(snapshot.inputDraft || theme.fg("dim", "(empty)"));
       add("");
       add(theme.fg("dim", "Enter submit • Esc back"));
-      add(theme.fg("accent", "─".repeat(width)));
+      add(accentBorder(theme, width));
       return lines;
     }
 
-    if (notice) {
-      add(theme.fg("warning", notice));
+    if (snapshot.notice) {
+      add(theme.fg("warning", snapshot.notice));
       add("");
     }
 
     if (q.multiSelect === true) {
-      const set = getMultiSet();
       for (const [index, option] of q.options.entries()) {
         lines.push(
-          ...renderOptionLine(width, index, option.label, option.description, set.has(index)),
+          ...renderOptionLine(
+            snapshot,
+            width,
+            index,
+            option.label,
+            option.description,
+            snapshot.selectedMultiIndexes.has(index),
+          ),
         );
       }
       lines.push(
         ...renderOptionLine(
+          snapshot,
           width,
           q.options.length,
-          NEXT_QUESTION_LABEL,
+          questionnaireActionLabel(snapshot, q.options.length) ?? NEXT_QUESTION_LABEL,
           "Submit selected options.",
         ),
       );
       lines.push(
         ...renderOptionLine(
+          snapshot,
           width,
           q.options.length + 1,
-          CHAT_ABOUT_THIS_LABEL,
+          questionnaireActionLabel(snapshot, q.options.length + 1) ?? CHAT_ABOUT_THIS_LABEL,
           "Pause and discuss this question.",
         ),
       );
@@ -350,8 +215,8 @@ export function createQuestionnaireComponent(
       add(theme.fg("dim", "↑↓ navigate • Space toggle • Enter confirm • Esc cancel"));
     } else {
       q.options.forEach((option, index) => {
-        lines.push(...renderOptionLine(width, index, option.label, option.description));
-        if (option.preview && index === selectedIndex) {
+        lines.push(...renderOptionLine(snapshot, width, index, option.label, option.description));
+        if (option.preview && index === snapshot.selectedIndex) {
           add(`     ${theme.fg("dim", "Preview:")}`);
           for (const previewLine of option.preview.split("\n").slice(0, 8))
             add(`     ${theme.fg("muted", previewLine)}`);
@@ -359,17 +224,19 @@ export function createQuestionnaireComponent(
       });
       lines.push(
         ...renderOptionLine(
+          snapshot,
           width,
           q.options.length,
-          TYPE_SOMETHING_LABEL,
+          questionnaireActionLabel(snapshot, q.options.length) ?? TYPE_SOMETHING_LABEL,
           "Enter a custom answer.",
         ),
       );
       lines.push(
         ...renderOptionLine(
+          snapshot,
           width,
           q.options.length + 1,
-          CHAT_ABOUT_THIS_LABEL,
+          questionnaireActionLabel(snapshot, q.options.length + 1) ?? CHAT_ABOUT_THIS_LABEL,
           "Pause and discuss this question.",
         ),
       );
@@ -377,7 +244,7 @@ export function createQuestionnaireComponent(
       add(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"));
     }
 
-    add(theme.fg("accent", "─".repeat(width)));
+    add(accentBorder(theme, width));
     return lines;
   }
 
