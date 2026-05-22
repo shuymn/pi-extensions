@@ -5,6 +5,14 @@ export type ShellSafetyResult = {
   rationale: string;
 };
 
+export type ShellSafetyOptions = {
+  restrictionContext?: string;
+};
+
+type ShellSafetyContext = {
+  restrictionContext: string;
+};
+
 const READ_ONLY_COMMANDS = new Set(["cat", "grep", "head", "ls", "rg", "tail", "wc"]);
 
 const MUTATING_COMMANDS = new Set([
@@ -83,14 +91,19 @@ const DANGEROUS_GIT_OPTIONS = new Set([
   "--output",
 ]);
 
-export function classifyShellCommand(command: unknown): ShellSafetyResult {
+export function classifyShellCommand(
+  command: unknown,
+  options: ShellSafetyOptions = {},
+): ShellSafetyResult {
+  const context = shellSafetyContext(options);
+
   if (typeof command !== "string" || !command.trim()) {
     return deny("shell_command input must include a non-empty command string.");
   }
 
   if (hasUnsafeShellExpansion(command)) {
     return deny(
-      "Shell command substitution or process substitution is not allowed in /review read-only phases.",
+      `Shell command substitution or process substitution is not allowed in ${context.restrictionContext}.`,
     );
   }
 
@@ -98,14 +111,14 @@ export function classifyShellCommand(command: unknown): ShellSafetyResult {
   if (!tokens.ok) return deny(tokens.reason);
 
   if (tokens.tokens.some((token) => token.kind === "operator" && isRedirect(token.value))) {
-    return deny("Shell redirection is not allowed in /review read-only phases.");
+    return deny(`Shell redirection is not allowed in ${context.restrictionContext}.`);
   }
 
   const mutatingWord = tokens.tokens.find(
     (token) => token.kind === "word" && MUTATING_COMMANDS.has(basename(token.value)),
   );
   if (mutatingWord) {
-    return deny(`${basename(mutatingWord.value)} is not allowed in /review read-only phases.`);
+    return deny(notAllowed(context, basename(mutatingWord.value)));
   }
 
   if (
@@ -123,13 +136,21 @@ export function classifyShellCommand(command: unknown): ShellSafetyResult {
   for (const argv of commands.commands) {
     if (argv.length === 0) continue;
     sawCommand = true;
-    const result = classifySimpleCommand(argv);
+    const result = classifySimpleCommand(argv, context);
     if (result.decision !== "allow") return result;
   }
 
   return sawCommand
     ? allow("All command segments match conservative read-only rules.")
     : deny("No executable command was found.");
+}
+
+function shellSafetyContext(options: ShellSafetyOptions): ShellSafetyContext {
+  return { restrictionContext: options.restrictionContext ?? "/review read-only phases" };
+}
+
+function notAllowed(context: ShellSafetyContext, subject: string): string {
+  return `${subject} is not allowed in ${context.restrictionContext}.`;
 }
 
 type ShellToken = {
@@ -233,24 +254,24 @@ function splitCommands(tokens: ShellToken[]): SplitResult {
   return { ok: true, commands };
 }
 
-function classifySimpleCommand(argv: string[]): ShellSafetyResult {
+function classifySimpleCommand(argv: string[], context: ShellSafetyContext): ShellSafetyResult {
   const executable = basename(argv[0]);
 
   if (MUTATING_COMMANDS.has(executable)) {
-    return deny(`${executable} is not allowed in /review read-only phases.`);
+    return deny(notAllowed(context, executable));
   }
 
   if (PACKAGE_MANAGER_COMMANDS.has(executable)) {
-    return deny(`${executable} is not allowed in /review read-only phases.`);
+    return deny(notAllowed(context, executable));
   }
 
   if (INTERPRETER_COMMANDS.has(executable)) {
-    return deny(`${executable} script execution is not allowed in /review read-only phases.`);
+    return deny(notAllowed(context, `${executable} script execution`));
   }
 
-  if (executable === "sed") return classifySed(argv);
-  if (executable === "git") return classifyGit(argv);
-  if (executable === "find") return classifyFind(argv);
+  if (executable === "sed") return classifySed(argv, context);
+  if (executable === "git") return classifyGit(argv, context);
+  if (executable === "find") return classifyFind(argv, context);
 
   if (READ_ONLY_COMMANDS.has(executable)) {
     return allow(`${executable} is treated as a read-only inspection command.`);
@@ -259,35 +280,33 @@ function classifySimpleCommand(argv: string[]): ShellSafetyResult {
   return unknown(`${executable} is not covered by static read-only shell rules.`);
 }
 
-function classifySed(argv: string[]): ShellSafetyResult {
+function classifySed(argv: string[], context: ShellSafetyContext): ShellSafetyResult {
   if (argv.some((arg) => arg === "-i" || arg.startsWith("-i"))) {
-    return deny("sed in-place editing is not allowed in /review read-only phases.");
+    return deny(notAllowed(context, "sed in-place editing"));
   }
   if (!argv.some((arg) => arg === "-n" || (arg.startsWith("-") && arg.includes("n")))) {
     return unknown("sed without -n is not covered by static read-only shell rules.");
   }
   if (sedScripts(argv).some((script) => hasUnsafeSedScript(script))) {
     return deny(
-      "sed scripts that write files or execute commands are not allowed in /review read-only phases.",
+      `sed scripts that write files or execute commands are not allowed in ${context.restrictionContext}.`,
     );
   }
   return allow("sed -n without in-place editing is read-only.");
 }
 
-function classifyGit(argv: string[]): ShellSafetyResult {
+function classifyGit(argv: string[], context: ShellSafetyContext): ShellSafetyResult {
   const subcommand = argv.find((arg, index) => index > 0 && !arg.startsWith("-"));
   if (!subcommand) return unknown("git command has no subcommand to classify.");
 
   if (MUTATING_GIT_SUBCOMMANDS.has(subcommand)) {
-    return deny(`git ${subcommand} is not allowed in /review read-only phases.`);
+    return deny(notAllowed(context, `git ${subcommand}`));
   }
 
   if (READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) {
     const dangerousOption = argv.find((arg) => isDangerousGitOption(arg));
     if (dangerousOption) {
-      return deny(
-        `git ${subcommand} option ${dangerousOption} is not allowed in /review read-only phases.`,
-      );
+      return deny(notAllowed(context, `git ${subcommand} option ${dangerousOption}`));
     }
     return allow(`git ${subcommand} is treated as read-only.`);
   }
@@ -295,10 +314,10 @@ function classifyGit(argv: string[]): ShellSafetyResult {
   return unknown(`git ${subcommand} is not covered by static read-only shell rules.`);
 }
 
-function classifyFind(argv: string[]): ShellSafetyResult {
+function classifyFind(argv: string[], context: ShellSafetyContext): ShellSafetyResult {
   const dangerousAction = argv.find((arg) => DANGEROUS_FIND_ACTIONS.has(arg));
   if (dangerousAction) {
-    return deny(`find action ${dangerousAction} is not allowed in /review read-only phases.`);
+    return deny(notAllowed(context, `find action ${dangerousAction}`));
   }
   return allow("find without mutating actions is treated as read-only.");
 }
@@ -313,10 +332,11 @@ function hasUnsafeShellExpansion(command: string): boolean {
 }
 
 function isDangerousGitOption(arg: string): boolean {
-  return (
-    DANGEROUS_GIT_OPTIONS.has(arg) ||
-    [...DANGEROUS_GIT_OPTIONS].some((option) => arg.startsWith(`${option}=`))
-  );
+  if (DANGEROUS_GIT_OPTIONS.has(arg)) return true;
+  for (const option of DANGEROUS_GIT_OPTIONS) {
+    if (arg.startsWith(`${option}=`)) return true;
+  }
+  return false;
 }
 
 function sedScripts(argv: string[]): string[] {

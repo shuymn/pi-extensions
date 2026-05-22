@@ -387,7 +387,11 @@ describe("commit extension", () => {
         toolName: "shell_command",
         input: { command: "git add -A" },
       }),
-    ).resolves.toMatchObject({ block: true });
+    ).resolves.toMatchObject({
+      block: true,
+      reason:
+        "/commit extension によりブロックしました: shell command is not allowed: git add is not allowed in /commit workflow.",
+    });
     await expect(
       pi.events.get("tool_call")![0]({
         toolName: "bash",

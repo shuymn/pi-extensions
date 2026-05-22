@@ -99,4 +99,22 @@ describe("classifyShellCommand", () => {
     expect(classifyShellCommand("").decision).toBe("deny");
     expect(classifyShellCommand("sed -n '1,3p file").decision).toBe("deny");
   });
+
+  test.each([
+    ["git add -A", "git add is not allowed in /commit workflow."],
+    [
+      "cat $(touch out.txt)",
+      "Shell command substitution or process substitution is not allowed in /commit workflow.",
+    ],
+    ["cat review/index.ts > out.txt", "Shell redirection is not allowed in /commit workflow."],
+    [
+      "sed -n '1w out.txt' file",
+      "sed scripts that write files or execute commands are not allowed in /commit workflow.",
+    ],
+  ])("formats restriction rationale with caller-provided context: %s", (command, rationale) => {
+    expect(classifyShellCommand(command, { restrictionContext: "/commit workflow" })).toEqual({
+      decision: "deny",
+      rationale,
+    });
+  });
 });

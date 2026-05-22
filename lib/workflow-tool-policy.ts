@@ -134,10 +134,11 @@ export function evaluateWorkflowToolCall(
     }
   }
 
-  const readonly = classifyShellCommand(command);
+  if (isAllowedWorkflowSideEffect(workflow, command)) return undefined;
+
+  const readonly = classifyShellCommand(command, { restrictionContext: `/${workflow} workflow` });
   if (readonly.decision === "allow") return undefined;
 
-  if (isAllowedWorkflowSideEffect(workflow, command)) return undefined;
   if (isAllowedWorkflowReadCommand(workflow, command)) return undefined;
 
   return block(workflow, `shell command is not allowed: ${readonly.rationale}`);
