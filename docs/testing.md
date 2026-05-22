@@ -4,10 +4,11 @@
 
 - Use `bun run test` for the full test suite.
 - Use `bun run check` for CI-equivalent verification.
-- `bun run test` uses `bun test --pass-with-no-tests` so the template stays usable before project tests exist.
+- Tests are colocated with extension and helper sources as `*.test.ts`.
+- `bun run test` runs each test file with `bun test` while excluding `node_modules`.
 
 ## Expectations
 
-- Add tests as real project behavior appears; do not treat the template's empty baseline as a reason to skip future coverage.
-- Keep tests deterministic and runnable through the same `bun run test` entrypoint used by hooks and CI.
-- When adding specialized test commands, compose them underneath `bun run test` or `bun run check` instead of bypassing the main workflow.
+- Keep behavior covered at the extension boundary when adding or changing tools, commands, flags, lifecycle hooks, or UI behavior.
+- Prefer deterministic fake pi/UI helpers from `test-support/**` over live pi sessions for unit tests.
+- When adding specialized test commands, compose them under `bun run test` or `bun run check` instead of bypassing the main workflow.

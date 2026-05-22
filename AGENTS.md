@@ -4,8 +4,7 @@
 - Execute only what the user explicitly requested; do not add unrequested features.
 - When requirements are ambiguous, ask one concise question before implementation.
 - Prefer minimal, low-risk changes with clear rationale.
-- Never hardcode secrets; use environment variables or constants.
-- Fix root causes; do not bypass checks or suppress errors.
+- Fix root causes; do not bypass checks, suppress errors, or skip failing verification.
 - Do not run destructive git commands unless explicitly requested.
 - Do not revert unrelated user changes.
 
@@ -14,9 +13,15 @@
 - Use `bun install` for dependencies.
 - Use `bun run <script>` for project scripts.
 - Use `bunx <tool>` for local CLIs (`biome`, `commitlint`, `tsc`).
-- Bun loads `.env` automatically; do not add `dotenv`.
 - Prefer `rg` and `rg --files` for searching text/files.
 - Keep `package.json` scripts as the single entrypoint for local commands, hooks, and CI.
+
+## Pi Extension Rules
+- Edit extension sources under `extensions/**`.
+- Put shared runtime helpers under `lib/**` and shared test helpers under `test-support/**`.
+- Keep `package.json` `pi.extensions` aligned with the runtime resource layout.
+- Do not add contributor-process files unless explicitly requested.
+- Preserve Japanese human-facing TUI text and English LLM-facing metadata conventions from `CONVENTIONS.md`.
 
 ## Required Checks
 - After code changes, run `bun run check`.
@@ -24,20 +29,3 @@
 - Keep Biome clean with `bun run lint` and `bun run fmt:check`.
 - Keep type safety green with `bun run typecheck`.
 - Keep tests green with `bun run test`.
-- Never skip a failing check; fix the underlying issue.
-
-## Git and Hooks
-- Respect lefthook hooks (`pre-commit`, `pre-push`, `commit-msg`).
-- `pre-commit` owns auto-fixes and lightweight verification; `pre-push` owns full verification via `bun run check`.
-- Commit messages must pass commitlint (Conventional Commits).
-- Keep commits and pull requests focused and small.
-
-## Documentation
-
-- `docs/review.md` — review conventions and checklist viewpoints.
-- `docs/testing.md` — test conventions and running tests.
-- `docs/tooling.md` — verification pipeline and adding tools.
-
-## Template Scope
-- This template provides only development tooling scaffolding.
-- Feature architecture and domain-specific design docs are intentionally out of scope.

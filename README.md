@@ -1,57 +1,66 @@
 # pi-extensions
 
+Personal pi coding-agent extensions packaged as a standalone pi package.
 
-## Local Setup
+## Requirements
+
+- Bun matching `.bun-version`
+- pi coding agent
+
+## Setup
 
 ```bash
 bun install
 ```
 
-`postinstall` runs `lefthook install` automatically.
+`postinstall` runs `lefthook install`.
 
-## Initial Customization
+## Use with pi
 
-1. Run template initialization from the repository root. This updates the package name, refreshes shared workflows, removes the template-only README block, deletes the init script itself, and creates a local commit.
+For local development, load this repository as a pi package path:
 
 ```bash
-./scripts/init-template.sh [new-package-name]
+pi -e /path/to/pi-extensions
 ```
 
-If `new-package-name` is omitted, the script derives it from the `origin` remote basename.
+For persistent use, add the repository path or Git source to pi settings/packages. This repository declares its pi resources in `package.json`:
 
-2. Replace [`src/index.ts`](src/index.ts) with your actual application entrypoint and package layout.
-3. Rewrite this README with your project's purpose, setup, development workflow, and release information.
-4. Review [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/) and keep only the guidance you want in this repository.
-5. Run `bun run check` before your first project-specific commit.
+```json
+{
+  "pi": {
+    "extensions": ["./extensions"]
+  }
+}
+```
 
-This repository was initialized from a Bun project template.
-
-Replace this README with project-specific documentation once the repository has a clear purpose, setup flow, and release process.
-
-## Local Development
-
-Useful commands:
+## Local development
 
 ```bash
-bun run lint
-bun run lint:fix
 bun run fmt:check
-bun run fmt:fix
+bun run lint
 bun run typecheck
 bun run test
 bun run check:fast
 bun run check
 ```
 
-## Suggested README Sections
+`bun run check` is the full verification command used by CI and hooks.
 
-When you rewrite this file, include only the sections your project actually needs, for example:
+## Repository layout
 
-- Project overview
-- Requirements
-- Setup
-- Local development commands
-- Testing
-- Deployment or release process
-- Repository layout
-- Links to deeper docs if needed
+```text
+extensions/    pi extension entrypoints and extension-local files
+lib/           shared implementation helpers
+test-support/  shared test helpers
+CONVENTIONS.md extension behavior and UI conventions
+docs/          tooling, testing, and review notes
+```
+
+## Maintenance notes
+
+- Add or change extension source under `extensions/**`.
+- Put shared runtime helpers in `lib/**`.
+- Put shared test-only helpers in `test-support/**`.
+- Keep extension runtime imports relative and package-local.
+- Run `bun run check` after behavior or layout changes.
+- This package is maintained for personal use; contributor onboarding files are intentionally omitted.
