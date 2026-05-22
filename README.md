@@ -51,7 +51,7 @@ bun run check
 ```text
 extensions/    pi extension entrypoints and extension-local files
 lib/           shared implementation helpers
-test-support/  shared test helpers
+tests/support/  shared test helpers
 CONVENTIONS.md extension behavior and UI conventions
 docs/          tooling, testing, and review notes
 ```
@@ -60,7 +60,7 @@ docs/          tooling, testing, and review notes
 
 - Add or change extension source under `extensions/**`.
 - Put shared runtime helpers in `lib/**`.
-- Put shared test-only helpers in `test-support/**`.
+- Put shared test-only helpers in `tests/support/**`.
 - Keep extension runtime imports relative and package-local.
 - Run `bun run check` after behavior or layout changes.
 - This package is maintained for personal use; contributor onboarding files are intentionally omitted.

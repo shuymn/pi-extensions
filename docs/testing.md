@@ -10,5 +10,5 @@
 ## Expectations
 
 - Keep behavior covered at the extension boundary when adding or changing tools, commands, flags, lifecycle hooks, or UI behavior.
-- Prefer deterministic fake pi/UI helpers from `test-support/**` over live pi sessions for unit tests.
+- Prefer deterministic fake pi/UI helpers from `tests/support/**` over live pi sessions for unit tests.
 - When adding specialized test commands, compose them under `bun run test` or `bun run check` instead of bypassing the main workflow.

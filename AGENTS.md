@@ -18,7 +18,7 @@
 
 ## Pi Extension Rules
 - Edit extension sources under `extensions/**`.
-- Put shared runtime helpers under `lib/**` and shared test helpers under `test-support/**`.
+- Put shared runtime helpers under `lib/**` and shared test helpers under `tests/support/**`.
 - Keep `package.json` `pi.extensions` aligned with the runtime resource layout.
 - Do not add contributor-process files unless explicitly requested.
 - Preserve Japanese human-facing TUI text and English LLM-facing metadata conventions from `CONVENTIONS.md`.
