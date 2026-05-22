@@ -1,0 +1,215 @@
+import { lstat, open, readFile, readlink, stat } from "node:fs/promises";
+import { join } from "node:path";
+import {
+  collectChangedTargets,
+  type ExecGit,
+  isExplicitFileMode,
+  type Target,
+  targetPathsForDiff,
+  truncate,
+} from "./git";
+
+const REVIEW_MAX_DIFF_CHARS = 80_000;
+const REVIEW_MAX_UNTRACKED_FILE_CHARS = 20_000;
+const SIMPLIFY_MAX_DIFF_CHARS = 60_000;
+const SIMPLIFY_RECENT_FILE_LIMIT = 8;
+const SIMPLIFY_RECENT_FILE_STAT_CONCURRENCY = 64;
+
+type TargetScopeKind = "review" | "simplify";
+
+export type PrepareTargetScopeOptions = {
+  kind: TargetScopeKind;
+  execGit: ExecGit;
+  cwd: string;
+  files: string[];
+  staged: boolean;
+};
+
+export type PreparedTargetScope = {
+  targets: Target[];
+  diff: string;
+};
+
+function formatPathForPrompt(path: string): string {
+  return JSON.stringify(path);
+}
+
+async function readTextPrefix(path: string, maxChars: number): Promise<string> {
+  const file = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(maxChars + 1);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    return bytesRead > maxChars ? truncate(text, maxChars) : text;
+  } finally {
+    await file.close();
+  }
+}
+
+async function collectReviewUntrackedFileChunk(
+  cwd: string,
+  target: Target,
+): Promise<string | undefined> {
+  if (target.status !== "untracked") return undefined;
+
+  const heading = `## Untracked file: ${formatPathForPrompt(target.path)}`;
+  try {
+    const absolutePath = join(cwd, target.path);
+    const info = await lstat(absolutePath);
+
+    if (info.isSymbolicLink()) {
+      const linkTarget = await readlink(absolutePath);
+      return `${heading}\n\n[Skipped symlink -> ${formatPathForPrompt(linkTarget)}]`;
+    }
+
+    const content =
+      info.size > REVIEW_MAX_UNTRACKED_FILE_CHARS
+        ? await readTextPrefix(absolutePath, REVIEW_MAX_UNTRACKED_FILE_CHARS)
+        : await readFile(absolutePath, "utf8");
+    if (content.includes("\0")) {
+      return `${heading}\n\n[Skipped binary-looking file content]`;
+    }
+
+    return `${heading}\n\n${truncate(content, REVIEW_MAX_UNTRACKED_FILE_CHARS)}`;
+  } catch (error) {
+    return `## Untracked file: ${formatPathForPrompt(target.path)}\n\n[Could not read file: ${error instanceof Error ? error.message : String(error)}]`;
+  }
+}
+
+function addDiffChunk(chunks: string[], label: string, result: Awaited<ReturnType<ExecGit>>): void {
+  if (result.code === 0 && result.stdout.trim()) chunks.push(`## ${label}\n\n${result.stdout}`);
+}
+
+async function collectReviewDiff(
+  execGit: ExecGit,
+  cwd: string,
+  staged: boolean,
+  targets: Target[],
+): Promise<string> {
+  if (isExplicitFileMode(targets)) return "";
+
+  const chunks: string[] = [];
+  const trackedPaths = targetPathsForDiff(targets);
+
+  if (trackedPaths.length > 0) {
+    if (staged) {
+      addDiffChunk(
+        chunks,
+        "Staged diff",
+        await execGit(["diff", "--cached", "--", ...trackedPaths]),
+      );
+    } else {
+      addDiffChunk(
+        chunks,
+        "Combined diff against HEAD",
+        await execGit(["diff", "HEAD", "--", ...trackedPaths]),
+      );
+    }
+  }
+
+  const untrackedChunks = await Promise.all(
+    targets
+      .filter((target) => target.status === "untracked")
+      .map((target) => collectReviewUntrackedFileChunk(cwd, target)),
+  );
+  chunks.push(...untrackedChunks.filter((chunk): chunk is string => Boolean(chunk)));
+
+  return truncate(chunks.join("\n\n"), REVIEW_MAX_DIFF_CHARS);
+}
+
+async function getSimplifyRecentTrackedFiles(execGit: ExecGit, cwd: string): Promise<Target[]> {
+  const result = await execGit(["ls-files", "-z"]);
+  if (result.code !== 0) return [];
+
+  const paths = result.stdout.split("\0").filter(Boolean);
+  const candidates: Array<{ path: string; mtimeMs: number }> = [];
+
+  for (let index = 0; index < paths.length; index += SIMPLIFY_RECENT_FILE_STAT_CONCURRENCY) {
+    const batch = paths.slice(index, index + SIMPLIFY_RECENT_FILE_STAT_CONCURRENCY);
+    const stats = await Promise.all(
+      batch.map(async (path) => {
+        try {
+          const info = await stat(join(cwd, path));
+          return { path, mtimeMs: info.mtimeMs };
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    candidates.push(
+      ...stats.filter((candidate): candidate is { path: string; mtimeMs: number } =>
+        Boolean(candidate),
+      ),
+    );
+  }
+
+  return candidates
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, SIMPLIFY_RECENT_FILE_LIMIT)
+    .map((candidate) => ({
+      path: candidate.path,
+      status: "recent",
+      source: "recent" as const,
+    }));
+}
+
+async function collectSimplifyTargets(
+  execGit: ExecGit,
+  cwd: string,
+  files: string[],
+  staged: boolean,
+): Promise<Target[]> {
+  const targets = await collectChangedTargets(execGit, { files, staged });
+  return targets.length > 0 ? targets : getSimplifyRecentTrackedFiles(execGit, cwd);
+}
+
+async function collectSimplifyDiff(
+  execGit: ExecGit,
+  staged: boolean,
+  targets: Target[],
+): Promise<string> {
+  if (isExplicitFileMode(targets) || targets.every((target) => target.source === "recent")) {
+    return "";
+  }
+
+  const chunks: string[] = [];
+  if (staged) {
+    addDiffChunk(chunks, "Staged diff", await execGit(["diff", "--cached"]));
+  } else {
+    const [unstaged, cached] = await Promise.all([
+      execGit(["diff"]),
+      execGit(["diff", "--cached"]),
+    ]);
+    addDiffChunk(chunks, "Unstaged diff", unstaged);
+    addDiffChunk(chunks, "Staged diff", cached);
+  }
+
+  return truncate(chunks.join("\n\n"), SIMPLIFY_MAX_DIFF_CHARS);
+}
+
+export async function prepareTargetScope(
+  options: PrepareTargetScopeOptions,
+): Promise<PreparedTargetScope> {
+  if (options.kind === "review") {
+    const targets = await collectChangedTargets(options.execGit, {
+      files: options.files,
+      staged: options.staged,
+      preserveOldPath: true,
+    });
+    return {
+      targets,
+      diff: await collectReviewDiff(options.execGit, options.cwd, options.staged, targets),
+    };
+  }
+
+  const targets = await collectSimplifyTargets(
+    options.execGit,
+    options.cwd,
+    options.files,
+    options.staged,
+  );
+  return {
+    targets,
+    diff: await collectSimplifyDiff(options.execGit, options.staged, targets),
+  };
+}

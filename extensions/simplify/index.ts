@@ -1,25 +1,18 @@
-import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parseCommandArgs } from "../../lib/command-args";
 import {
-  collectChangedTargets,
   type ExecGit,
   formatPlainTarget,
   isExplicitFileMode,
-  normalizeFileArg,
   shellQuote,
   type Target,
-  truncate,
 } from "../../lib/git";
 import { formatAdditionalUserInstructionsBlock } from "../../lib/prompt";
+import { prepareTargetScope } from "../../lib/target-scope";
 
 const COMMAND_NAME = "simplify";
 const TOOL_NAME = "simplify";
-const MAX_DIFF_CHARS = 60_000;
-const RECENT_FILE_LIMIT = 8;
-const RECENT_FILE_STAT_CONCURRENCY = 64;
 
 type SimplifyOptions = {
   files: string[];
@@ -44,81 +37,18 @@ function makeExecGit(pi: ExtensionAPI, cwd: string): ExecGit {
   return (args) => pi.exec("git", args, { cwd, timeout: 10_000 });
 }
 
-async function getRecentTrackedFiles(pi: ExtensionAPI, cwd: string): Promise<Target[]> {
-  const result = await makeExecGit(pi, cwd)(["ls-files", "-z"]);
-  if (result.code !== 0) return [];
-
-  const paths = result.stdout.split("\0").filter(Boolean);
-  const candidates: Array<{ path: string; mtimeMs: number }> = [];
-
-  for (let index = 0; index < paths.length; index += RECENT_FILE_STAT_CONCURRENCY) {
-    const batch = paths.slice(index, index + RECENT_FILE_STAT_CONCURRENCY);
-    const stats = await Promise.all(
-      batch.map(async (path) => {
-        try {
-          const info = await stat(join(cwd, path));
-          return { path, mtimeMs: info.mtimeMs };
-        } catch {
-          return undefined;
-        }
-      }),
-    );
-    candidates.push(
-      ...stats.filter((candidate): candidate is { path: string; mtimeMs: number } =>
-        Boolean(candidate),
-      ),
-    );
-  }
-
-  return candidates
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)
-    .slice(0, RECENT_FILE_LIMIT)
-    .map((candidate) => ({
-      path: candidate.path,
-      status: "recent",
-      source: "recent" as const,
-    }));
-}
-
-async function collectTargets(
+async function collectScope(
   pi: ExtensionAPI,
   cwd: string,
   options: SimplifyOptions,
-): Promise<Target[]> {
-  const targets = await collectChangedTargets(makeExecGit(pi, cwd), {
+): Promise<{ targets: Target[]; diff: string }> {
+  return prepareTargetScope({
+    kind: "simplify",
+    execGit: makeExecGit(pi, cwd),
+    cwd,
     files: options.files,
     staged: options.staged,
   });
-  return targets.length > 0 ? targets : getRecentTrackedFiles(pi, cwd);
-}
-
-async function collectDiff(
-  pi: ExtensionAPI,
-  cwd: string,
-  options: SimplifyOptions,
-  targets: Target[],
-): Promise<string> {
-  if (isExplicitFileMode(targets) || targets.every((target) => target.source === "recent"))
-    return "";
-  const chunks: string[] = [];
-  const execGit = makeExecGit(pi, cwd);
-  const addDiffChunk = (label: string, result: Awaited<ReturnType<ExecGit>>) => {
-    if (result.code === 0 && result.stdout.trim()) chunks.push(`## ${label}\n\n${result.stdout}`);
-  };
-
-  if (options.staged) {
-    addDiffChunk("Staged diff", await execGit(["diff", "--cached"]));
-  } else {
-    const [unstaged, staged] = await Promise.all([
-      execGit(["diff"]),
-      execGit(["diff", "--cached"]),
-    ]);
-
-    addDiffChunk("Unstaged diff", unstaged);
-    addDiffChunk("Staged diff", staged);
-  }
-
-  return truncate(chunks.join("\n\n"), MAX_DIFF_CHARS);
 }
 
 type ReviewKind = "reuse" | "quality" | "efficiency";
@@ -159,10 +89,8 @@ async function queueSimplifyPass(
   cwd: string,
   options: SimplifyOptions,
 ): Promise<Target[]> {
-  const targets = await collectTargets(pi, cwd, options);
+  const { targets, diff } = await collectScope(pi, cwd, options);
   if (targets.length === 0) return targets;
-
-  const diff = await collectDiff(pi, cwd, options, targets);
 
   pi.sendMessage(
     {
@@ -232,7 +160,7 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const options: SimplifyOptions = {
-        files: params.files?.map(normalizeFileArg) ?? [],
+        files: params.files ?? [],
         staged: params.staged ?? false,
         instructions: params.instructions?.trim() ?? "",
       };

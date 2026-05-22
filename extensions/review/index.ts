@@ -1,5 +1,3 @@
-import { lstat, open, readFile, readlink } from "node:fs/promises";
-import { join } from "node:path";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
@@ -7,19 +5,11 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parseCommandArgs } from "../../lib/command-args";
-import {
-  collectChangedTargets,
-  type ExecGit,
-  formatJsonTarget,
-  isExplicitFileMode,
-  normalizeFileArg,
-  type Target,
-  targetPathsForDiff,
-  truncate,
-} from "../../lib/git";
+import { type ExecGit, formatJsonTarget, type Target, truncate } from "../../lib/git";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
 import { classifyShellCommand } from "../../lib/shell-safety";
 import { terminatingTextResult } from "../../lib/structured-tool";
+import { prepareTargetScope } from "../../lib/target-scope";
 import { notifyIfUI } from "../../lib/tui";
 import {
   REVIEW_PHASE_ARTIFACT_PATCH_TOOL_NAME,
@@ -48,8 +38,6 @@ import {
 
 const COMMAND_NAME = "review";
 const TOOL_NAME = "review";
-const MAX_DIFF_CHARS = 80_000;
-const MAX_UNTRACKED_FILE_CHARS = 20_000;
 const MAX_PHASE_NOTE_CHARS = 20_000;
 const INVESTIGATION_ALLOWED_TOOLS = new Set([
   "read",
@@ -121,100 +109,22 @@ function parseArgs(args: string): ReviewOptions {
   };
 }
 
-function formatPathForPrompt(path: string): string {
-  return JSON.stringify(path);
-}
-
 function makeExecGit(pi: ExtensionAPI, cwd: string): ExecGit {
   return (args) => pi.exec("git", args, { cwd, timeout: 10_000 });
 }
 
-async function collectTargets(
+async function collectScope(
   pi: ExtensionAPI,
   cwd: string,
   options: ReviewOptions,
-): Promise<Target[]> {
-  return collectChangedTargets(makeExecGit(pi, cwd), {
+): Promise<{ targets: Target[]; diff: string }> {
+  return prepareTargetScope({
+    kind: "review",
+    execGit: makeExecGit(pi, cwd),
+    cwd,
     files: options.files,
     staged: options.staged,
-    preserveOldPath: true,
   });
-}
-
-async function readTextPrefix(path: string, maxChars: number): Promise<string> {
-  const file = await open(path, "r");
-  try {
-    const buffer = Buffer.alloc(maxChars + 1);
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-    const text = buffer.subarray(0, bytesRead).toString("utf8");
-    return bytesRead > maxChars ? truncate(text, maxChars) : text;
-  } finally {
-    await file.close();
-  }
-}
-
-async function collectUntrackedFileChunk(cwd: string, target: Target): Promise<string | undefined> {
-  if (target.status !== "untracked") return undefined;
-
-  try {
-    const absolutePath = join(cwd, target.path);
-    const info = await lstat(absolutePath);
-    const heading = `## Untracked file: ${formatPathForPrompt(target.path)}`;
-
-    if (info.isSymbolicLink()) {
-      const linkTarget = await readlink(absolutePath);
-      return `${heading}\n\n[Skipped symlink -> ${formatPathForPrompt(linkTarget)}]`;
-    }
-
-    const content =
-      info.size > MAX_UNTRACKED_FILE_CHARS
-        ? await readTextPrefix(absolutePath, MAX_UNTRACKED_FILE_CHARS)
-        : await readFile(absolutePath, "utf8");
-    if (content.includes("\0")) {
-      return `${heading}\n\n[Skipped binary-looking file content]`;
-    }
-
-    return `${heading}\n\n${truncate(content, MAX_UNTRACKED_FILE_CHARS)}`;
-  } catch (error) {
-    return `## Untracked file: ${formatPathForPrompt(target.path)}\n\n[Could not read file: ${error instanceof Error ? error.message : String(error)}]`;
-  }
-}
-
-async function collectDiff(
-  pi: ExtensionAPI,
-  cwd: string,
-  options: ReviewOptions,
-  targets: Target[],
-): Promise<string> {
-  if (isExplicitFileMode(targets)) return "";
-
-  const chunks: string[] = [];
-  const execGit = makeExecGit(pi, cwd);
-  const addDiffChunk = (label: string, result: Awaited<ReturnType<ExecGit>>) => {
-    if (result.code === 0 && result.stdout.trim()) chunks.push(`## ${label}\n\n${result.stdout}`);
-  };
-
-  const trackedPaths = targetPathsForDiff(targets);
-
-  if (trackedPaths.length > 0) {
-    if (options.staged) {
-      addDiffChunk("Staged diff", await execGit(["diff", "--cached", "--", ...trackedPaths]));
-    } else {
-      addDiffChunk(
-        "Combined diff against HEAD",
-        await execGit(["diff", "HEAD", "--", ...trackedPaths]),
-      );
-    }
-  }
-
-  const untrackedChunks = await Promise.all(
-    targets
-      .filter((target) => target.status === "untracked")
-      .map((target) => collectUntrackedFileChunk(cwd, target)),
-  );
-  chunks.push(...untrackedChunks.filter((chunk): chunk is string => Boolean(chunk)));
-
-  return truncate(chunks.join("\n\n"), MAX_DIFF_CHARS);
 }
 
 async function createReviewRun(
@@ -222,13 +132,10 @@ async function createReviewRun(
   cwd: string,
   options: ReviewOptions,
 ): Promise<ReviewRunSeed | undefined> {
-  const targets = await collectTargets(pi, cwd, options);
+  const { targets, diff } = await collectScope(pi, cwd, options);
   if (targets.length === 0) return undefined;
 
-  const [diff, phases] = await Promise.all([
-    collectDiff(pi, cwd, options, targets),
-    loadWorkflowPhases(options.noFix),
-  ]);
+  const phases = await loadWorkflowPhases(options.noFix);
 
   return {
     id: `${Date.now()}`,
@@ -667,7 +574,7 @@ export function createReviewExtension(deps: ReviewExtensionDeps = {}) {
         }
 
         const options: ReviewOptions = {
-          files: params.files?.map(normalizeFileArg) ?? [],
+          files: params.files ?? [],
           staged: params.staged ?? false,
           noFix: params.noFix ?? false,
           instructions: params.instructions?.trim() ?? "",
