@@ -12,7 +12,8 @@
 - Use Bun for runtime, package management, scripts, and tests.
 - Use `bun install` for dependencies.
 - Use `bun run <script>` for project scripts.
-- Use `bunx <tool>` for local CLIs (`biome`, `commitlint`, `tsc`).
+- Use `bunx <tool>` for local JS/TS CLIs (`biome`, `tsc`).
+- Use installed `pommitlint` for commit message linting.
 - Prefer `rg` and `rg --files` for searching text/files.
 - Keep `package.json` scripts as the single entrypoint for local commands, hooks, and CI.
 
@@ -21,7 +22,7 @@
 - Put shared runtime helpers under `lib/**` and shared test helpers under `tests/support/**`.
 - Keep `package.json` `pi.extensions` aligned with the runtime resource layout.
 - Do not add contributor-process files unless explicitly requested.
-- Preserve Japanese human-facing TUI text and English LLM-facing metadata conventions from `CONVENTIONS.md`.
+- Preserve Japanese human-facing TUI text and English LLM-facing metadata conventions from `docs/conventions.md`.
 
 ## Required Checks
 - After code changes, run `bun run check`.

@@ -2,65 +2,42 @@
 
 Personal pi coding-agent extensions packaged as a standalone pi package.
 
-## Requirements
+[日本語版](./README.ja.md)
 
-- Bun matching `.bun-version`
-- pi coding agent
+## Usage
 
-## Setup
-
-```bash
-bun install
-```
-
-`postinstall` runs `lefthook install`.
-
-## Use with pi
-
-For local development, load this repository as a pi package path:
-
-```bash
-pi -e /path/to/pi-extensions
-```
-
-For persistent use, add the repository path or Git source to pi settings/packages. This repository declares its pi resources in `package.json`:
-
-```json
-{
-  "pi": {
-    "extensions": ["./extensions"]
-  }
-}
-```
-
-## Local development
-
-```bash
-bun run fmt:check
-bun run lint
-bun run typecheck
-bun run test
-bun run check:fast
-bun run check
-```
-
-`bun run check` is the full verification command used by CI and hooks.
-
-## Repository layout
+These extensions are optimized for my personal workflow, so the recommended path is to ask pi to use one as a base and adapt it for you.
+I actively make breaking changes and remove things, and progress/status UI is only supported in Japanese because this repository is not designed for other people's direct use.
 
 ```text
-extensions/    pi extension entrypoints and extension-local files
-lib/           shared implementation helpers
-tests/support/  shared test helpers
-CONVENTIONS.md extension behavior and UI conventions
-docs/          tooling, testing, and review notes
+Use https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name> as a base and create a pi extension tailored to my workflow.
 ```
 
-## Maintenance notes
+Available extensions live under `extensions/`.
 
-- Add or change extension source under `extensions/**`.
-- Put shared runtime helpers in `lib/**`.
-- Put shared test-only helpers in `tests/support/**`.
-- Keep extension runtime imports relative and package-local.
-- Run `bun run check` after behavior or layout changes.
-- This package is maintained for personal use; contributor onboarding files are intentionally omitted.
+## Available extensions
+
+- `add-dir` — Register extra workspace directories for the current session.
+- `ask-user-question` — Let the agent ask structured clarification questions.
+- `coderabbit-review` — Run CodeRabbit review and queue verified fixes.
+- `codex-tools` — Add Codex-compatible shell and patch tools.
+- `commit` — Run an interactive commit workflow and exit pi.
+- `create-pr` — Run an interactive pull request workflow and exit pi.
+- `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
+- `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
+- `plan` — Add `/plan` and `/impl` workflow prompts.
+- `prompt-stash` — Stash and restore the prompt buffer with `ctrl+s`.
+- `research` — Run staged deep-research workflows and Tavily Research escalation.
+- `review` — Run the multi-phase code review workflow.
+- `session-title` — Generate a session title from the first user message.
+- `simplify` — Run simplification reviews over changed or recent code.
+- `statusline` — Replace the TUI footer with project, model, and context status.
+- `subagents` — Spawn isolated subagent sessions for delegated work.
+- `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.
+- `todo` — Manage branch-local todos for multi-step work.
+- `update` — Add `--update` to update pi with Bun and exit.
+
+Dependencies:
+
+- `subagents` imports `codex-tools` to provide subagent shell and patch tools.
+- `todo` imports `review` workflow events to suppress the todo widget while review runs.
