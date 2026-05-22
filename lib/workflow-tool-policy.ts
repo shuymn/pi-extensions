@@ -17,6 +17,10 @@ const BASE_WORKFLOW_ACTIVE_TOOLS = [
   "spawn_subagent",
 ] as const;
 
+const WORKFLOW_ACTIVE_TOOLS = [...BASE_WORKFLOW_ACTIVE_TOOLS, WORKFLOW_TEMP_FILE_TOOL_NAME];
+
+const WORKFLOW_ACTIVE_TOOL_SET = new Set<string>(WORKFLOW_ACTIVE_TOOLS);
+
 export type ToolPolicyWorkflowName = "commit" | "create-pr";
 
 export type ToolCallGateResult = { block: true; reason: string } | undefined;
@@ -54,7 +58,7 @@ const GH_PR_CREATE_ALLOWED_OPTIONS = new Set(["--base", "--body-file", "--head",
 const GH_PR_EDIT_ALLOWED_OPTIONS = new Set(["--body-file", "--title"]);
 
 export function getWorkflowActiveTools(_workflow: ToolPolicyWorkflowName): string[] {
-  return [...BASE_WORKFLOW_ACTIVE_TOOLS, WORKFLOW_TEMP_FILE_TOOL_NAME];
+  return [...WORKFLOW_ACTIVE_TOOLS];
 }
 
 export function applyWorkflowActiveTools(pi: ExtensionAPI, workflow: ToolPolicyWorkflowName): void {
@@ -70,7 +74,7 @@ export function registerWorkflowTempFileTool(
     label: "Write temp file",
     description:
       "Write generated workflow helper content to a new file under the OS temp directory. This never writes inside the workspace.",
-    promptSnippet: `Use ${WORKFLOW_TEMP_FILE_TOOL_NAME} only during the ${workflow} workflow when a command needs a body file. It writes outside the workspace in a new temp directory.`,
+    promptSnippet: buildWorkflowTempFilePromptSnippet(workflow),
     parameters: Type.Object({
       filename: Type.String({
         description: "Basename for the temp file. Directory separators are rejected.",
@@ -102,6 +106,14 @@ export function registerWorkflowTempFileTool(
   });
 }
 
+function buildWorkflowTempFilePromptSnippet(workflow: ToolPolicyWorkflowName): string {
+  if (workflow === "commit") {
+    return `Use ${WORKFLOW_TEMP_FILE_TOOL_NAME} only during the commit workflow, and only as a last resort for a git-apply-compatible partial-staging patch when a mixed file cannot be staged as a whole. Do not use it for workspace edits, whole-file staging, tests, lint, or repeated patch retries.`;
+  }
+
+  return `Use ${WORKFLOW_TEMP_FILE_TOOL_NAME} only during the create-pr workflow, and only for the final PR body file passed to gh pr create/edit --body-file. Do not use it for patches, workspace edits, tests, lint, or intermediate drafts.`;
+}
+
 export function evaluateWorkflowToolCall(
   workflow: ToolPolicyWorkflowName,
   event: { toolName?: string; input?: unknown },
@@ -109,7 +121,7 @@ export function evaluateWorkflowToolCall(
   const toolName = event.toolName;
   if (!toolName) return block(workflow, "tool name is missing.");
 
-  if (!getWorkflowActiveTools(workflow).includes(toolName)) {
+  if (!WORKFLOW_ACTIVE_TOOL_SET.has(toolName)) {
     return block(workflow, `${toolName} is not allowed in this workflow.`);
   }
 
@@ -134,7 +146,7 @@ export function evaluateWorkflowToolCall(
     }
   }
 
-  if (isAllowedWorkflowSideEffect(workflow, command)) return undefined;
+  if (isAllowedWorkflowCommandChain(workflow, command)) return undefined;
 
   const readonly = classifyShellCommand(command, { restrictionContext: `/${workflow} workflow` });
   if (readonly.decision === "allow") return undefined;
@@ -155,21 +167,50 @@ function extractShellCommand(input: unknown): string | undefined {
   return typeof record.command === "string" ? record.command : undefined;
 }
 
-function isAllowedWorkflowSideEffect(workflow: ToolPolicyWorkflowName, command: string): boolean {
+function isAllowedWorkflowCommandChain(workflow: ToolPolicyWorkflowName, command: string): boolean {
   const normalized = command.trim();
   if (!hasOnlySupportedSideEffectShellSyntax(normalized)) return false;
 
-  const segments = normalized
+  const chain = splitCommandChain(normalized);
+  if (chain.segments.length === 0) return false;
+
+  const segmentTypes = chain.segments.map((segment) =>
+    classifyWorkflowCommandSegment(workflow, segment),
+  );
+  if (segmentTypes.some((type) => type === "deny")) return false;
+
+  const hasSideEffect = segmentTypes.includes("sideEffect");
+  const hasRead = segmentTypes.includes("read");
+  if (hasSideEffect && hasRead && chain.operators.includes("||")) return false;
+
+  return true;
+}
+
+type WorkflowCommandSegmentType = "sideEffect" | "read" | "deny";
+
+function classifyWorkflowCommandSegment(
+  workflow: ToolPolicyWorkflowName,
+  segment: string,
+): WorkflowCommandSegmentType {
+  const allowsSideEffect =
+    workflow === "commit"
+      ? isAllowedCommitSideEffectSegment(segment)
+      : isAllowedCreatePrSideEffectSegment(segment);
+  if (allowsSideEffect) return "sideEffect";
+
+  const readonly = classifyShellCommand(segment, { restrictionContext: `/${workflow} workflow` });
+  if (readonly.decision === "allow") return "read";
+
+  return isAllowedWorkflowReadCommand(workflow, segment) ? "read" : "deny";
+}
+
+function splitCommandChain(command: string): { segments: string[]; operators: Array<"&&" | "||"> } {
+  const segments = command
     .split(/&&|\|\|/)
     .map((segment) => segment.trim())
     .filter(Boolean);
-  if (segments.length === 0) return false;
-
-  return segments.every((segment) =>
-    workflow === "commit"
-      ? isAllowedCommitSideEffectSegment(segment)
-      : isAllowedCreatePrSideEffectSegment(segment),
-  );
+  const operators = Array.from(command.matchAll(/&&|\|\|/g), (match) => match[0] as "&&" | "||");
+  return { segments, operators };
 }
 
 function hasOnlySupportedSideEffectShellSyntax(command: string): boolean {
@@ -182,7 +223,7 @@ function isAllowedCommitSideEffectSegment(segment: string): boolean {
   const [, subcommand, ...args] = argv;
 
   if (subcommand === "add") {
-    return args.length > 0 && args.every((arg) => !isDeniedGitAddArg(arg));
+    return args.length > 0 && !hasDeniedGitAddArg(args);
   }
 
   if (subcommand === "commit") {
@@ -226,7 +267,23 @@ function isAllowedCreatePrSideEffectSegment(segment: string): boolean {
 }
 
 function isDeniedGitAddArg(arg: string): boolean {
-  return GIT_ADD_DENIED_ARGS.has(arg) || arg.startsWith("--all=");
+  return (
+    GIT_ADD_DENIED_ARGS.has(arg) ||
+    arg.startsWith("--all=") ||
+    (arg.startsWith("-") && !arg.startsWith("--") && /[Au]/.test(arg.slice(1)))
+  );
+}
+
+function hasDeniedGitAddArg(args: string[]): boolean {
+  let parsingOptions = true;
+  for (const arg of args) {
+    if (parsingOptions && arg === "--") {
+      parsingOptions = false;
+      continue;
+    }
+    if (parsingOptions && isDeniedGitAddArg(arg)) return true;
+  }
+  return false;
 }
 
 function isDeniedGitCommitArg(arg: string): boolean {
@@ -241,7 +298,12 @@ function isDeniedGitCommitArg(arg: string): boolean {
 
 function isDeniedGitPushArg(arg: string): boolean {
   const optionName = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg;
-  return GIT_PUSH_DENIED_OPTIONS.has(optionName) || arg.includes(":") || arg.startsWith("+");
+  return (
+    GIT_PUSH_DENIED_OPTIONS.has(optionName) ||
+    (arg.startsWith("-") && !arg.startsWith("--") && arg.slice(1).includes("f")) ||
+    arg.includes(":") ||
+    arg.startsWith("+")
+  );
 }
 
 function hasOnlyAllowedOptions(

@@ -6,6 +6,7 @@ You are running the /commit extension. Create local git commits only.
 
 - Use only inspection tools, `bash`/`shell_command`, read-only subagents, and the temp-file helper if a temporary file is needed.
 - Do not use `apply_patch`, direct file edit tools, or workspace write tools.
+- Tool choice priority: inspect with read-only tools first; stage whole files with `git add <specific-files>` when the whole file belongs to one logical unit; use the temp-file helper plus `git apply --cached` only as a last resort for partial staging mixed changes inside the same file.
 - `spawn_subagent` is read-only in this workflow.
 - Shell commands are restricted to read-only inspection plus the workflow-required git side effects: branch switching/creation, staging, index-only patch application, and `git commit`.
 - Workspace files must not be modified except through intentional git staging/commit operations already described below.
@@ -15,6 +16,7 @@ You are running the /commit extension. Create local git commits only.
 - Do not run git push.
 - Do not create pull requests.
 - Do not merge or rebase branches.
+- Do not run tests, linters, formatters, typecheckers, builds, or other project verification commands. This workflow only commits the current changes. If verification appears necessary or hooks fail, report that to the user and ask how to proceed.
 
 ## Core Principle: One Logical Change Per Commit
 
@@ -102,7 +104,7 @@ Rules:
 5. For each logical unit separately:
     - Stage only related files.
     - For whole-file commits: `git add <specific-files>`.
-    - For partial staging within a file: use the patch-based partial staging process below.
+    - For partial staging within a file: prefer asking the user to split the file manually when practical; use the patch-based partial staging process below only when a mixed file must be split to create correct commits.
     - Verify staged changes with `git diff --cached` and ensure only one logical change is staged.
     - If staging is wrong, stop and ask the user before proceeding.
     - Draft the subject and run subject sanity checks.
@@ -112,7 +114,9 @@ Rules:
 
 ## Patch-Based Partial Staging
 
-When a file contains multiple logical changes:
+Use this only when a single file contains multiple logical changes and whole-file staging would create an incorrect commit. Do not use patch files for whole-file changes, already-staged changes, or convenience edits.
+
+When partial staging is truly required:
 
 1. Inspect the full diff for target files with `git diff -- <target-file>`.
 2. Create a minimal patch containing only hunks for the current logical unit.
@@ -122,7 +126,7 @@ When a file contains multiple logical changes:
 4. Validate: `git apply --check --cached <temp-patch-file>`.
 5. Apply to index only: `git apply --cached <temp-patch-file>`.
 6. Verify with `git diff --cached` and `git diff`.
-7. If check/apply fails, stop and ask the user how to proceed.
+7. If check/apply fails once, do not keep generating replacement patches. Stop, show the exact error, and ask the user how to proceed.
 
 ## Subject Sanity Checks
 
@@ -170,6 +174,7 @@ Common separate-commit scenarios:
 ## Error Handling
 
 - If a commit hook fails, read the error, show it to the user, ask how to proceed, and do not bypass hooks.
+- If a commit hook runs tests, lint, formatting, typechecking, or builds, treat that as hook output only. Do not proactively run additional verification commands in this workflow.
 - If signing fails (1Password/GPG/SSH), show the exact error, stop, and ask how to proceed.
 - Do not change git signing config, use `--no-gpg-sign`, or use `-c commit.gpgsign=false` unless the user explicitly instructs after seeing the failure.
 

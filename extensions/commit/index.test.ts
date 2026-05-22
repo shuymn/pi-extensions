@@ -238,10 +238,15 @@ describe("commit extension", () => {
       "### Recent Self Commits (primary for auto language)\nfeat: self commit",
     );
     expect(prompt).toContain("### Staged\n(empty)");
+    expect(prompt).toContain("Do not run tests, linters, formatters, typecheckers, builds");
+    expect(prompt).toContain("Tool choice priority: inspect with read-only tools first");
     expect(prompt).not.toContain("$(git config user.email)");
     expect(prompt).not.toContain("| wc -c");
     expect(pi.activeToolSets).toEqual([EXPECTED_WORKFLOW_TOOLS]);
     expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["workflow_write_temp_file"]);
+    expect(pi.registeredTools[0].promptSnippet).toContain(
+      "only as a last resort for a git-apply-compatible partial-staging patch",
+    );
     expect(pi.execCalls.map((call) => call.args.join(" "))).toEqual([
       "config --get user.email",
       "status --short",
@@ -385,6 +390,18 @@ describe("commit extension", () => {
     await expect(
       pi.events.get("tool_call")![0]({
         toolName: "shell_command",
+        input: { command: "git add commit/index.ts && git status --short" },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      pi.events.get("tool_call")![0]({
+        toolName: "shell_command",
+        input: { command: "git add -- -Av" },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      pi.events.get("tool_call")![0]({
+        toolName: "shell_command",
         input: { command: "git add -A" },
       }),
     ).resolves.toMatchObject({
@@ -403,6 +420,12 @@ describe("commit extension", () => {
       "git commit --no-verify -m test",
       "git switch main",
       "git apply /tmp/change.patch",
+      "git add -Av commit/index.ts",
+      "git add -uv commit/index.ts",
+      "git status --short || git add commit/index.ts",
+      "git add commit/index.ts || git status --short",
+      "bun run test",
+      "npm run lint",
     ]) {
       await expect(
         pi.events.get("tool_call")![0]({

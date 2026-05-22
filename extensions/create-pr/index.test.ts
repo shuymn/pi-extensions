@@ -272,11 +272,31 @@ describe("create-pr extension", () => {
     expect(prompt).toContain("### Committed changes\nabc123 feat: add api");
     expect(prompt).toContain("### Files changed\nM\tsrc/app.ts");
     expect(prompt).toContain("### PR template\n## Summary");
+    expect(prompt).toContain("Do not run tests, linters, formatters, typecheckers, builds");
+    expect(prompt).toContain(
+      "Tool choice priority: inspect committed changes with read-only commands first",
+    );
+    expect(prompt).toContain("Verification evidence is documented or explicitly marked as not run");
+    expect(prompt).toContain(
+      "Existing verification evidence from committed history or explicit user notes",
+    );
+    expect(prompt).toContain("[If no evidence is available: Not run in this workflow]");
+    expect(prompt).toContain("コミット履歴または明示的なユーザーメモにある既存の確認内容");
+    expect(prompt).toContain("確認内容を記載した、または未実行であることを明記した");
+    expect(prompt).toContain("PR templates define structure only");
+    expect(prompt).not.toContain("commits, templates, or user notes");
+    expect(prompt).not.toContain("commits, template, or user notes");
+    expect(prompt).not.toContain("PR template, or user notes");
+    expect(prompt).not.toContain("[Test step 1]");
+    expect(prompt).not.toContain("Linter and formatter have been run");
     expect(prompt).not.toContain("2>/dev/null");
     expect(prompt).not.toContain("| sed");
     expect(prompt).not.toContain("<<'EOF'");
     expect(pi.activeToolSets).toEqual([EXPECTED_WORKFLOW_TOOLS]);
     expect(pi.registeredTools.map((tool) => tool.name)).toEqual(["workflow_write_temp_file"]);
+    expect(pi.registeredTools[0].promptSnippet).toContain(
+      "only for the final PR body file passed to gh pr create/edit --body-file",
+    );
     expect(pi.execCalls.map((call) => [call.command, call.args.join(" ")])).toEqual([
       ["git", "symbolic-ref --quiet --short refs/remotes/origin/HEAD"],
       ["git", "for-each-ref --format=%(refname)%09%(refname:short) refs/heads refs/remotes"],
@@ -355,12 +375,24 @@ describe("create-pr extension", () => {
         input: { command: "git push origin HEAD" },
       }),
     ).resolves.toBeUndefined();
+    await expect(
+      pi.events.get("tool_call")![0]({
+        toolName: "bash",
+        input: { command: "git push -u origin HEAD" },
+      }),
+    ).resolves.toBeUndefined();
     for (const command of [
       "git push --force origin HEAD",
+      "git push -f origin HEAD",
+      "git push -fv origin HEAD",
       "git push --delete origin main",
       "git push --tags",
       "git push origin :main",
       "git push origin +HEAD",
+      "git status --short || git push origin HEAD",
+      "git push origin HEAD || git status --short",
+      "bun run test",
+      "npm run lint",
     ]) {
       await expect(
         pi.events.get("tool_call")![0]({

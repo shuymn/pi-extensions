@@ -6,6 +6,7 @@ You are running the /create-pr extension. Create or update a GitHub pull request
 
 - Use only inspection tools, `bash`/`shell_command`, read-only subagents, and the temp-file helper for PR body files.
 - Do not use `apply_patch`, direct file edit tools, or workspace write tools.
+- Tool choice priority: inspect committed changes with read-only commands first; write exactly one PR body file with `workflow_write_temp_file` only when ready to call `gh pr create/edit --body-file`; do not write patches or modify workspace files.
 - `spawn_subagent` is read-only in this workflow.
 - Shell commands are restricted to read-only inspection plus the workflow-required side effects: `git push`, `gh pr create`, and `gh pr edit`.
 - When `--body-file` is needed, write the body with `workflow_write_temp_file`; do not create body files in the workspace.
@@ -16,6 +17,7 @@ You are running the /create-pr extension. Create or update a GitHub pull request
 - Ignore uncommitted work except to warn the user that it will not be included.
 - Requires a GitHub repository and GitHub authentication.
 - Push the current branch before creating/updating the PR.
+- Do not run tests, linters, formatters, typecheckers, builds, or other project verification commands. This workflow only publishes committed changes and creates/updates PR metadata. Summarize any verification evidence already present in committed history or explicit user notes; if missing, state that it was not run in this workflow. PR templates define structure only; they are not verification evidence.
 
 ## Interactive Options
 
@@ -122,15 +124,15 @@ If README.md does not exist, continue without README context.
 
 ## Testing
 
-1. [Test step 1]
-2. [Test step 2]
+[Existing verification evidence from committed history or explicit user notes]
+[If no evidence is available: Not run in this workflow]
 
 ## Checklist
 
-- [ ] Code works as expected
-- [ ] Tests have been added/updated
+- [ ] Verification evidence is documented or explicitly marked as not run
+- [ ] Test changes are documented when present in committed changes
 - [ ] Documentation has been updated (if necessary)
-- [ ] Linter and formatter have been run
+- [ ] Linter/formatter evidence is documented or explicitly marked as not run
 - [ ] Breaking changes are clearly documented
 
 ## Additional Notes
@@ -166,15 +168,15 @@ If README.md does not exist, continue without README context.
 
 ## テスト方法
 
-1. [テスト手順1]
-2. [テスト手順2]
+[コミット履歴または明示的なユーザーメモにある既存の確認内容]
+[確認内容がない場合: このワークフローでは未実行]
 
 ## チェックリスト
 
-- [ ] コードは正常に動作することを確認した
-- [ ] 適切なテストを追加/更新した
+- [ ] 確認内容を記載した、または未実行であることを明記した
+- [ ] コミット済み変更にテスト変更が含まれる場合は記載した
 - [ ] ドキュメントを更新した(必要な場合)
-- [ ] LintやFormatterを実行した
+- [ ] LintやFormatterの確認内容を記載した、または未実行であることを明記した
 - [ ] 破壊的変更がある場合は明記した
 
 ## その他
@@ -256,5 +258,6 @@ Escaping:
 
 - In create mode, create a new PR.
 - In update mode, update an existing PR only; do not create a new PR if none exists.
+- Do not claim tests, lint, formatting, typechecking, or builds were run unless the committed history or explicit user notes provide that evidence. PR templates are structure/context only, not verification evidence.
 - Explain errors clearly.
 - Ask the user when you need clarification about commit inclusion, categorization, or ambiguous PR content.
