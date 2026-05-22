@@ -1,0 +1,3 @@
+{
+  "extends": ["github>shuymn/github-actions#main"]
+}

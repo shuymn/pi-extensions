@@ -1,0 +1,49 @@
+assert_lefthook_installed: true
+glob_matcher: doublestar
+no_tty: true
+skip_lfs: true
+
+output:
+  - summary
+  - failure
+  - execution
+  - execution_out
+
+commit-msg:
+  commands:
+    commitlint:
+      run: bunx commitlint --edit {1}
+
+pre-commit:
+  parallel: false
+  piped: true
+
+  commands:
+    fmt:
+      tags: [format]
+      glob: "**/*.{js,jsx,ts,tsx,json,jsonc,md,yml,yaml}"
+      run: bun run fmt:fix
+      stage_fixed: true
+    lint:
+      tags: [lint]
+      glob: "**/*.{js,jsx,ts,tsx,json,jsonc}"
+      run: bun run lint:fix
+      stage_fixed: true
+    typecheck:
+      tags: [types]
+      run: bun run typecheck
+    betterleaks:
+      tags: [security]
+      run: betterleaks git --pre-commit --staged --redact --no-banner --verbose
+
+  skip:
+    - merge: true
+    - rebase: true
+
+pre-push:
+  piped: true
+
+  commands:
+    checks:
+      tags: [format, lint, types, test]
+      run: bun run check
