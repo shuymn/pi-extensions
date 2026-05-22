@@ -4,7 +4,7 @@ import {
   type CustomAction,
   createCustomDriver,
   installTuiMocks,
-} from "../../test-support/tui-mocks";
+} from "../../tests/support/tui-mocks";
 
 const tuiInstances = installTuiMocks();
 

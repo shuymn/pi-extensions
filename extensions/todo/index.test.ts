@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
-import { createFakePi } from "../../test-support/fake-pi";
-import { createFakeUi } from "../../test-support/fake-ui";
+import { createFakePi } from "../../tests/support/fake-pi";
+import { createFakeUi } from "../../tests/support/fake-ui";
 
 mock.module("typebox", () => ({
   Type: {

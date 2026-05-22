@@ -1,6 +1,6 @@
 import { mock } from "bun:test";
 
-import type { UiContext } from "../lib/tui";
+import type { UiContext } from "../../lib/tui";
 
 export type SelectItemLike = {
   value: string;

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, mock, test } from "bun:test";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createFakePi as createSharedFakePi } from "../../test-support/fake-pi";
-import { installTypeboxMock } from "../../test-support/typebox-mock";
+import { createFakePi as createSharedFakePi } from "../../tests/support/fake-pi";
+import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
 installTypeboxMock();
 

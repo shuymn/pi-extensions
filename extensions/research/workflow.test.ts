@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFakePi } from "../../test-support/fake-pi";
+import { createFakePi } from "../../tests/support/fake-pi";
 import { buildExtractArgs, buildResearchRunArgs, buildSearchArgs, tvlyExtract } from "./cli";
 import { ASSESS_PHASE_FILE, RESEARCH_PHASES } from "./phases";
 import {

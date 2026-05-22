@@ -8,9 +8,9 @@ import {
   type ExecResult,
   type FakePi,
   shutdownFakePis,
-} from "../../test-support/fake-pi";
-import { createFakeUi, type FakeUi } from "../../test-support/fake-ui";
-import { installTypeboxMock } from "../../test-support/typebox-mock";
+} from "../../tests/support/fake-pi";
+import { createFakeUi, type FakeUi } from "../../tests/support/fake-ui";
+import { installTypeboxMock } from "../../tests/support/typebox-mock";
 import type { ReviewWorkflowLifecycleEvent, ReviewWorkflowLifecycleStatus } from "./index";
 
 installTypeboxMock();

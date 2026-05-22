@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
-import { createFakeUi } from "../test-support/fake-ui";
-import { createCustomDriver, installTuiMocks } from "../test-support/tui-mocks";
+import { createFakeUi } from "../tests/support/fake-ui";
+import { createCustomDriver, installTuiMocks } from "../tests/support/tui-mocks";
 
 const { selectInstances, inputInstances } = installTuiMocks();
 
