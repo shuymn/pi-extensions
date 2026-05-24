@@ -18,7 +18,6 @@ https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name> �
 - `add-dir` — 現在のセッションに追加の workspace directory を登録します。
 - `ask-user-question` — エージェントが構造化された確認質問を行えるようにします。
 - `coderabbit-review` — CodeRabbit review を実行し、検証済みの修正をキューします。
-- `codex-tools` — Codex 互換の shell / patch tools を追加します。
 - `commit` — 対話式の commit workflow を実行して pi を終了します。
 - `create-pr` — 対話式の pull request workflow を実行して pi を終了します。
 - `exit` — `/quit` の alias として `/exit` を追加し、resume command を表示します。
@@ -37,5 +36,4 @@ https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name> �
 
 依存関係:
 
-- `subagents` は subagent の shell / patch tools を提供するために `codex-tools` を import します。
 - `todo` は review 実行中に todo widget を抑制するために `review` workflow events を import します。

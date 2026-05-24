@@ -18,8 +18,8 @@ describe("classifyShellCommand", () => {
     "wc -l review/index.ts",
     "ls -la review",
     "find review -maxdepth 1 -type f",
-    "grep -R shell_command review",
-    "rg shell_command review",
+    "grep -R review extensions/review",
+    "rg review extensions/review",
     "git status --short -- review/index.ts && git diff -- review/index.ts",
   ])("allows statically read-only command: %s", (command) => {
     expect(classifyShellCommand(command)).toMatchObject({

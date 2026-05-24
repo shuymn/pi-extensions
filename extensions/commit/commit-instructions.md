@@ -4,8 +4,8 @@ You are running the /commit extension. Create local git commits only.
 
 ## Tool Policy During This Workflow
 
-- Use only inspection tools, `bash`/`shell_command`, read-only subagents, and the temp-file helper if a temporary file is needed.
-- Do not use `apply_patch`, direct file edit tools, or workspace write tools.
+- Use only inspection tools, `bash`, read-only subagents, and the temp-file helper if a temporary file is needed.
+- Do not use direct file edit tools or workspace write tools.
 - Tool choice priority: inspect with read-only tools first; stage whole files with `git add <specific-files>` when the whole file belongs to one logical unit; use the temp-file helper plus `git apply --cached` only as a last resort for partial staging mixed changes inside the same file.
 - `spawn_subagent` is read-only in this workflow.
 - Shell commands are restricted to read-only inspection plus the workflow-required git side effects: branch switching/creation, staging, index-only patch application, and `git commit`.

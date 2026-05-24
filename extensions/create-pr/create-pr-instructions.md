@@ -31,8 +31,8 @@ instructions here, and use the original source files only when needed.
 
 ## Tool Policy During This Workflow
 
-- Use only inspection tools, `bash`/`shell_command`, read-only subagents, and the temp-file helper for PR body files.
-- Do not use `apply_patch`, direct file edit tools, or workspace write tools.
+- Use only inspection tools, `bash`, read-only subagents, and the temp-file helper for PR body files.
+- Do not use direct file edit tools or workspace write tools.
 - Tool choice priority: inspect committed changes with read-only commands first; write exactly one PR body file with `workflow_write_temp_file` only when ready to call `gh pr create/edit --body-file`; do not write patches or modify workspace files.
 - `spawn_subagent` is read-only in this workflow.
 - Shell commands are restricted to read-only inspection plus the workflow-required side effects: `git push`, `gh pr create`, and `gh pr edit`.

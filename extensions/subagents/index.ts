@@ -11,10 +11,12 @@ import {
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { getLatestAssistantMessageText } from "../../lib/session-messages";
 
-import codexTools from "../codex-tools";
-
-const SUBAGENT_TOOLS = ["shell_command", "apply_patch"];
+const DEFAULT_SUBAGENT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+const READ_ONLY_SUBAGENT_TOOLS = ["read", "grep", "find", "ls"];
+const DEFAULT_SUBAGENT_TOOL_LIST = formatToolList(DEFAULT_SUBAGENT_TOOLS);
+const READ_ONLY_SUBAGENT_TOOL_LIST = formatToolList(READ_ONLY_SUBAGENT_TOOLS);
 type SubagentStatus = "running" | "stopping" | "completed" | "error" | "stopped";
 
 type SubagentRecord = {
@@ -52,35 +54,14 @@ function truncate(text: string, maxChars: number): string {
   return `${text.slice(0, maxChars)}\n...(truncated; call get_subagent_result for full output)`;
 }
 
-function extractText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((part) => {
-      if (
-        typeof part === "object" &&
-        part !== null &&
-        "type" in part &&
-        part.type === "text" &&
-        "text" in part &&
-        typeof part.text === "string"
-      ) {
-        return part.text;
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join("\n");
+function formatToolList(tools: string[]): string {
+  if (tools.length === 0) return "";
+  if (tools.length === 1) return tools[0];
+  return `${tools.slice(0, -1).join(", ")}, and ${tools.at(-1)}`;
 }
 
 function getLastAssistantText(session: AgentSession): string {
-  for (let i = session.messages.length - 1; i >= 0; i--) {
-    const message = session.messages[i];
-    if (message.role !== "assistant") continue;
-    const text = extractText(message.content).trim();
-    if (text) return text;
-  }
-  return "";
+  return getLatestAssistantMessageText(session.messages)?.trim() ?? "";
 }
 
 function collectAssistantText(session: AgentSession, onUpdate?: (text: string) => void) {
@@ -108,7 +89,8 @@ Your job is to complete the delegated task autonomously, then return a concise f
 
 Operational rules:
 - Use only the tools available in this subagent session.
-- Default subagents have shell_command and apply_patch; read-only subagents have read only.
+- Default subagents have ${DEFAULT_SUBAGENT_TOOL_LIST}.
+- Read-only subagents have ${READ_ONLY_SUBAGENT_TOOL_LIST} only.
 - Use absolute file paths in file references when practical.
 - Be concise but complete in your final answer.
 - Do not ask the parent agent to do work you can do yourself.
@@ -137,7 +119,7 @@ async function runSubagent(
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    extensionFactories: readOnly ? [] : [codexTools],
+    extensionFactories: [],
     systemPromptOverride: () => buildSystemPrompt(ctx.getSystemPrompt(), ctx.cwd, readOnly),
     appendSystemPromptOverride: () => [],
   });
@@ -151,7 +133,7 @@ async function runSubagent(
     modelRegistry: ctx.modelRegistry,
     model: ctx.model,
     thinkingLevel: pi.getThinkingLevel(),
-    tools: readOnly ? ["read"] : SUBAGENT_TOOLS,
+    tools: readOnly ? READ_ONLY_SUBAGENT_TOOLS : DEFAULT_SUBAGENT_TOOLS,
     resourceLoader: loader,
   });
 
@@ -184,7 +166,7 @@ export default function (pi: ExtensionAPI) {
     description:
       "Run a delegated task in a separate general-purpose agent session. " +
       "Use this for self-contained investigation or implementation work that benefits from an isolated context. " +
-      "Default subagents receive shell_command and apply_patch; read-only subagents receive read only. " +
+      `Default subagents receive ${DEFAULT_SUBAGENT_TOOL_LIST}; read-only subagents receive ${READ_ONLY_SUBAGENT_TOOL_LIST}. ` +
       "Foreground mode returns the result inline; background mode returns an id and notifies when complete.",
     parameters: Type.Object({
       prompt: Type.String({
@@ -203,7 +185,7 @@ export default function (pi: ExtensionAPI) {
       readOnly: Type.Optional(
         Type.Boolean({
           description:
-            "When true, run the subagent with read only, without shell or editing tools. Default: false.",
+            "When true, run the subagent with read-only inspection tools, without shell or editing tools. Default: false.",
         }),
       ),
     }),

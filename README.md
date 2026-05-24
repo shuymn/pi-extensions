@@ -20,7 +20,6 @@ Available extensions live under `extensions/`.
 - `add-dir` — Register extra workspace directories for the current session.
 - `ask-user-question` — Let the agent ask structured clarification questions.
 - `coderabbit-review` — Run CodeRabbit review and queue verified fixes.
-- `codex-tools` — Add Codex-compatible shell and patch tools.
 - `commit` — Run an interactive commit workflow and exit pi.
 - `create-pr` — Run an interactive pull request workflow and exit pi.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
@@ -39,5 +38,4 @@ Available extensions live under `extensions/`.
 
 Dependencies:
 
-- `subagents` imports `codex-tools` to provide subagent shell and patch tools.
 - `todo` imports `review` workflow events to suppress the todo widget while review runs.

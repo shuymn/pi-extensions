@@ -98,7 +98,7 @@ export function classifyShellCommand(
   const context = shellSafetyContext(options);
 
   if (typeof command !== "string" || !command.trim()) {
-    return deny("shell_command input must include a non-empty command string.");
+    return deny("shell command input must include a non-empty command string.");
   }
 
   if (hasUnsafeShellExpansion(command)) {

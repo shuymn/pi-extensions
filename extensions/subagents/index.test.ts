@@ -22,20 +22,6 @@ mock.module("typebox", () => {
   return { Type };
 });
 
-mock.module("../codex-tools", () => ({
-  default: (pi: {
-    registerTool: (tool: { name: string }) => void;
-    on: (eventName: string, handler: () => void) => void;
-    setActiveTools: (tools: string[]) => void;
-  }) => {
-    pi.registerTool({ name: "shell_command" });
-    pi.registerTool({ name: "apply_patch" });
-    pi.on("session_start", () => {
-      pi.setActiveTools(["read", "shell_command", "apply_patch"]);
-    });
-  },
-}));
-
 type Subscriber = (event: any) => void;
 type SessionBehavior = {
   resultText?: string;
@@ -75,7 +61,7 @@ const createdSessions: CreatedSession[] = [];
 const createdPis: any[] = [];
 let nextBehaviors: SessionBehavior[] = [];
 
-const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash"]);
+const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
 
 function createSession(behavior: SessionBehavior) {
   const subscribers: Subscriber[] = [];
@@ -298,7 +284,7 @@ describe("subagents extension", () => {
       },
     });
     expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Default subagents receive shell_command and apply_patch",
+      "Default subagents receive read, grep, find, ls, bash, edit, and write",
     );
   });
 
@@ -328,19 +314,27 @@ describe("subagents extension", () => {
     expect(updates).toEqual(["Subagent id000001 running...\n\nfinal answer"]);
     expect(createdSessions[0].name).toBe("subagent#id000001");
     expect(createdSessions[0].disposed).toBe(true);
-    expect(createdSessions[0].registeredTools).toEqual(["apply_patch", "shell_command"]);
-    expect(createdSessions[0].activeTools).toEqual(["shell_command", "apply_patch"]);
+    expect(createdSessions[0].registeredTools).toEqual([]);
+    expect(createdSessions[0].activeTools).toEqual([
+      "read",
+      "grep",
+      "find",
+      "ls",
+      "bash",
+      "edit",
+      "write",
+    ]);
     expect(createAgentSessionCalls[0]).toMatchObject({
       cwd: "/repo",
       agentDir: "/agent-dir",
       thinkingLevel: "high",
-      tools: ["shell_command", "apply_patch"],
+      tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
       model: { name: "model" },
       modelRegistry: { id: "registry" },
     });
     expect(loaderInstances[0].reloaded).toBe(true);
     expect(loaderInstances[0].options.noExtensions).toBe(true);
-    expect(loaderInstances[0].options.extensionFactories).toHaveLength(1);
+    expect(loaderInstances[0].options.extensionFactories).toEqual([]);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("parent system prompt");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("Working directory: /repo");
   });
@@ -361,15 +355,18 @@ describe("subagents extension", () => {
         createContext(),
       );
 
-    expect(createAgentSessionCalls[0].tools).toEqual(["read"]);
+    expect(createAgentSessionCalls[0].tools).toEqual(["read", "grep", "find", "ls"]);
     expect(createdSessions[0].registeredTools).toEqual([]);
-    expect(createdSessions[0].activeTools).toEqual(["read"]);
+    expect(createdSessions[0].activeTools).toEqual(["read", "grep", "find", "ls"]);
     expect(loaderInstances[0].options.extensionFactories).toEqual([]);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
       "This subagent is read-only: do not edit files or run mutating shell commands.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Default subagents have shell_command and apply_patch; read-only subagents have read only.",
+      "Default subagents have read, grep, find, ls, bash, edit, and write.",
+    );
+    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
+      "Read-only subagents have read, grep, find, and ls only.",
     );
   });
 

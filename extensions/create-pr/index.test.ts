@@ -368,7 +368,7 @@ describe("create-pr extension", () => {
 
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git push origin HEAD" },
       }),
     ).resolves.toBeUndefined();
@@ -381,7 +381,7 @@ describe("create-pr extension", () => {
     ]);
     await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
 
-    for (const toolName of ["apply_patch", "edit", "write"]) {
+    for (const toolName of ["edit", "write"]) {
       await expect(pi.events.get("tool_call")![0]({ toolName, input: {} })).resolves.toMatchObject({
         block: true,
       });
@@ -401,7 +401,7 @@ describe("create-pr extension", () => {
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git reset --hard" },
       }),
     ).resolves.toMatchObject({ block: true });
@@ -432,14 +432,14 @@ describe("create-pr extension", () => {
     ]) {
       await expect(
         pi.events.get("tool_call")![0]({
-          toolName: "shell_command",
+          toolName: "bash",
           input: { command },
         }),
       ).resolves.toMatchObject({ block: true });
     }
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: {
           command: "gh pr create --title test --body-file /tmp/body.md",
         },
@@ -447,13 +447,13 @@ describe("create-pr extension", () => {
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "gh pr create --fill" },
       }),
     ).resolves.toMatchObject({ block: true });
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: {
           command: "gh pr edit 1 --title test --body-file /tmp/body.md",
         },

@@ -13,7 +13,6 @@ const BASE_WORKFLOW_ACTIVE_TOOLS = [
   "find",
   "ls",
   "bash",
-  "shell_command",
   "spawn_subagent",
 ] as const;
 
@@ -133,7 +132,7 @@ export function evaluateWorkflowToolCall(
     return undefined;
   }
 
-  if (toolName !== "bash" && toolName !== "shell_command") return undefined;
+  if (toolName !== "bash") return undefined;
 
   const command = extractShellCommand(event.input);
   if (!command) return block(workflow, "shell command input is missing.");

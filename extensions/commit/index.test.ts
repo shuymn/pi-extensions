@@ -394,12 +394,6 @@ describe("commit extension", () => {
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
-        input: { command: "git reset --hard" },
-      }),
-    ).resolves.toMatchObject({ block: true });
-    await expect(
-      pi.events.get("tool_call")![0]({
         toolName: "bash",
         input: { command: "git push origin HEAD" },
       }),
@@ -418,7 +412,7 @@ describe("commit extension", () => {
     ]);
     await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
 
-    for (const toolName of ["apply_patch", "edit", "write"]) {
+    for (const toolName of ["edit", "write"]) {
       await expect(pi.events.get("tool_call")![0]({ toolName, input: {} })).resolves.toMatchObject({
         block: true,
       });
@@ -426,25 +420,25 @@ describe("commit extension", () => {
 
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git add commit/index.ts" },
       }),
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git add commit/index.ts && git status --short" },
       }),
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git add -- -Av" },
       }),
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git add -A" },
       }),
     ).resolves.toMatchObject({
@@ -472,20 +466,20 @@ describe("commit extension", () => {
     ]) {
       await expect(
         pi.events.get("tool_call")![0]({
-          toolName: "shell_command",
+          toolName: "bash",
           input: { command },
         }),
       ).resolves.toMatchObject({ block: true });
     }
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git switch -c fix/test main" },
       }),
     ).resolves.toBeUndefined();
     await expect(
       pi.events.get("tool_call")![0]({
-        toolName: "shell_command",
+        toolName: "bash",
         input: { command: "git apply --check --cached /tmp/change.patch" },
       }),
     ).resolves.toBeUndefined();
