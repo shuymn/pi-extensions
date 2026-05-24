@@ -31,6 +31,8 @@
 ## Structured output tool
 
 - LLM に固定の JSON-like 出力を求める場合は、prose-only な JSON 指示ではなく tool parameter schema を優先する。
+- Structured schema は外部 API / CLI、質問 UI、永続化 state、副作用 tool、workflow 分岐など、コードが機械的に消費する境界に限定する。
+- LLM-to-LLM の内部 workflow handoff は Markdown / prose を基本にし、具体的な失敗や品質改善が観測されるまで schema / validation / patch tool を追加しない。
 - 文字列 enum は Google API 互換性のため `@earendil-works/pi-ai` の `StringEnum` を使い、`Type.Union` / `Type.Literal` で表現しない。
 - 最終または中間成果物の提出で turn を終える tool は `terminate: true` を返す。
 - `content` は人間向けの短い説明に留め、機械可読な状態は `details` に置く。

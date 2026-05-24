@@ -1,3 +1,4 @@
+import { parseLastJsonControlBlock } from "../../lib/workflow-prompt";
 import {
   ASSESS_PHASE_FILE,
   COLLECT_PHASE_FILE,
@@ -124,21 +125,11 @@ export class ResearchWorkflowController {
 }
 
 function parseResearchControl(text: string | undefined): ResearchControl | undefined {
-  if (!text) return undefined;
-
-  const matches = [...text.matchAll(/<research_control>\s*([\s\S]*?)\s*<\/research_control>/g)];
-  const finalMatch = matches.at(-1);
-  if (!finalMatch?.[1]) return undefined;
-
-  try {
-    const parsed = JSON.parse(finalMatch[1]) as Record<string, unknown>;
-    if (!parsed || typeof parsed !== "object") return undefined;
-    return {
-      follow_up_queries: normalizeFollowUpQueries(parsed.follow_up_queries),
-    };
-  } catch {
-    return undefined;
-  }
+  const parsed = parseLastJsonControlBlock<Record<string, unknown>>(text, "research_control");
+  if (!parsed) return undefined;
+  return {
+    follow_up_queries: normalizeFollowUpQueries(parsed.follow_up_queries),
+  };
 }
 
 function normalizeFollowUpQueries(value: unknown): FollowUpQuery[] {

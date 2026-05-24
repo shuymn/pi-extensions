@@ -1,4 +1,5 @@
 import { formatAdditionalUserInstructionsBlock } from "../../lib/prompt";
+import { renderUntrustedPhaseOutputs } from "../../lib/workflow-prompt";
 import { ASSESS_PHASE_FILE, type ResearchPhaseFile } from "./phases";
 import type { ActiveResearchRun, NormalizedResearchOptions, PlannedQuery } from "./types";
 import { MAX_COLLECT_LOOPS } from "./workflow-controller";
@@ -72,21 +73,9 @@ export function planResearchQueries(options: NormalizedResearchOptions): Planned
 }
 
 export function buildPreviousPhaseOutputs(run: ActiveResearchRun): string {
-  if (run.phaseOutputs.length === 0) return "No previous phase outputs yet.";
-
-  return `<previous_phase_outputs untrusted="true">\n${run.phaseOutputs
-    .map(
-      (output, index) =>
-        `## Output #${index + 1} — Completed phase ${output.phaseIndex + 1}: ${output.phaseFile}\n\n\`\`\`text\n${sanitizeUntrustedPhaseOutput(output.notes)}\n\`\`\``,
-    )
-    .join("\n\n")}\n</previous_phase_outputs>`;
-}
-
-function sanitizeUntrustedPhaseOutput(text: string): string {
-  return text
-    .replaceAll("</previous_phase_outputs>", "<\\/previous_phase_outputs>")
-    .replaceAll("<research_control>", "<research_control escaped>")
-    .replaceAll("</research_control>", "<\\/research_control>");
+  return renderUntrustedPhaseOutputs(run.phaseOutputs, {
+    controlTagName: "research_control",
+  });
 }
 
 function buildOptionSummary(options: NormalizedResearchOptions): string {
