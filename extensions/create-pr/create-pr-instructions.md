@@ -186,7 +186,8 @@ Classify self-review findings as:
 - If `.github/pull_request_template.md` or `.github/PULL_REQUEST_TEMPLATE.md` exists, follow it strictly.
 - Fill sections based on committed changes only.
 - Delete empty sections when appropriate.
-- Maintain checklist format (`- [ ]`).
+- Preserve existing checklist markers only for checklist items that already come from the repository PR template.
+- Do not convert ordinary summary or change bullets into checklist items.
 - If no template exists, use the standard format below.
 
 ## Standard Format (English)

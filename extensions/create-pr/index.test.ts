@@ -349,6 +349,13 @@ describe("create-pr extension", () => {
     expect(prompt).toContain("/review/developer/small-cls.md");
     expect(prompt).toContain("## Pre-Publish Self-Review");
     expect(prompt).toContain("Use a short imperative PR title");
+    expect(prompt).toContain(
+      "Preserve existing checklist markers only for checklist items that already come from the repository PR template",
+    );
+    expect(prompt).toContain(
+      "Do not convert ordinary summary or change bullets into checklist items",
+    );
+    expect(prompt).not.toContain("Maintain checklist format (`- [ ]`).");
     expect(prompt).toContain("Classify self-review findings as:");
     expect(prompt).toContain("Blocking: publishing would mislead reviewers");
     expect(prompt).not.toContain("commits, templates, or user notes");
