@@ -6,4 +6,4 @@ Do not gapfill just to be exhaustive. Only do it when the previous stages reveal
 
 Validate any gapfill findings with the same adversarial standard.
 
-If this phase finds a material blind spot that needs another focused Hunt pass, include it in the required control block's `new_hunt_tasks` array. Each task should include `question`, `scope_hint`, `evidence_to_check`, and `why_it_matters`. If no further Hunt pass is needed, use an empty array.
+If this phase finds a material blind spot that needs another focused Hunt pass, set the required control block's `continue_hunt` boolean to `true` and describe the concrete follow-up work under `## Follow-up Hunt focus` in the Markdown memo. If no further Hunt pass is needed, set `continue_hunt` to `false`.

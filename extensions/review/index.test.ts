@@ -112,28 +112,6 @@ function createCommandContext(cwd = "/repo"): FakeCommandContext & { waited: { v
   };
 }
 
-function sampleArtifact(runId: string, overrides: Record<string, unknown> = {}) {
-  return {
-    runId,
-    phaseFile: "01-recon.md",
-    findings: [
-      {
-        id: "finding-1",
-        file: "src/app.ts",
-        issue: "issue",
-        evidence: "evidence",
-        impact: "impact",
-        suggestedFix: "fix",
-        confidence: "confirmed",
-      },
-    ],
-    coverageGaps: [],
-    nextTasks: [],
-    summaryForNextPhase: "summary",
-    ...overrides,
-  };
-}
-
 async function loadExtensionModule() {
   return import("./index");
 }
@@ -194,16 +172,8 @@ describe("review extension", () => {
         instructions: { type: "string", optional: true },
       },
     });
-    const artifactTool = pi.tools.get("review_phase_artifact")!;
-    expect(
-      (artifactTool.parameters as any).properties.findings.items.properties.confidence,
-    ).toMatchObject({
-      type: "string",
-      enum: ["confirmed", "likely", "speculative", "false_positive"],
-    });
-    expect(
-      (artifactTool.parameters as any).properties.findings.items.properties.confidence,
-    ).not.toHaveProperty("anyOf");
+    expect(pi.tools.has("review_phase_artifact")).toBe(false);
+    expect(pi.tools.has("review_phase_artifact_patch")).toBe(false);
   });
 
   test("exports workflow lifecycle event contract", async () => {
@@ -225,170 +195,6 @@ describe("review extension", () => {
     expect(module.WORKFLOW_FAILED_EVENT).toBe("workflow:failed");
     expect(module.WORKFLOW_CANCELLED_EVENT).toBe("workflow:cancelled");
     expect(payload).toMatchObject({ name: "review", status: "started" });
-  });
-
-  test("artifact tools record structured state, patches, and terminate", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createRunContext();
-
-    const reviewResult = await pi.tools
-      .get("review")
-      ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
-    const runId = reviewResult?.details.runId as string;
-
-    const artifactResult = await pi.tools
-      .get("review_phase_artifact")
-      ?.execute("artifact-call", sampleArtifact(runId), undefined, undefined, ctx);
-
-    expect(artifactResult).toMatchObject({
-      content: [{ type: "text", text: "Review phase artifact recorded." }],
-      details: {
-        ok: true,
-        warnings: [],
-        runId,
-        phaseFile: "01-recon.md",
-      },
-      terminate: true,
-    });
-
-    const patchResult = await pi.tools.get("review_phase_artifact_patch")?.execute(
-      "patch-call",
-      {
-        runId,
-        phaseFile: "01-recon.md",
-        replaceFindingsById: [
-          {
-            id: "finding-1",
-            file: "src/app.ts",
-            issue: "patched issue",
-            evidence: "patched evidence",
-            impact: "impact",
-            suggestedFix: "fix",
-            confidence: "likely",
-          },
-        ],
-        addNextTasks: [
-          {
-            id: "task-1",
-            question: "q",
-            scopeHint: "src/app.ts",
-            evidenceToCheck: ["caller"],
-            whyItMatters: "could affect decision",
-          },
-        ],
-      },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    expect(patchResult).toMatchObject({
-      content: [{ type: "text", text: "Review phase artifact patch recorded." }],
-      details: {
-        ok: true,
-        warnings: [],
-        runId,
-        phaseFile: "01-recon.md",
-      },
-      terminate: true,
-    });
-
-    await pi.getEventHandlers("agent_end")?.[0](
-      { messages: [{ role: "assistant", content: "fallback not used" }] },
-      ctx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(pi.sentMessages.at(-1)?.message.details.phase).toBe("02-hunt.md");
-    expect(pi.sentMessages.at(-1)?.message.content).toContain("patched issue");
-    expect(pi.sentMessages.at(-1)?.message.content).toContain("task-1");
-    expect(pi.sentMessages.at(-1)?.message.content).not.toContain("fallback not used");
-  });
-
-  test("artifact tools ignore wrong run or phase without corrupting state", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createRunContext();
-
-    const noRunResult = await pi.tools
-      .get("review_phase_artifact")
-      ?.execute("artifact-call", sampleArtifact("run-1"), undefined, undefined, ctx);
-
-    expect(noRunResult).toMatchObject({
-      content: [
-        {
-          type: "text",
-          text: "Review phase artifact ignored: No active /review phase is accepting artifacts.",
-        },
-      ],
-      details: {
-        ok: false,
-        runId: "run-1",
-        phaseFile: "01-recon.md",
-      },
-      terminate: true,
-    });
-
-    const reviewResult = await pi.tools
-      .get("review")
-      ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
-    const runId = reviewResult?.details.runId as string;
-
-    const wrongRunResult = await pi.tools
-      .get("review_phase_artifact")
-      ?.execute("artifact-call", sampleArtifact("wrong-run"), undefined, undefined, ctx);
-
-    expect(wrongRunResult).toMatchObject({
-      content: [
-        {
-          type: "text",
-          text: `Review phase artifact ignored: Artifact runId wrong-run does not match active run ${runId}.`,
-        },
-      ],
-      details: { ok: false, runId: "wrong-run", phaseFile: "01-recon.md" },
-      terminate: true,
-    });
-    expect(wrongRunResult?.details.warnings[0]).toMatchObject({
-      code: "run_mismatch",
-    });
-
-    const wrongPhaseResult = await pi.tools.get("review_phase_artifact_patch")?.execute(
-      "patch-call",
-      {
-        runId,
-        phaseFile: "02-hunt.md",
-        replaceSummaryForNextPhase: "wrong phase patch",
-      },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    expect(wrongPhaseResult).toMatchObject({
-      content: [
-        {
-          type: "text",
-          text: "Review phase artifact patch ignored: Artifact phaseFile 02-hunt.md does not match active phase 01-recon.md.",
-        },
-      ],
-      details: { ok: false, runId, phaseFile: "02-hunt.md" },
-      terminate: true,
-    });
-    expect(wrongPhaseResult?.details.warnings[0]).toMatchObject({
-      code: "phase_mismatch",
-    });
-
-    await pi.getEventHandlers("agent_end")?.[0](
-      { messages: [{ role: "assistant", content: "fallback text" }] },
-      ctx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
-
-    expect(pi.sentMessages.at(-1)?.message.content).toContain("fallback text");
-    expect(pi.sentMessages.at(-1)?.message.content).not.toContain("wrong phase patch");
   });
 
   test("tool explicit-file mode queues the first phase without inspecting git status", async () => {
@@ -516,13 +322,21 @@ describe("review extension", () => {
         toolName: "review_phase_artifact",
         input: {},
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      block: true,
+      reason:
+        "/review investigation phases are read-only. This tool is allowed only in Fix and Verify phases.",
+    });
     await expect(
       pi.getEventHandlers("tool_call")?.[0]({
         toolName: "review_phase_artifact_patch",
         input: {},
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      block: true,
+      reason:
+        "/review investigation phases are read-only. This tool is allowed only in Fix and Verify phases.",
+    });
     const subagentEvent: { toolName: string; input: Record<string, unknown> } = {
       toolName: "spawn_subagent",
       input: { prompt: "inspect" },
@@ -625,7 +439,7 @@ describe("review extension", () => {
       .get("review")
       ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
 
-    // Finish Recon, Hunt, Validate, then Gapfill with new tasks.
+    // Finish Recon, Hunt, Validate, then Gapfill with continue_hunt.
     for (const text of ["recon", "hunt", "validate"]) {
       await pi.getEventHandlers("agent_end")?.[0](
         { messages: [{ role: "assistant", content: text }] },
@@ -638,7 +452,8 @@ describe("review extension", () => {
         messages: [
           {
             role: "assistant",
-            content: '<review_control>{"new_hunt_tasks":[{"question":"q"}]}</review_control>',
+            content:
+              '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
           },
         ],
       },
@@ -665,7 +480,8 @@ describe("review extension", () => {
           messages: [
             {
               role: "assistant",
-              content: '<review_control>{"new_hunt_tasks":[{"question":"q"}]}</review_control>',
+              content:
+                '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
             },
           ],
         },
@@ -842,7 +658,11 @@ describe("review extension", () => {
         toolName: "review_phase_artifact",
         input: {},
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      block: true,
+      reason:
+        "/review --no-fix mode is read-only. This tool is not allowed while producing a report.",
+    });
 
     for (let index = 1; index <= 6; index += 1) {
       await pi.getEventHandlers("agent_end")?.[0](

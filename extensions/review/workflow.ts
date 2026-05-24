@@ -1,13 +1,5 @@
 import type { Target } from "../../lib/git";
-import type { StructuredSubmissionResult } from "../../lib/structured-tool";
-import type {
-  PendingPhaseArtifactState,
-  PhaseArtifactStatus,
-  ReviewArtifactWarning,
-  ReviewPhaseArtifact,
-  ReviewPhaseArtifactPatch,
-} from "./artifacts";
-import { finalizeReviewPhaseArtifact, hasMaterialNextTasks } from "./artifact-reducer";
+import { parseLastJsonControlBlock } from "../../lib/workflow-prompt";
 import {
   DEDUPE_PHASE_FILE,
   GAPFILL_PHASE_FILE,
@@ -38,14 +30,8 @@ export type ReviewRunSeed = {
 export type ActiveReviewRun = ReviewRunSeed & {
   nextPhaseIndex: number;
   phaseOutputs: PhaseOutput[];
-  phaseArtifacts: PhaseArtifactStatus[];
-  pendingArtifact?: PendingPhaseArtifactState;
   phaseInProgress: boolean;
   gapfillLoopCount: number;
-};
-
-type ReviewControl = {
-  new_hunt_tasks?: unknown[];
 };
 
 export type QueuedPhase = {
@@ -63,8 +49,6 @@ export type WorkflowDecision =
   | ({ kind: "queued" } & QueuedPhase)
   | { kind: "completed"; runId: string };
 
-export type RecordArtifactResult = StructuredSubmissionResult<ReviewArtifactWarning>;
-
 export class ReviewWorkflowController {
   private activeRun: ActiveReviewRun | undefined;
 
@@ -73,8 +57,6 @@ export class ReviewWorkflowController {
       ...seed,
       nextPhaseIndex: 0,
       phaseOutputs: [],
-      phaseArtifacts: [],
-      pendingArtifact: undefined,
       phaseInProgress: false,
       gapfillLoopCount: 0,
     };
@@ -95,8 +77,6 @@ export class ReviewWorkflowController {
 
     this.activeRun.nextPhaseIndex += 1;
     this.activeRun.phaseInProgress = true;
-    this.activeRun.pendingArtifact = emptyPendingArtifact();
-
     return {
       run: this.activeRun,
       phaseIndex,
@@ -104,58 +84,25 @@ export class ReviewWorkflowController {
     };
   }
 
-  recordPhaseArtifact(artifact: ReviewPhaseArtifact): RecordArtifactResult {
-    const validation = this.validateActivePhaseSubmission(artifact.runId, artifact.phaseFile);
-    if (!validation.ok) return validation;
-    validation.run.pendingArtifact ??= emptyPendingArtifact();
-    validation.run.pendingArtifact.artifact = artifact;
-    validation.run.pendingArtifact.warnings.push(...validation.warnings);
-    return { ok: true, warnings: validation.warnings };
-  }
-
-  recordPhaseArtifactPatch(patch: ReviewPhaseArtifactPatch): RecordArtifactResult {
-    const validation = this.validateActivePhaseSubmission(patch.runId, patch.phaseFile);
-    if (!validation.ok) return validation;
-    validation.run.pendingArtifact ??= emptyPendingArtifact();
-    validation.run.pendingArtifact.patches.push(patch);
-    validation.run.pendingArtifact.warnings.push(...validation.warnings);
-    return { ok: true, warnings: validation.warnings };
-  }
-
   completePhase(input: CompletePhaseInput): WorkflowDecision | undefined {
     if (!this.activeRun?.phaseInProgress) return undefined;
 
     const run = this.activeRun;
     const completedPhaseIndex = run.nextPhaseIndex - 1;
-    let completedArtifact: PhaseArtifactStatus | undefined;
-
     if (completedPhaseIndex >= 0 && completedPhaseIndex < run.phases.length) {
       const phaseFile = run.phases[completedPhaseIndex].file;
-      completedArtifact = finalizeReviewPhaseArtifact({
-        runId: run.id,
-        phaseIndex: completedPhaseIndex,
-        phaseFile,
-        pending: run.pendingArtifact,
-        latestAssistantText: input.latestAssistantText,
-        truncateFallback: input.truncateNotes,
-      });
-      run.phaseArtifacts.push(completedArtifact);
       run.phaseOutputs.push({
         phaseIndex: completedPhaseIndex,
         phaseFile,
-        notes: completedArtifact.artifact
-          ? completedArtifact.artifact.summaryForNextPhase
-          : (completedArtifact.fallbackNotes ?? ""),
+        notes: input.truncateNotes(input.latestAssistantText ?? ""),
       });
     }
 
-    run.pendingArtifact = undefined;
     run.phaseInProgress = false;
     const nextPhaseIndex = decideNextPhaseIndex(
       run,
       completedPhaseIndex,
       input.latestAssistantText,
-      completedArtifact,
     );
 
     if (nextPhaseIndex === undefined) {
@@ -192,65 +139,13 @@ export class ReviewWorkflowController {
     if (!phaseFile) return false;
     return Boolean(this.activeRun?.noFix) || isReadOnlyPhaseFile(phaseFile);
   }
-
-  private validateActivePhaseSubmission(
-    runId: string,
-    phaseFile: string,
-  ):
-    | ({ ok: true; run: ActiveReviewRun } & Pick<RecordArtifactResult, "warnings">)
-    | { ok: false; reason: string; warnings: ReviewArtifactWarning[] } {
-    const run = this.activeRun;
-    if (!run?.phaseInProgress) {
-      return {
-        ok: false,
-        reason: "No active /review phase is accepting artifacts.",
-        warnings: [],
-      };
-    }
-
-    const currentPhaseFile = this.currentPhaseFile();
-    const warnings: ReviewArtifactWarning[] = [];
-    if (run.id !== runId) {
-      warnings.push({
-        code: "run_mismatch",
-        message: `Artifact runId ${runId} does not match active run ${run.id}.`,
-      });
-    }
-    if (currentPhaseFile !== phaseFile) {
-      warnings.push({
-        code: "phase_mismatch",
-        message: `Artifact phaseFile ${phaseFile} does not match active phase ${currentPhaseFile}.`,
-      });
-    }
-
-    if (warnings.length > 0) {
-      return {
-        ok: false,
-        reason: warnings.map((warning) => warning.message).join(" "),
-        warnings,
-      };
-    }
-
-    return { ok: true, run, warnings };
-  }
 }
 
-function emptyPendingArtifact(): PendingPhaseArtifactState {
-  return { patches: [], warnings: [] };
-}
-
-function parseReviewControl(text: string | undefined): ReviewControl | undefined {
-  if (!text) return undefined;
-
-  const match = text.match(/<review_control>\s*([\s\S]*?)\s*<\/review_control>/);
-  if (!match?.[1]) return undefined;
-
-  try {
-    const parsed = JSON.parse(match[1]) as ReviewControl;
-    return parsed && typeof parsed === "object" ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
+function parseContinueHunt(text: string | undefined): boolean {
+  return (
+    parseLastJsonControlBlock<{ continue_hunt?: unknown }>(text, "review_control")
+      ?.continue_hunt === true
+  );
 }
 
 function findPhaseIndex(run: ActiveReviewRun, phaseFile: WorkflowPhaseFile): number {
@@ -263,17 +158,11 @@ function decideNextPhaseIndex(
   run: ActiveReviewRun,
   completedPhaseIndex: number,
   latestAssistantText: string | undefined,
-  completedArtifact: PhaseArtifactStatus | undefined,
 ): number | undefined {
   const completedPhaseFile = run.phases[completedPhaseIndex]?.file;
 
   if (completedPhaseFile === GAPFILL_PHASE_FILE) {
-    const control = parseReviewControl(latestAssistantText);
-    const hasNewHuntTasks = completedArtifact?.artifact
-      ? hasMaterialNextTasks(completedArtifact)
-      : Array.isArray(control?.new_hunt_tasks) && control.new_hunt_tasks.length > 0;
-
-    if (hasNewHuntTasks && run.gapfillLoopCount < MAX_GAPFILL_LOOPS) {
+    if (parseContinueHunt(latestAssistantText) && run.gapfillLoopCount < MAX_GAPFILL_LOOPS) {
       run.gapfillLoopCount += 1;
       return findPhaseIndex(run, HUNT_PHASE_FILE);
     }

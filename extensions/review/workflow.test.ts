@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { ReviewPhaseArtifact } from "./artifacts";
 import { phaseFilesForMode, type WorkflowPhase } from "./phases";
 import { type ReviewRunSeed, ReviewWorkflowController } from "./workflow";
 
@@ -41,28 +40,6 @@ function advanceToGapfill(workflow: ReviewWorkflowController): void {
   }
 }
 
-function artifact(overrides: Partial<ReviewPhaseArtifact> = {}): ReviewPhaseArtifact {
-  return {
-    runId: "run-1",
-    phaseFile: "01-recon.md",
-    findings: [
-      {
-        id: "finding-1",
-        file: "src/app.ts",
-        issue: "issue",
-        evidence: "evidence",
-        impact: "impact",
-        suggestedFix: "fix",
-        confidence: "confirmed",
-      },
-    ],
-    coverageGaps: [],
-    nextTasks: [],
-    summaryForNextPhase: "artifact summary",
-    ...overrides,
-  };
-}
-
 describe("ReviewWorkflowController", () => {
   test("start marks phase 1 as running", () => {
     const workflow = new ReviewWorkflowController();
@@ -89,11 +66,11 @@ describe("ReviewWorkflowController", () => {
     });
   });
 
-  test("agent_end equivalent advances to the next phase", () => {
+  test("agent_end equivalent advances to the next phase and stores Markdown memo", () => {
     const workflow = new ReviewWorkflowController();
     workflow.start(seed());
 
-    const decision = complete(workflow, "recon notes");
+    const decision = complete(workflow, "## Phase memo\n\nrecon notes");
 
     expect(decision).toMatchObject({
       kind: "queued",
@@ -101,7 +78,7 @@ describe("ReviewWorkflowController", () => {
       phase: { file: "02-hunt.md" },
     });
     expect(workflow.getActiveRun()?.phaseOutputs).toEqual([
-      { phaseIndex: 0, phaseFile: "01-recon.md", notes: "recon notes" },
+      { phaseIndex: 0, phaseFile: "01-recon.md", notes: "## Phase memo\n\nrecon notes" },
     ]);
     expect(workflow.getActiveRun()?.phaseInProgress).toBe(false);
   });
@@ -118,197 +95,29 @@ describe("ReviewWorkflowController", () => {
     ]);
   });
 
-  test("valid structured artifact becomes the phase output instead of assistant prose", () => {
+  test("stores truncated assistant text through the provided truncation path", () => {
     const workflow = new ReviewWorkflowController();
     workflow.start(seed());
 
-    expect(workflow.recordPhaseArtifact(artifact())).toEqual({
-      ok: true,
-      warnings: [],
+    const decision = workflow.completePhase({
+      latestAssistantText: "long memo",
+      truncateNotes: (text) => `truncated: ${text}`,
     });
-    const decision = complete(workflow, "assistant prose fallback");
 
     expect(decision).toMatchObject({ kind: "queued", phaseIndex: 1 });
     expect(workflow.getActiveRun()?.phaseOutputs).toEqual([
-      {
-        phaseIndex: 0,
-        phaseFile: "01-recon.md",
-        notes: "artifact summary",
-      },
+      { phaseIndex: 0, phaseFile: "01-recon.md", notes: "truncated: long memo" },
     ]);
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: { summaryForNextPhase: "artifact summary" },
-      fallbackNotes: undefined,
-      warnings: [],
-    });
   });
 
-  test("missing artifact falls back to assistant text and records warnings", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-
-    const decision = complete(workflow, "fallback notes");
-
-    expect(decision).toMatchObject({ kind: "queued", phaseIndex: 1 });
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: undefined,
-      fallbackNotes: "fallback notes",
-      warnings: [{ code: "missing_artifact" }, { code: "fallback_used" }],
-    });
-  });
-
-  test("invalid artifact falls back without aborting the workflow", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-
-    workflow.recordPhaseArtifact(artifact({ summaryForNextPhase: "", findings: [] }));
-    const decision = complete(workflow, "fallback after invalid artifact");
-
-    expect(decision).toMatchObject({ kind: "queued", phaseIndex: 1 });
-    expect(workflow.getActiveRun()?.phaseOutputs[0]).toMatchObject({
-      notes: "fallback after invalid artifact",
-    });
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: undefined,
-      fallbackNotes: "fallback after invalid artifact",
-    });
-    expect(
-      workflow.getActiveRun()?.phaseArtifacts[0].warnings.map((warning) => warning.code),
-    ).toContain("missing_field");
-  });
-
-  test("invalid patch records warnings but preserves the last valid artifact", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-
-    workflow.recordPhaseArtifact(artifact());
-    workflow.recordPhaseArtifactPatch({
-      runId: "run-1",
-      phaseFile: "01-recon.md",
-      replaceFindingsById: [
-        {
-          id: "missing-finding",
-          file: "src/app.ts",
-          issue: "should not apply",
-          evidence: "evidence",
-          impact: "impact",
-          suggestedFix: "fix",
-          confidence: "likely",
-        },
-      ],
-      replaceSummaryForNextPhase: "patched summary",
-    });
-    const decision = complete(workflow, "fallback not used");
-
-    expect(decision).toMatchObject({ kind: "queued", phaseIndex: 1 });
-    expect(workflow.getActiveRun()?.phaseOutputs[0]).toMatchObject({
-      notes: "patched summary",
-    });
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: {
-        summaryForNextPhase: "patched summary",
-        findings: [{ id: "finding-1", issue: "issue" }],
-      },
-      fallbackNotes: undefined,
-    });
-    expect(
-      workflow.getActiveRun()?.phaseArtifacts[0].warnings.map((warning) => warning.code),
-    ).toContain("invalid_patch");
-  });
-
-  test("malformed artifact with patch falls back instead of throwing", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-
-    workflow.recordPhaseArtifact(artifact({ findings: {} as never }));
-    workflow.recordPhaseArtifactPatch({
-      runId: "run-1",
-      phaseFile: "01-recon.md",
-      replaceSummaryForNextPhase: "patched summary",
-    });
-
-    expect(() => complete(workflow, "fallback after malformed artifact")).not.toThrow();
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: undefined,
-      fallbackNotes: "fallback after malformed artifact",
-    });
-    expect(
-      workflow.getActiveRun()?.phaseArtifacts[0].warnings.map((warning) => warning.code),
-    ).toEqual(expect.arrayContaining(["missing_field", "invalid_patch", "fallback_used"]));
-  });
-
-  test("artifact items with missing required fields fall back", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-
-    workflow.recordPhaseArtifact(
-      artifact({
-        findings: [
-          {
-            id: "finding-1",
-            issue: "issue",
-            evidence: "evidence",
-            impact: "impact",
-            suggestedFix: "fix",
-            confidence: "unknown",
-          } as never,
-        ],
-      }),
-    );
-    complete(workflow, "fallback after missing item field");
-
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: undefined,
-      fallbackNotes: "fallback after missing item field",
-    });
-    expect(
-      workflow.getActiveRun()?.phaseArtifacts[0].warnings.map((warning) => warning.message),
-    ).toEqual(
-      expect.arrayContaining([
-        "findings item is missing file.",
-        "findings item has invalid confidence.",
-      ]),
-    );
-  });
-
-  test("artifact finding confidence must be a string enum value", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-
-    workflow.recordPhaseArtifact(
-      artifact({
-        findings: [
-          {
-            id: "finding-1",
-            file: "src/app.ts",
-            issue: "issue",
-            evidence: "evidence",
-            impact: "impact",
-            suggestedFix: "fix",
-            confidence: ["confirmed"],
-          } as never,
-        ],
-      }),
-    );
-    complete(workflow, "fallback after non-string confidence");
-
-    expect(workflow.getActiveRun()?.phaseArtifacts[0]).toMatchObject({
-      artifact: undefined,
-      fallbackNotes: "fallback after non-string confidence",
-    });
-    expect(
-      workflow.getActiveRun()?.phaseArtifacts[0].warnings.map((warning) => warning.message),
-    ).toContain("findings item has invalid confidence.");
-  });
-
-  test("gapfill control with new_hunt_tasks loops back to Hunt", () => {
+  test("gapfill control with continue_hunt true loops back to Hunt", () => {
     const workflow = new ReviewWorkflowController();
     workflow.start(seed());
     advanceToGapfill(workflow);
 
     const decision = complete(
       workflow,
-      '<review_control>{"new_hunt_tasks":[{"question":"q"}]}</review_control>',
+      '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
     );
 
     expect(decision).toMatchObject({
@@ -319,15 +128,59 @@ describe("ReviewWorkflowController", () => {
     expect(workflow.getActiveRun()?.gapfillLoopCount).toBe(1);
   });
 
-  test("gapfill artifact with empty nextTasks overrides legacy control", () => {
+  test("gapfill control with continue_hunt false proceeds to Dedupe", () => {
     const workflow = new ReviewWorkflowController();
     workflow.start(seed());
     advanceToGapfill(workflow);
 
-    workflow.recordPhaseArtifact(artifact({ phaseFile: "04-gapfill.md", nextTasks: [] }));
+    const decision = complete(workflow, '<review_control>{"continue_hunt":false}</review_control>');
+
+    expect(decision).toMatchObject({
+      kind: "queued",
+      phaseIndex: 4,
+      phase: { file: "05-dedupe.md" },
+    });
+    expect(workflow.getActiveRun()?.gapfillLoopCount).toBe(0);
+  });
+
+  test("gapfill missing control defaults to Dedupe", () => {
+    const workflow = new ReviewWorkflowController();
+    workflow.start(seed());
+    advanceToGapfill(workflow);
+
+    const decision = complete(workflow, "gapfill memo without control");
+
+    expect(decision).toMatchObject({
+      kind: "queued",
+      phaseIndex: 4,
+      phase: { file: "05-dedupe.md" },
+    });
+    expect(workflow.getActiveRun()?.gapfillLoopCount).toBe(0);
+  });
+
+  test("gapfill malformed control defaults to Dedupe", () => {
+    const workflow = new ReviewWorkflowController();
+    workflow.start(seed());
+    advanceToGapfill(workflow);
+
+    const decision = complete(workflow, '<review_control>{"continue_hunt":}</review_control>');
+
+    expect(decision).toMatchObject({
+      kind: "queued",
+      phaseIndex: 4,
+      phase: { file: "05-dedupe.md" },
+    });
+    expect(workflow.getActiveRun()?.gapfillLoopCount).toBe(0);
+  });
+
+  test("gapfill non-boolean continue_hunt defaults to Dedupe", () => {
+    const workflow = new ReviewWorkflowController();
+    workflow.start(seed());
+    advanceToGapfill(workflow);
+
     const decision = complete(
       workflow,
-      '<review_control>{"new_hunt_tasks":[{"question":"q"}]}</review_control>',
+      '<review_control>{"continue_hunt":"true"}</review_control>',
     );
 
     expect(decision).toMatchObject({
@@ -338,33 +191,38 @@ describe("ReviewWorkflowController", () => {
     expect(workflow.getActiveRun()?.gapfillLoopCount).toBe(0);
   });
 
-  test("gapfill artifact with nextTasks loops back to Hunt", () => {
-    const workflow = new ReviewWorkflowController();
-    workflow.start(seed());
-    advanceToGapfill(workflow);
+  test("gapfill uses the final control block when earlier blocks disagree", () => {
+    const trueThenFalse = new ReviewWorkflowController();
+    trueThenFalse.start(seed());
+    advanceToGapfill(trueThenFalse);
 
-    workflow.recordPhaseArtifact(
-      artifact({
-        phaseFile: "04-gapfill.md",
-        nextTasks: [
-          {
-            id: "task-1",
-            question: "q",
-            scopeHint: "src/app.ts",
-            evidenceToCheck: ["caller"],
-            whyItMatters: "could affect decision",
-          },
-        ],
-      }),
+    const falseDecision = complete(
+      trueThenFalse,
+      '<review_control>{"continue_hunt":true}</review_control>\n\nFinal decision:\n<review_control>{"continue_hunt":false}</review_control>',
     );
-    const decision = complete(workflow, "no legacy control");
 
-    expect(decision).toMatchObject({
+    expect(falseDecision).toMatchObject({
+      kind: "queued",
+      phaseIndex: 4,
+      phase: { file: "05-dedupe.md" },
+    });
+    expect(trueThenFalse.getActiveRun()?.gapfillLoopCount).toBe(0);
+
+    const falseThenTrue = new ReviewWorkflowController();
+    falseThenTrue.start(seed());
+    advanceToGapfill(falseThenTrue);
+
+    const trueDecision = complete(
+      falseThenTrue,
+      '<review_control>{"continue_hunt":false}</review_control>\n\nFinal decision:\n<review_control>{"continue_hunt":true}</review_control>',
+    );
+
+    expect(trueDecision).toMatchObject({
       kind: "queued",
       phaseIndex: 1,
       phase: { file: "02-hunt.md" },
     });
-    expect(workflow.getActiveRun()?.gapfillLoopCount).toBe(1);
+    expect(falseThenTrue.getActiveRun()?.gapfillLoopCount).toBe(1);
   });
 
   test("gapfill loop is capped", () => {
@@ -375,7 +233,7 @@ describe("ReviewWorkflowController", () => {
       advanceToGapfill(workflow);
       const decision = complete(
         workflow,
-        '<review_control>{"new_hunt_tasks":[{"question":"q"}]}</review_control>',
+        '<review_control>{"continue_hunt":true}</review_control>',
       );
       expect(decision).toMatchObject({ phase: { file: expected } });
       if (decision?.kind === "queued" && expected !== "05-dedupe.md") {

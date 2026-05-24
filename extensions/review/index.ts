@@ -7,17 +7,8 @@ import { Type } from "typebox";
 import { parseCommandArgs } from "../../lib/command-args";
 import { type ExecGit, formatJsonTarget, type Target, truncate } from "../../lib/git";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
-import { terminatingTextResult } from "../../lib/structured-tool";
 import { prepareTargetScope } from "../../lib/target-scope";
 import { notifyIfUI } from "../../lib/tui";
-import {
-  REVIEW_PHASE_ARTIFACT_PATCH_TOOL_NAME,
-  REVIEW_PHASE_ARTIFACT_TOOL_NAME,
-  type ReviewPhaseArtifact,
-  type ReviewPhaseArtifactPatch,
-  reviewPhaseArtifactPatchSchema,
-  reviewPhaseArtifactSchema,
-} from "./artifacts";
 import {
   REVIEW_WORKFLOW_EVENT_NAME,
   type ReviewWorkflowLifecycleEvent,
@@ -30,7 +21,6 @@ import { clearReviewWidget, refreshReviewWidget } from "./widget";
 import {
   type ActiveReviewRun,
   type QueuedPhase,
-  type RecordArtifactResult,
   type ReviewRunSeed,
   ReviewWorkflowController,
 } from "./workflow";
@@ -51,8 +41,6 @@ const INVESTIGATION_ALLOWED_TOOLS = new Set([
   "tavily_map",
   "tavily_crawl",
   "tavily_auth_status",
-  REVIEW_PHASE_ARTIFACT_TOOL_NAME,
-  REVIEW_PHASE_ARTIFACT_PATCH_TOOL_NAME,
 ]);
 
 export {
@@ -284,78 +272,8 @@ function queueNextPhaseAfterCurrentTurn(
   }, 0);
 }
 
-function registerReviewArtifactTools(pi: ExtensionAPI): void {
-  pi.registerTool({
-    name: REVIEW_PHASE_ARTIFACT_TOOL_NAME,
-    label: "Review Phase Artifact",
-    description:
-      "Internal /review workflow tool. Submit structured state for the current review phase; use only when a /review phase prompt explicitly asks for it.",
-    promptSnippet:
-      "Submit structured /review phase state with review_phase_artifact when instructed by the active /review workflow.",
-    promptGuidelines: [
-      "Use review_phase_artifact only during an active /review workflow phase that explicitly asks for structured phase state.",
-      "After calling review_phase_artifact for an intermediate /review phase, do not emit extra assistant commentary unless the phase prompt explicitly asks for it.",
-    ],
-    parameters: reviewPhaseArtifactSchema,
-    async execute(_toolCallId, params) {
-      const result = workflow.recordPhaseArtifact(params as ReviewPhaseArtifact);
-      return reviewArtifactToolResult(
-        result.ok
-          ? "Review phase artifact recorded."
-          : `Review phase artifact ignored: ${result.reason}`,
-        result,
-        {
-          runId: (params as ReviewPhaseArtifact).runId,
-          phaseFile: (params as ReviewPhaseArtifact).phaseFile,
-        },
-      );
-    },
-  });
-
-  pi.registerTool({
-    name: REVIEW_PHASE_ARTIFACT_PATCH_TOOL_NAME,
-    label: "Review Phase Artifact Patch",
-    description:
-      "Internal /review workflow tool. Submit ID-based partial corrections for the current review phase artifact; use only when a /review phase prompt explicitly asks for repair.",
-    promptSnippet:
-      "Partially repair current /review phase structured state with review_phase_artifact_patch when instructed.",
-    promptGuidelines: [
-      "Use review_phase_artifact_patch only after review_phase_artifact in the same active /review phase when a small structured correction is needed.",
-      "Prefer ID-based partial patches over re-emitting a full artifact for small corrections.",
-    ],
-    parameters: reviewPhaseArtifactPatchSchema,
-    async execute(_toolCallId, params) {
-      const result = workflow.recordPhaseArtifactPatch(params as ReviewPhaseArtifactPatch);
-      return reviewArtifactToolResult(
-        result.ok
-          ? "Review phase artifact patch recorded."
-          : `Review phase artifact patch ignored: ${result.reason}`,
-        result,
-        {
-          runId: (params as ReviewPhaseArtifactPatch).runId,
-          phaseFile: (params as ReviewPhaseArtifactPatch).phaseFile,
-        },
-      );
-    },
-  });
-}
-
-function reviewArtifactToolResult(
-  text: string,
-  result: RecordArtifactResult,
-  params: Pick<ReviewPhaseArtifact | ReviewPhaseArtifactPatch, "runId" | "phaseFile">,
-) {
-  return terminatingTextResult(text, {
-    ok: result.ok,
-    warnings: result.warnings,
-    runId: params.runId,
-    phaseFile: params.phaseFile,
-  });
-}
-
 export function createReviewExtension() {
   return function reviewExtension(pi: ExtensionAPI): void {
-    registerReviewArtifactTools(pi);
     pi.on("tool_call", async (event) => {
       if (!workflow.isReadOnlyPhase()) return;
 
