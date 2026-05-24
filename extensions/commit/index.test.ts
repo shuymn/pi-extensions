@@ -1,10 +1,24 @@
-import { describe, expect, test } from "bun:test";
-import { getWorkflowActiveTools } from "../../lib/workflow-tool-policy";
+import { describe, expect, mock, test } from "bun:test";
 import {
   type CustomAction,
   createCustomDriver,
   installTuiMocks,
 } from "../../tests/support/tui-mocks";
+
+let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
+  content: [
+    {
+      type: "toolCall",
+      id: "call-1",
+      name: "workflow_shell_review_decision",
+      arguments: { decision: "deny", rationale: "denied by test reviewer" },
+    },
+  ],
+});
+
+mock.module("@earendil-works/pi-ai", () => ({
+  complete: (...args: unknown[]) => completeImpl(...args),
+}));
 
 const tuiInstances = installTuiMocks({
   codingAgent: {
@@ -12,7 +26,15 @@ const tuiInstances = installTuiMocks({
   },
 });
 
-const EXPECTED_WORKFLOW_TOOLS = getWorkflowActiveTools("commit");
+const EXPECTED_WORKFLOW_TOOLS = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "spawn_subagent",
+  "workflow_write_temp_file",
+];
 
 type ExecCall = {
   command: string;
@@ -100,11 +122,14 @@ function createFakePi(
   };
 }
 
-function createContext(actions: CustomAction[], options: { idle?: boolean; hasUI?: boolean } = {}) {
+function createContext(
+  actions: CustomAction[],
+  options: { idle?: boolean; hasUI?: boolean; reviewerContext?: boolean } = {},
+) {
   const notifications: Array<{ message: string; level: string }> = [];
   let shutdownCount = 0;
 
-  return {
+  const ctx = {
     notifications,
     get shutdownCount() {
       return shutdownCount;
@@ -121,6 +146,17 @@ function createContext(actions: CustomAction[], options: { idle?: boolean; hasUI
       custom: createCustomDriver(actions, tuiInstances),
     },
   };
+
+  if (!options.reviewerContext) return ctx;
+
+  return Object.assign(ctx, {
+    cwd: "/repo",
+    signal: undefined,
+    modelRegistry: {
+      find: (provider: string, modelId: string) => ({ provider, id: modelId }),
+      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
+    },
+  });
 }
 
 async function loadExtension() {
@@ -473,8 +509,7 @@ describe("commit extension", () => {
       }),
     ).resolves.toMatchObject({
       block: true,
-      reason:
-        "/commit extension によりブロックしました: shell command is not allowed: git add is not allowed in /commit workflow.",
+      reason: expect.stringContaining("shell command is not allowed"),
     });
     await expect(
       pi.events.get("tool_call")![0]({
@@ -517,6 +552,53 @@ describe("commit extension", () => {
     const subagentEvent = { toolName: "spawn_subagent", input: {} };
     await expect(pi.events.get("tool_call")![0](subagentEvent)).resolves.toBeUndefined();
     expect(subagentEvent.input).toEqual({ readOnly: true });
+  });
+
+  test("uses automatic reviewer fallback for statically unknown commit shell commands", async () => {
+    const completeCalls: unknown[][] = [];
+    completeImpl = async (...args: unknown[]) => {
+      completeCalls.push(args);
+      return {
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "workflow_shell_review_decision",
+            arguments: { decision: "allow", rationale: "branch listing is safe inspection" },
+          },
+        ],
+      };
+    };
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    pi.flags.set("commit", true);
+    const ctx = createContext(
+      [
+        { kind: "select", value: "auto" },
+        { kind: "select", value: "no" },
+        { kind: "input", value: "" },
+      ],
+      { reviewerContext: true },
+    );
+    await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
+
+    await expect(
+      pi.events.get("tool_call")![0](
+        {
+          toolName: "bash",
+          input: { command: "git branch" },
+        },
+        ctx,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(completeCalls).toHaveLength(1);
+    const context = completeCalls[0]?.[1] as {
+      messages: Array<{ content: Array<{ text: string }> }>;
+    };
+    expect(context.messages[0]?.content[0]?.text).toContain('"workflow": "commit"');
+    expect(context.messages[0]?.content[0]?.text).toContain('"command": "git branch"');
   });
 
   test("restores active tools if prompt delivery fails", async () => {

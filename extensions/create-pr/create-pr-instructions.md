@@ -36,6 +36,7 @@ instructions here, and use the original source files only when needed.
 - Tool choice priority: inspect committed changes with read-only commands first; write exactly one PR body file with `workflow_write_temp_file` only when ready to call `gh pr create/edit --body-file`; do not write patches or modify workspace files.
 - `spawn_subagent` is read-only in this workflow.
 - Shell commands are restricted to read-only inspection plus the workflow-required side effects: `git push`, `gh pr create`, and `gh pr edit`.
+- If a shell command is denied by the workflow policy or automatic review, do not work around it, indirectly execute the same action, or bypass the restriction. Use a safer allowed command or ask the user how to proceed.
 - When `--body-file` is needed, write the body with `workflow_write_temp_file`; do not create body files in the workspace.
 
 ## Scope

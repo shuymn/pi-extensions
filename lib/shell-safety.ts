@@ -15,23 +15,7 @@ type ShellSafetyContext = {
 
 const READ_ONLY_COMMANDS = new Set(["cat", "grep", "head", "ls", "rg", "tail", "wc"]);
 
-const MUTATING_COMMANDS = new Set([
-  "chmod",
-  "chown",
-  "cp",
-  "curl",
-  "install",
-  "mkdir",
-  "mv",
-  "nc",
-  "rm",
-  "scp",
-  "ssh",
-  "tee",
-  "touch",
-  "wget",
-  "xattr",
-]);
+const CLEARLY_DESTRUCTIVE_COMMANDS = new Set(["chmod", "chown", "mv", "rm", "xattr"]);
 
 const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "diff",
@@ -43,19 +27,7 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   "status",
 ]);
 
-const MUTATING_GIT_SUBCOMMANDS = new Set([
-  "add",
-  "apply",
-  "checkout",
-  "cherry-pick",
-  "clean",
-  "commit",
-  "merge",
-  "rebase",
-  "reset",
-  "stash",
-  "switch",
-]);
+const DESTRUCTIVE_GIT_SUBCOMMANDS = new Set(["clean", "reset", "restore"]);
 
 const PACKAGE_MANAGER_COMMANDS = new Set([
   "bun",
@@ -69,26 +41,17 @@ const PACKAGE_MANAGER_COMMANDS = new Set([
   "yarn",
 ]);
 
-const INTERPRETER_COMMANDS = new Set(["bun", "deno", "node", "python", "python3", "ruby"]);
+const INTERPRETER_COMMANDS = new Set(["deno", "node", "python", "python3", "ruby"]);
 
 const CHAIN_OPERATORS = new Set(["&&", "||"]);
 const UNSUPPORTED_SHELL_TOKENS = new Set(["|", ";", "&", "(", ")"]);
-const DANGEROUS_FIND_ACTIONS = new Set([
-  "-delete",
-  "-exec",
-  "-execdir",
-  "-ok",
-  "-okdir",
-  "-fprint",
-  "-fprint0",
-  "-fprintf",
-  "-fls",
-]);
-const DANGEROUS_GIT_OPTIONS = new Set([
+const DESTRUCTIVE_FIND_ACTIONS = new Set(["-delete", "-fprint", "-fprint0", "-fprintf", "-fls"]);
+const REVIEW_REQUIRED_FIND_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+const GIT_OUTPUT_OPTIONS = new Set(["--output"]);
+const REVIEW_REQUIRED_GIT_OPTIONS = new Set([
   "--ext-diff",
   "--external-diff",
   "--open-files-in-pager",
-  "--output",
 ]);
 
 export function classifyShellCommand(
@@ -101,24 +64,26 @@ export function classifyShellCommand(
     return deny("shell command input must include a non-empty command string.");
   }
 
+  if (/[\r\n]/.test(command)) {
+    return deny(`Shell command newlines are not allowed in ${context.restrictionContext}.`);
+  }
+
   if (hasUnsafeShellExpansion(command)) {
-    return deny(
-      `Shell command substitution or process substitution is not allowed in ${context.restrictionContext}.`,
+    return unknown(
+      "Shell command substitution or process substitution requires reviewer evaluation.",
     );
   }
 
   const tokens = tokenizeShellCommand(command);
   if (!tokens.ok) return deny(tokens.reason);
 
-  if (tokens.tokens.some((token) => token.kind === "operator" && isRedirect(token.value))) {
-    return deny(`Shell redirection is not allowed in ${context.restrictionContext}.`);
-  }
-
-  const mutatingWord = tokens.tokens.find(
-    (token) => token.kind === "word" && MUTATING_COMMANDS.has(basename(token.value)),
+  const redirect = tokens.tokens.find(
+    (token) => token.kind === "operator" && isRedirect(token.value),
   );
-  if (mutatingWord) {
-    return deny(notAllowed(context, basename(mutatingWord.value)));
+  if (redirect) {
+    return isOutputRedirect(redirect.value)
+      ? deny(`Shell output redirection is not allowed in ${context.restrictionContext}.`)
+      : unknown("Shell input redirection requires reviewer evaluation.");
   }
 
   if (
@@ -257,16 +222,16 @@ function splitCommands(tokens: ShellToken[]): SplitResult {
 function classifySimpleCommand(argv: string[], context: ShellSafetyContext): ShellSafetyResult {
   const executable = basename(argv[0]);
 
-  if (MUTATING_COMMANDS.has(executable)) {
+  if (CLEARLY_DESTRUCTIVE_COMMANDS.has(executable)) {
     return deny(notAllowed(context, executable));
   }
 
   if (PACKAGE_MANAGER_COMMANDS.has(executable)) {
-    return deny(notAllowed(context, executable));
+    return unknown(`${executable} requires reviewer evaluation.`);
   }
 
   if (INTERPRETER_COMMANDS.has(executable)) {
-    return deny(notAllowed(context, `${executable} script execution`));
+    return unknown(`${executable} script execution requires reviewer evaluation.`);
   }
 
   if (executable === "sed") return classifySed(argv, context);
@@ -287,6 +252,9 @@ function classifySed(argv: string[], context: ShellSafetyContext): ShellSafetyRe
   if (!argv.some((arg) => arg === "-n" || (arg.startsWith("-") && arg.includes("n")))) {
     return unknown("sed without -n is not covered by static read-only shell rules.");
   }
+  if (argv.some((arg) => arg === "-f" || arg === "--file" || arg.startsWith("--file="))) {
+    return unknown("sed script files require reviewer evaluation.");
+  }
   if (sedScripts(argv).some((script) => hasUnsafeSedScript(script))) {
     return deny(
       `sed scripts that write files or execute commands are not allowed in ${context.restrictionContext}.`,
@@ -299,14 +267,28 @@ function classifyGit(argv: string[], context: ShellSafetyContext): ShellSafetyRe
   const subcommand = argv.find((arg, index) => index > 0 && !arg.startsWith("-"));
   if (!subcommand) return unknown("git command has no subcommand to classify.");
 
-  if (MUTATING_GIT_SUBCOMMANDS.has(subcommand)) {
+  if (DESTRUCTIVE_GIT_SUBCOMMANDS.has(subcommand)) {
     return deny(notAllowed(context, `git ${subcommand}`));
   }
 
+  if (subcommand === "checkout" && argv.some((arg) => arg === "--" || arg === "-f")) {
+    return deny(notAllowed(context, "git checkout destructive mode"));
+  }
+
+  if (subcommand === "switch" && argv.includes("--discard-changes")) {
+    return deny(notAllowed(context, "git switch --discard-changes"));
+  }
+
   if (READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) {
-    const dangerousOption = argv.find((arg) => isDangerousGitOption(arg));
-    if (dangerousOption) {
-      return deny(notAllowed(context, `git ${subcommand} option ${dangerousOption}`));
+    const outputOption = argv.find((arg) => isGitOption(arg, GIT_OUTPUT_OPTIONS));
+    if (outputOption) {
+      return deny(notAllowed(context, `git ${subcommand} option ${outputOption}`));
+    }
+    const reviewRequiredOption = argv.find((arg) => isGitOption(arg, REVIEW_REQUIRED_GIT_OPTIONS));
+    if (reviewRequiredOption) {
+      return unknown(
+        `git ${subcommand} option ${reviewRequiredOption} requires reviewer evaluation.`,
+      );
     }
     return allow(`git ${subcommand} is treated as read-only.`);
   }
@@ -315,9 +297,13 @@ function classifyGit(argv: string[], context: ShellSafetyContext): ShellSafetyRe
 }
 
 function classifyFind(argv: string[], context: ShellSafetyContext): ShellSafetyResult {
-  const dangerousAction = argv.find((arg) => DANGEROUS_FIND_ACTIONS.has(arg));
-  if (dangerousAction) {
-    return deny(notAllowed(context, `find action ${dangerousAction}`));
+  const destructiveAction = argv.find((arg) => DESTRUCTIVE_FIND_ACTIONS.has(arg));
+  if (destructiveAction) {
+    return deny(notAllowed(context, `find action ${destructiveAction}`));
+  }
+  const reviewRequiredAction = argv.find((arg) => REVIEW_REQUIRED_FIND_ACTIONS.has(arg));
+  if (reviewRequiredAction) {
+    return unknown(`find action ${reviewRequiredAction} requires reviewer evaluation.`);
   }
   return allow("find without mutating actions is treated as read-only.");
 }
@@ -331,9 +317,9 @@ function hasUnsafeShellExpansion(command: string): boolean {
   );
 }
 
-function isDangerousGitOption(arg: string): boolean {
-  if (DANGEROUS_GIT_OPTIONS.has(arg)) return true;
-  for (const option of DANGEROUS_GIT_OPTIONS) {
+function isGitOption(arg: string, options: Set<string>): boolean {
+  if (options.has(arg)) return true;
+  for (const option of options) {
     if (arg.startsWith(`${option}=`)) return true;
   }
   return false;
@@ -356,8 +342,6 @@ function sedScripts(argv: string[]): string[] {
       continue;
     }
     if (arg === "-f" || arg === "--file" || arg.startsWith("--file=")) {
-      scripts.push("f");
-      if (arg === "-f" || arg === "--file") index += 1;
       continue;
     }
     if (arg.startsWith("-")) continue;
@@ -384,6 +368,10 @@ function basename(command: string): string {
 
 function isRedirect(token: string): boolean {
   return token === ">" || token === ">>" || token === "<" || token === "<<";
+}
+
+function isOutputRedirect(token: string): boolean {
+  return token === ">" || token === ">>";
 }
 
 function allow(rationale: string): ShellSafetyResult {

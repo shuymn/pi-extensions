@@ -6,8 +6,10 @@ import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
 import { inputOptional, selectFuzzy } from "../../lib/tui";
 import {
   applyWorkflowActiveTools,
+  createWorkflowToolPolicyState,
   evaluateWorkflowToolCall,
   registerWorkflowTempFileTool,
+  resetWorkflowToolPolicyState,
 } from "../../lib/workflow-tool-policy";
 
 const COMMIT_INSTRUCTIONS = readFileSync(
@@ -295,6 +297,7 @@ async function gitSnapshot(pi: ExtensionAPI): Promise<string> {
 export default function (pi: ExtensionAPI) {
   let commitWorkflowActive = false;
   let startupCommitLaunched = false;
+  const toolPolicyState = createWorkflowToolPolicyState();
 
   pi.registerFlag("commit", {
     description: "対話式の commit ワークフローを実行して pi を終了する",
@@ -344,6 +347,7 @@ export default function (pi: ExtensionAPI) {
         snapshot,
       ].join("\n\n");
 
+      resetWorkflowToolPolicyState(toolPolicyState);
       commitWorkflowActive = true;
       registerWorkflowTempFileTool(pi, "commit");
       applyWorkflowActiveTools(pi, "commit");
@@ -351,6 +355,7 @@ export default function (pi: ExtensionAPI) {
       pi.sendUserMessage(prompt);
     } catch (error) {
       commitWorkflowActive = false;
+      resetWorkflowToolPolicyState(toolPolicyState);
       if (workflowToolsApplied) pi.setActiveTools(previousActiveTools);
       const message = error instanceof Error ? error.message : String(error);
       notifyAndShutdown(ctx, `--commit の開始に失敗しました: ${message}`, "warning");
@@ -369,14 +374,15 @@ export default function (pi: ExtensionAPI) {
     applyWorkflowActiveTools(pi, "commit");
   });
 
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     if (!commitWorkflowActive) return undefined;
-    return evaluateWorkflowToolCall("commit", event);
+    return evaluateWorkflowToolCall("commit", event, { ctx, state: toolPolicyState });
   });
 
   pi.on("agent_end", async (_event, ctx) => {
     if (!commitWorkflowActive) return;
     commitWorkflowActive = false;
+    resetWorkflowToolPolicyState(toolPolicyState);
     ctx.shutdown();
   });
 }

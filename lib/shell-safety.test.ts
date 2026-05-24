@@ -31,17 +31,38 @@ describe("classifyShellCommand", () => {
     "sed -i 's/a/b/' review/index.ts",
     "rm -rf review",
     "mv a b",
-    "cp a b",
-    "install src dest",
-    "mkdir tmp",
-    "touch file",
     "chmod 600 file",
     "chown user file",
     "xattr -d attr file",
+    "git restore .",
     "git checkout -- review/index.ts",
-    "git switch main",
+    "git checkout -f main",
+    "git switch feature --discard-changes",
     "git reset --hard",
     "git clean -fd",
+    "cat review/index.ts > out.txt",
+    "cat review/index.ts >> out.txt",
+    "find review -delete",
+    "find review -fprint out.txt",
+    "find review -fprintf out.txt '%p\n'",
+    "find review -fls out.txt",
+    "git diff --output=out.patch",
+    "git show --output out.txt HEAD",
+    "sed -n '1w out.txt' file",
+    "sed -n '1e touch out.txt' file",
+    "sed -n 's/foo/bar/w out.txt' file",
+    "git status\ngit reset --hard",
+    "git status\rgit reset --hard",
+  ])("denies clearly destructive or writing command: %s", (command) => {
+    expect(classifyShellCommand(command).decision).toBe("deny");
+  });
+
+  test.each([
+    "awk '{print $1}' file",
+    "sed '1,3p' file",
+    "sed -n -f script.sed file",
+    "git branch",
+    "git switch main",
     "git add review/index.ts",
     "git commit -m change",
     "git stash",
@@ -49,49 +70,34 @@ describe("classifyShellCommand", () => {
     "git merge feature",
     "git cherry-pick abc123",
     "git apply patch.diff",
+    "git diff --ext-diff",
+    "git log --ext-diff -p",
+    "git grep --open-files-in-pager='sh -c touch out' pattern",
+    "cp a b",
+    "install src dest",
+    "mkdir tmp",
+    "touch file",
     "npm install",
     "bun install",
     "pip install package",
     "python script.py",
     "node script.js",
     "bun run build",
-    "cat review/index.ts > out.txt",
-    "cat review/index.ts >> out.txt",
+    "cat file | grep x",
     "cat review/index.ts | tee out.txt",
     "cat $(touch out.txt)",
     'cat "$(touch out.txt)"',
     "cat `touch out.txt`",
-    "find review -delete",
+    "cat < input.txt",
     "find review -exec rm -f {} ;",
     "find review -execdir sh -c 'rm -f \"$1\"' sh {} +",
-    "find review -fprint out.txt",
-    "find review -fprintf out.txt '%p\\n'",
-    "find review -fls out.txt",
-    "git diff --output=out.patch",
-    "git diff --ext-diff",
-    "git show --output out.txt HEAD",
-    "git log --ext-diff -p",
-    "git grep --open-files-in-pager='sh -c touch out' pattern",
-    "sed -n '1w out.txt' file",
-    "sed -n '1e touch out.txt' file",
-    "sed -n 's/foo/bar/w out.txt' file",
-    "sed -n -f script.sed file",
     "curl https://example.com",
     "wget https://example.com",
     "ssh host",
     "scp a host:b",
     "nc -l 1234",
-  ])("denies statically unsafe command: %s", (command) => {
-    expect(classifyShellCommand(command).decision).toBe("deny");
-  });
-
-  test.each([
-    "awk '{print $1}' file",
-    "sed '1,3p' file",
-    "git branch",
-    "cat file | grep x",
     "unknown-tool --flag",
-  ])("returns unknown when static rules are inconclusive: %s", (command) => {
+  ])("returns unknown when static rules need reviewer context: %s", (command) => {
     expect(classifyShellCommand(command).decision).toBe("unknown");
   });
 
@@ -101,17 +107,17 @@ describe("classifyShellCommand", () => {
   });
 
   test.each([
-    ["git add -A", "git add is not allowed in /commit workflow."],
+    ["git reset --hard", "git reset is not allowed in /commit workflow."],
+    ["git status\ngit reset --hard", "Shell command newlines are not allowed in /commit workflow."],
     [
-      "cat $(touch out.txt)",
-      "Shell command substitution or process substitution is not allowed in /commit workflow.",
+      "cat review/index.ts > out.txt",
+      "Shell output redirection is not allowed in /commit workflow.",
     ],
-    ["cat review/index.ts > out.txt", "Shell redirection is not allowed in /commit workflow."],
     [
       "sed -n '1w out.txt' file",
       "sed scripts that write files or execute commands are not allowed in /commit workflow.",
     ],
-  ])("formats restriction rationale with caller-provided context: %s", (command, rationale) => {
+  ])("formats deny rationale with caller-provided context: %s", (command, rationale) => {
     expect(classifyShellCommand(command, { restrictionContext: "/commit workflow" })).toEqual({
       decision: "deny",
       rationale,

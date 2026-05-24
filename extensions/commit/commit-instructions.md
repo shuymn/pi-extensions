@@ -9,6 +9,7 @@ You are running the /commit extension. Create local git commits only.
 - Tool choice priority: inspect with read-only tools first; stage whole files with `git add <specific-files>` when the whole file belongs to one logical unit; use the temp-file helper plus `git apply --cached` only as a last resort for partial staging mixed changes inside the same file.
 - `spawn_subagent` is read-only in this workflow.
 - Shell commands are restricted to read-only inspection plus the workflow-required git side effects: branch switching/creation, staging, index-only patch application, and `git commit`.
+- If a shell command is denied by the workflow policy or automatic review, do not work around it, indirectly execute the same action, or bypass the restriction. Use a safer allowed command or ask the user how to proceed.
 - Workspace files must not be modified except through intentional git staging/commit operations already described below.
 
 ## Not in Scope
