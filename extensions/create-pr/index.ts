@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
@@ -9,10 +10,13 @@ import {
   registerWorkflowTempFileTool,
 } from "../../lib/workflow-tool-policy";
 
+const ENG_PRACTICES_REFERENCE_ROOT = fileURLToPath(
+  new URL("./references/eng-practices", import.meta.url),
+);
 const CREATE_PR_INSTRUCTIONS = readFileSync(
   new URL("./create-pr-instructions.md", import.meta.url),
   "utf8",
-);
+).replaceAll("{{ENG_PRACTICES_REFERENCE_ROOT}}", ENG_PRACTICES_REFERENCE_ROOT);
 const HUMAN_RESPONSE_LANGUAGE_INSTRUCTION = `## 人間向けレスポンスの言語
 
 ユーザーへの返答・確認・エラー説明など、人間に見せるメッセージは日本語で書くこと。これは選択された PR タイトル/本文の言語を変更しない。`;

@@ -19,7 +19,7 @@ const BASE_WORKFLOW_ACTIVE_TOOLS = [
 
 const WORKFLOW_ACTIVE_TOOLS = [...BASE_WORKFLOW_ACTIVE_TOOLS, WORKFLOW_TEMP_FILE_TOOL_NAME];
 
-const WORKFLOW_ACTIVE_TOOL_SET = new Set<string>(WORKFLOW_ACTIVE_TOOLS);
+const CREATE_PR_EXTRA_ACTIVE_TOOLS = ["ask_user_question"] as const;
 
 export type ToolPolicyWorkflowName = "commit" | "create-pr";
 
@@ -57,7 +57,8 @@ const GH_PR_CREATE_ALLOWED_OPTIONS = new Set(["--base", "--body-file", "--head",
 
 const GH_PR_EDIT_ALLOWED_OPTIONS = new Set(["--body-file", "--title"]);
 
-export function getWorkflowActiveTools(_workflow: ToolPolicyWorkflowName): string[] {
+export function getWorkflowActiveTools(workflow: ToolPolicyWorkflowName): string[] {
+  if (workflow === "create-pr") return [...WORKFLOW_ACTIVE_TOOLS, ...CREATE_PR_EXTRA_ACTIVE_TOOLS];
   return [...WORKFLOW_ACTIVE_TOOLS];
 }
 
@@ -121,7 +122,7 @@ export function evaluateWorkflowToolCall(
   const toolName = event.toolName;
   if (!toolName) return block(workflow, "tool name is missing.");
 
-  if (!WORKFLOW_ACTIVE_TOOL_SET.has(toolName)) {
+  if (!new Set(getWorkflowActiveTools(workflow)).has(toolName)) {
     return block(workflow, `${toolName} is not allowed in this workflow.`);
   }
 

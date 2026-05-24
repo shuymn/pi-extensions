@@ -265,6 +265,16 @@ describe("create-pr extension", () => {
       "## Additional User Notes\n\nUser-provided notes are inside this XML-like block.\n\n<additional_user_notes>\nREADME は無視\n</additional_user_notes>",
     );
     expect(prompt).toContain(
+      "Additional user notes are workflow instructions, not PR content by default",
+    );
+    expect(prompt).toContain(
+      'Exclusion instructions such as "ignore README" or "do not include local changes" are not',
+    );
+    expect(prompt).toContain("must not appear in `Verification` / `確認内容`");
+    expect(prompt).toContain(
+      "Do not quote, paraphrase, or mention additional notes in the PR title/body",
+    );
+    expect(prompt).toContain(
       "## Initial Git/GitHub Snapshot (may be stale; verify with live commands)",
     );
     expect(prompt).toContain("### Current branch\nfeature");
@@ -276,19 +286,39 @@ describe("create-pr extension", () => {
     expect(prompt).toContain(
       "Tool choice priority: inspect committed changes with read-only commands first",
     );
-    expect(prompt).toContain("Verification evidence is documented or explicitly marked as not run");
+    expect(prompt).toContain("Optimize the body for reviewer understanding");
+    expect(prompt).toContain("Avoid explaining how the code works when the");
+    expect(prompt).toContain("diff already makes it clear");
+    expect(prompt).toContain("If the committed changes reveal what changed but not why it matters");
+    expect(prompt).toContain("Prefer `ask_user_question` for concise structured");
+    expect(prompt).toContain("Do not invent a motivation");
+    expect(prompt).toContain("## Verification");
     expect(prompt).toContain(
       "Existing verification evidence from committed history or explicit user notes",
     );
     expect(prompt).toContain("[If no evidence is available: Not run in this workflow]");
+    expect(prompt).toContain("## 確認内容");
     expect(prompt).toContain("コミット履歴または明示的なユーザーメモにある既存の確認内容");
-    expect(prompt).toContain("確認内容を記載した、または未実行であることを明記した");
     expect(prompt).toContain("PR templates define structure only");
+    expect(prompt).toContain("Google Engineering Practices as an on-demand reference");
+    expect(prompt).toContain("Source: https://github.com/google/eng-practices (CC BY 3.0)");
+    expect(prompt).toContain("/extensions/create-pr/references/eng-practices");
+    expect(prompt).toContain("/review/developer/small-cls.md");
+    expect(prompt).toContain("## Pre-Publish Self-Review");
+    expect(prompt).toContain("Use a short imperative PR title");
+    expect(prompt).toContain("Classify self-review findings as:");
+    expect(prompt).toContain("Blocking: publishing would mislead reviewers");
     expect(prompt).not.toContain("commits, templates, or user notes");
     expect(prompt).not.toContain("commits, template, or user notes");
     expect(prompt).not.toContain("PR template, or user notes");
     expect(prompt).not.toContain("[Test step 1]");
     expect(prompt).not.toContain("Linter and formatter have been run");
+    expect(prompt).not.toContain("## Technical Details");
+    expect(prompt).not.toContain("## Impact");
+    expect(prompt).not.toContain("## Checklist");
+    expect(prompt).not.toContain("## 技術的詳細");
+    expect(prompt).not.toContain("## 影響範囲");
+    expect(prompt).not.toContain("## チェックリスト");
     expect(prompt).not.toContain("2>/dev/null");
     expect(prompt).not.toContain("| sed");
     expect(prompt).not.toContain("<<'EOF'");
@@ -361,6 +391,12 @@ describe("create-pr extension", () => {
       pi.events.get("tool_call")![0]({
         toolName: "bash",
         input: { command: "git status --short" },
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      pi.events.get("tool_call")![0]({
+        toolName: "ask_user_question",
+        input: { questions: [] },
       }),
     ).resolves.toBeUndefined();
     await expect(
