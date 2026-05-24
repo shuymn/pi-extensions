@@ -32,7 +32,6 @@ https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name> �
 - `subagents` — delegated work 用に isolated subagent sessions を起動します。
 - `tavily` — Tavily search、extract、map、crawl、auth tools を追加します。
 - `todo` — multi-step work 用の branch-local todos を管理します。
-- `update` — Bun で pi を更新して終了する `--update` を追加します。
 
 依存関係:
 

@@ -34,7 +34,6 @@ Available extensions live under `extensions/`.
 - `subagents` — Spawn isolated subagent sessions for delegated work.
 - `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.
 - `todo` — Manage branch-local todos for multi-step work.
-- `update` — Add `--update` to update pi with Bun and exit.
 
 Dependencies:
 
