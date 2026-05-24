@@ -7,7 +7,6 @@ import { Type } from "typebox";
 import { parseCommandArgs } from "../../lib/command-args";
 import { type ExecGit, formatJsonTarget, type Target, truncate } from "../../lib/git";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
-import { classifyShellCommand } from "../../lib/shell-safety";
 import { terminatingTextResult } from "../../lib/structured-tool";
 import { prepareTargetScope } from "../../lib/target-scope";
 import { notifyIfUI } from "../../lib/tui";
@@ -70,23 +69,6 @@ const workflow = new ReviewWorkflowController();
 let runStarting = false;
 let startupGeneration = 0;
 let nextPhaseTimer: ReturnType<typeof setTimeout> | undefined;
-
-type ShellCommandGuardianReviewer = (
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  request: {
-    command: string;
-    cwd: string;
-    phaseFile?: ReturnType<typeof workflow.currentPhaseFile>;
-    noFix: boolean;
-    targets: Target[];
-    staticRationale: string;
-  },
-) => Promise<{ outcome: "allow" | "deny"; rationale: string }>;
-
-type ReviewExtensionDeps = {
-  shellCommandGuardianReviewer?: ShellCommandGuardianReviewer;
-};
 
 type ReviewOptions = {
   files: string[];
@@ -302,50 +284,6 @@ function queueNextPhaseAfterCurrentTurn(
   }, 0);
 }
 
-async function evaluateReadOnlyShellCommand(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext | undefined,
-  input: unknown,
-  deps: ReviewExtensionDeps,
-) {
-  const command = (input as { command?: unknown }).command;
-  const classification = classifyShellCommand(command);
-  if (classification.decision === "allow") return;
-
-  const blocked = (rationale: string) => ({
-    block: true,
-    reason: `/review read-only phase blocked shell_command: ${rationale}`,
-  });
-
-  if (classification.decision !== "unknown") {
-    return blocked(classification.rationale);
-  }
-
-  if (typeof command !== "string" || !ctx) {
-    return blocked(classification.rationale);
-  }
-
-  try {
-    const reviewShellCommandWithGuardian =
-      deps.shellCommandGuardianReviewer ??
-      (await import("./guardian")).reviewShellCommandWithGuardian;
-    const review = await reviewShellCommandWithGuardian(pi, ctx, {
-      command,
-      cwd: activeRun()?.cwd ?? ctx.cwd,
-      phaseFile: workflow.currentPhaseFile(),
-      noFix: activeRun()?.noFix ?? false,
-      targets: activeRun()?.targets ?? [],
-      staticRationale: classification.rationale,
-    });
-    if (review.outcome === "allow") return;
-    return blocked(review.rationale);
-  } catch (error) {
-    return blocked(
-      `guardian review failed closed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-}
-
 function registerReviewArtifactTools(pi: ExtensionAPI): void {
   pi.registerTool({
     name: REVIEW_PHASE_ARTIFACT_TOOL_NAME,
@@ -415,15 +353,11 @@ function reviewArtifactToolResult(
   });
 }
 
-export function createReviewExtension(deps: ReviewExtensionDeps = {}) {
+export function createReviewExtension() {
   return function reviewExtension(pi: ExtensionAPI): void {
     registerReviewArtifactTools(pi);
-    pi.on("tool_call", async (event, ctx) => {
+    pi.on("tool_call", async (event) => {
       if (!workflow.isReadOnlyPhase()) return;
-
-      if (event.toolName === "shell_command") {
-        return evaluateReadOnlyShellCommand(pi, ctx, event.input, deps);
-      }
 
       if (!INVESTIGATION_ALLOWED_TOOLS.has(event.toolName)) {
         return {

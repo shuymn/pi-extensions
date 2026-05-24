@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { phaseFilesForMode, type WorkflowPhase } from "./phases";
-import { buildPhasePrompt, buildQuotedTargets, buildTargetList } from "./prompts";
+import { buildPhasePrompt, buildTargetList } from "./prompts";
 import type { ActiveReviewRun } from "./workflow";
 
 function phases(noFix = false): WorkflowPhase[] {
@@ -42,6 +42,15 @@ describe("review prompt rendering", () => {
     expect(prompt).toContain(
       "No-fix mode is enabled: do not edit files, run mutating commands, or apply fixes at any stage",
     );
+  });
+
+  test("read-only phase prompt avoids shell-oriented inspection guidance", () => {
+    const prompt = buildPhasePrompt(run(), 0);
+
+    expect(prompt).toContain("do not edit files, write files, run shell commands");
+    expect(prompt).toContain("Use read, grep, find, and ls for inspection.");
+    expect(prompt).toContain('For quick inspection, target file paths are: "src/app.ts"');
+    expect(prompt).not.toContain("target file shell arguments");
   });
 
   test("additional user instructions are included after phase 1", () => {
@@ -199,7 +208,7 @@ describe("review prompt rendering", () => {
     );
   });
 
-  test("formats target list and shell-quoted targets", () => {
+  test("formats target list", () => {
     const targets: ActiveReviewRun["targets"] = [
       { path: "src/app.ts", status: "explicit", source: "explicit" },
       { path: "docs/read me.md", status: "M", source: "diff" },
@@ -207,6 +216,5 @@ describe("review prompt rendering", () => {
 
     expect(buildTargetList(targets)).toContain('- "src/app.ts" (explicit)');
     expect(buildTargetList(targets)).toContain('- "docs/read me.md" (M; diff)');
-    expect(buildQuotedTargets(targets)).toBe("'src/app.ts' 'docs/read me.md'");
   });
 });
