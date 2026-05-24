@@ -293,11 +293,54 @@ describe("commit extension", () => {
       "User invoked --commit with interactive options: --english --branch --base=main",
     );
     expect(pi.sentUserMessages[0]).toContain("## Additional User Notes\n\n(none)");
-    expect(pi.execCalls.map((call) => call.args.join(" ")).slice(0, 3)).toEqual([
+    expect(pi.execCalls.map((call) => call.args.join(" ")).slice(0, 4)).toEqual([
+      "branch --show-current",
       "symbolic-ref --quiet --short refs/remotes/origin/HEAD",
       "for-each-ref --format=%(refname)%09%(refname:short) refs/heads refs/remotes",
       "config --get user.email",
     ]);
+    const baseBranchSelect = tuiInstances.selectInstances.at(-1);
+    expect(baseBranchSelect?.items[0]).toMatchObject({
+      value: "feature",
+      description: "現在のブランチ",
+    });
+    expect(baseBranchSelect?.selectedIndex).toBe(0);
+  });
+
+  test("branch creation falls back to current branch when branch discovery is empty", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      if (
+        call.args.join(" ") ===
+        "for-each-ref --format=%(refname)%09%(refname:short) refs/heads refs/remotes"
+      ) {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return defaultExec(call);
+    });
+    extension(pi as never);
+    pi.flags.set("commit", true);
+    const ctx = createContext([
+      { kind: "select", value: "english" },
+      { kind: "select", value: "yes" },
+      { kind: "select", value: "feature" },
+      { kind: "input", value: "" },
+    ]);
+
+    await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
+
+    expect(pi.sentUserMessages[0]).toContain(
+      "User invoked --commit with interactive options: --english --branch --base=feature",
+    );
+    const baseBranchSelect = tuiInstances.selectInstances.at(-1);
+    expect(baseBranchSelect?.items).toEqual([
+      {
+        value: "feature",
+        label: "feature",
+        description: "現在のブランチ",
+      },
+    ]);
+    expect(baseBranchSelect?.selectedIndex).toBe(0);
   });
 
   test("blocks destructive git commands and push only while commit workflow is active", async () => {

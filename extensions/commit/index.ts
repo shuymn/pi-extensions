@@ -46,7 +46,19 @@ async function getDefaultBranch(pi: ExtensionAPI): Promise<string | undefined> {
   return undefined;
 }
 
-async function getBranches(pi: ExtensionAPI, defaultBranch?: string): Promise<SelectItem[]> {
+async function getCurrentBranch(pi: ExtensionAPI): Promise<string | undefined> {
+  const result = await pi
+    .exec("git", ["branch", "--show-current"], { timeout: 3000 })
+    .catch(() => undefined);
+  if (result?.code !== 0) return undefined;
+  return result.stdout.trim() || undefined;
+}
+
+async function getBranches(
+  pi: ExtensionAPI,
+  options: { currentBranch?: string; defaultBranch?: string } = {},
+): Promise<SelectItem[]> {
+  const { currentBranch, defaultBranch } = options;
   const result = await pi
     .exec(
       "git",
@@ -73,6 +85,8 @@ async function getBranches(pi: ExtensionAPI, defaultBranch?: string): Promise<Se
     });
 
   const sorted = branches.sort((a, b) => {
+    if (a === currentBranch) return -1;
+    if (b === currentBranch) return 1;
     if (a === defaultBranch) return -1;
     if (b === defaultBranch) return 1;
     return a.localeCompare(b);
@@ -81,7 +95,12 @@ async function getBranches(pi: ExtensionAPI, defaultBranch?: string): Promise<Se
   return sorted.map((branch) => ({
     value: branch,
     label: branch,
-    description: branch === defaultBranch ? "デフォルトブランチ" : undefined,
+    description:
+      branch === currentBranch
+        ? "現在のブランチ"
+        : branch === defaultBranch
+          ? "デフォルトブランチ"
+          : undefined,
   }));
 }
 
@@ -100,6 +119,7 @@ async function collectCommitOptions(
   let language: CommitLanguage = "auto";
   let branchMode: "yes" | "no" = "no";
   let baseBranch: string | undefined;
+  let currentBranch: string | undefined;
   let defaultBranch: string | undefined;
   let branches: SelectItem[] | undefined;
 
@@ -156,9 +176,13 @@ async function collectCommitOptions(
 
     if (step === "baseBranch") {
       if (!branches) {
-        defaultBranch = await getDefaultBranch(pi);
-        branches = await getBranches(pi, defaultBranch);
+        [currentBranch, defaultBranch] = await Promise.all([
+          getCurrentBranch(pi),
+          getDefaultBranch(pi),
+        ]);
+        branches = await getBranches(pi, { currentBranch, defaultBranch });
       }
+      const fallbackBranch = currentBranch ?? defaultBranch ?? "main";
       const selectedBaseBranch = await selectFuzzy(ctx, {
         title: "新しいブランチのベースブランチ",
         items:
@@ -166,12 +190,17 @@ async function collectCommitOptions(
             ? branches
             : [
                 {
-                  value: defaultBranch ?? "main",
-                  label: defaultBranch ?? "main",
-                  description: "フォールバック",
+                  value: fallbackBranch,
+                  label: fallbackBranch,
+                  description:
+                    fallbackBranch === currentBranch
+                      ? "現在のブランチ"
+                      : fallbackBranch === defaultBranch
+                        ? "デフォルトブランチ"
+                        : "フォールバック",
                 },
               ],
-        initialValue: baseBranch ?? defaultBranch,
+        initialValue: baseBranch ?? currentBranch ?? defaultBranch,
       });
       if (!selectedBaseBranch) {
         step = "branchMode";
