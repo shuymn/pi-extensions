@@ -58,14 +58,14 @@ function defaultExec(call: ExecCall): ExecResult {
   if (call.command === "git" && args === "ls-files --others --exclude-standard -z") {
     return { code: 0, stdout: "notes.txt\0", stderr: "" };
   }
-  if (call.command === "git" && args.startsWith("diff HEAD --")) {
+  if (call.command === "git" && args.startsWith("-c core.quotepath=false diff HEAD --")) {
     return {
       code: 0,
       stdout: "diff --git a/src/app.ts b/src/app.ts\n+changed\n",
       stderr: "",
     };
   }
-  if (call.command === "git" && args.startsWith("diff --cached --")) {
+  if (call.command === "git" && args.startsWith("-c core.quotepath=false diff --cached --")) {
     return {
       code: 0,
       stdout: "diff --git a/src/staged.ts b/src/staged.ts\n+staged\n",
@@ -267,12 +267,47 @@ describe("review extension", () => {
     expect(prompt).toContain("untracked notes");
   });
 
+  test("keeps non-ASCII paths readable in review diff context", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      const args = call.args.join(" ");
+      if (call.command === "git" && args === "diff --name-status -z")
+        return { code: 0, stdout: "M\0src/日本語ファイル.ts\0", stderr: "" };
+      if (call.command === "git" && args === "diff --cached --name-status -z")
+        return { code: 0, stdout: "", stderr: "" };
+      if (call.command === "git" && args === "ls-files --others --exclude-standard -z")
+        return { code: 0, stdout: "", stderr: "" };
+      if (
+        call.command === "git" &&
+        args === "-c core.quotepath=false diff HEAD -- src/日本語ファイル.ts"
+      ) {
+        return {
+          code: 0,
+          stdout: "diff --git a/src/日本語ファイル.ts b/src/日本語ファイル.ts\n+changed\n",
+          stderr: "",
+        };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected git ${args}` };
+    });
+    extension(pi as never);
+
+    await pi.tools.get("review")!.execute("call", {}, undefined, undefined, createRunContext());
+
+    const prompt = pi.sentMessages[0].message.content;
+    expect(prompt).toContain("src/日本語ファイル.ts");
+    expect(prompt).not.toContain("\\351");
+    expect(prompt).not.toContain("\\344");
+  });
+
   test("staged mode reviews only cached changes and reports no-target cases", async () => {
     const extension = await loadExtension();
     const pi = createFakePi((call) => {
       if (call.command === "git" && call.args.join(" ") === "diff --cached --name-status -z")
         return { code: 0, stdout: "A\0staged.ts\0", stderr: "" };
-      if (call.command === "git" && call.args.join(" ").startsWith("diff --cached --"))
+      if (
+        call.command === "git" &&
+        call.args.join(" ").startsWith("-c core.quotepath=false diff --cached --")
+      )
         return { code: 0, stdout: "+cached", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     });
@@ -284,7 +319,7 @@ describe("review extension", () => {
 
     expect(pi.execCalls.map((call) => call.args.join(" "))).toEqual([
       "diff --cached --name-status -z",
-      "diff --cached -- staged.ts",
+      "-c core.quotepath=false diff --cached -- staged.ts",
     ]);
     await shutdownAllRuns();
 

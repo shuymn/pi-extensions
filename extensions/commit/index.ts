@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
+import { readablePathGitArgs } from "../../lib/git";
 import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
 import { inputOptional, selectFuzzy } from "../../lib/tui";
 import {
@@ -259,7 +260,7 @@ async function getSelfAuthorPattern(pi: ExtensionAPI): Promise<string | undefine
 async function gitSnapshot(pi: ExtensionAPI): Promise<string> {
   const selfAuthorPattern = await getSelfAuthorPattern(pi);
   const commands: Array<[label: string, args: string[]]> = [
-    ["Status", ["status", "--short"]],
+    ["Status", readablePathGitArgs(["status", "--short"])],
     ["Branch", ["branch", "--show-current"]],
   ];
 
@@ -272,8 +273,8 @@ async function gitSnapshot(pi: ExtensionAPI): Promise<string> {
 
   commands.push(
     ["Recent All Commits (fallback for auto language)", ["log", "--format=%s", "-10"]],
-    ["Unstaged", ["diff", "--stat"]],
-    ["Staged", ["diff", "--cached", "--stat"]],
+    ["Unstaged", readablePathGitArgs(["diff", "--stat"])],
+    ["Staged", readablePathGitArgs(["diff", "--cached", "--stat"])],
   );
 
   const results = await Promise.all(

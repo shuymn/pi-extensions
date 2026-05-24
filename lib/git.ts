@@ -29,6 +29,10 @@ export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
+export function readablePathGitArgs(args: string[]): string[] {
+  return ["-c", "core.quotepath=false", ...args];
+}
+
 export function parseNameStatus(
   stdout: string,
   source: TargetSource,

@@ -4,6 +4,7 @@ import {
   collectChangedTargets,
   type ExecGit,
   isExplicitFileMode,
+  readablePathGitArgs,
   type Target,
   targetPathsForDiff,
   truncate,
@@ -96,13 +97,13 @@ async function collectReviewDiff(
       addDiffChunk(
         chunks,
         "Staged diff",
-        await execGit(["diff", "--cached", "--", ...trackedPaths]),
+        await execGit(readablePathGitArgs(["diff", "--cached", "--", ...trackedPaths])),
       );
     } else {
       addDiffChunk(
         chunks,
         "Combined diff against HEAD",
-        await execGit(["diff", "HEAD", "--", ...trackedPaths]),
+        await execGit(readablePathGitArgs(["diff", "HEAD", "--", ...trackedPaths])),
       );
     }
   }
@@ -174,11 +175,11 @@ async function collectSimplifyDiff(
 
   const chunks: string[] = [];
   if (staged) {
-    addDiffChunk(chunks, "Staged diff", await execGit(["diff", "--cached"]));
+    addDiffChunk(chunks, "Staged diff", await execGit(readablePathGitArgs(["diff", "--cached"])));
   } else {
     const [unstaged, cached] = await Promise.all([
-      execGit(["diff"]),
-      execGit(["diff", "--cached"]),
+      execGit(readablePathGitArgs(["diff"])),
+      execGit(readablePathGitArgs(["diff", "--cached"])),
     ]);
     addDiffChunk(chunks, "Unstaged diff", unstaged);
     addDiffChunk(chunks, "Staged diff", cached);

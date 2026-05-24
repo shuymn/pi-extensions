@@ -43,7 +43,7 @@ function defaultExec(call: ExecCall): ExecResult {
     return { code: 0, stdout: "  origin/main\n  origin/feature\n", stderr: "" };
   if (call.command === "git" && joined === "rev-parse --show-toplevel")
     return { code: 0, stdout: "/repo\n", stderr: "" };
-  if (call.command === "git" && joined === "status -sb")
+  if (call.command === "git" && joined === "-c core.quotepath=false status -sb")
     return {
       code: 0,
       stdout: "## feature...origin/feature [ahead 2]\n",
@@ -51,7 +51,10 @@ function defaultExec(call: ExecCall): ExecResult {
     };
   if (call.command === "git" && joined === "log origin/main..HEAD --oneline")
     return { code: 0, stdout: "abc123 feat: add api\n", stderr: "" };
-  if (call.command === "git" && joined === "diff --name-status origin/main..HEAD")
+  if (
+    call.command === "git" &&
+    joined === "-c core.quotepath=false diff --name-status origin/main..HEAD"
+  )
     return { code: 0, stdout: "M\tsrc/app.ts\n", stderr: "" };
   if (call.command === "git" && joined === "log --oneline -10")
     return {
@@ -59,7 +62,7 @@ function defaultExec(call: ExecCall): ExecResult {
       stdout: "abc123 feat: add api\ndef456 fix: bug\n",
       stderr: "",
     };
-  if (call.command === "git" && joined === "show --stat --oneline -5")
+  if (call.command === "git" && joined === "-c core.quotepath=false show --stat --oneline -5")
     return {
       code: 0,
       stdout: "abc123 feat: add api\n src/app.ts | 2 ++\n",
@@ -338,9 +341,9 @@ describe("create-pr extension", () => {
       ["git", "branch -r"],
       ["git", "symbolic-ref --quiet --short refs/remotes/origin/HEAD"],
       ["git", "rev-parse --show-toplevel"],
-      ["git", "status -sb"],
+      ["git", "-c core.quotepath=false status -sb"],
       ["git", "log origin/main..HEAD --oneline"],
-      ["git", "diff --name-status origin/main..HEAD"],
+      ["git", "-c core.quotepath=false diff --name-status origin/main..HEAD"],
     ]);
   });
 
@@ -487,7 +490,9 @@ describe("create-pr extension", () => {
       "for-each-ref --format=%(refname)%09%(refname:short) refs/heads refs/remotes",
     );
     expect(pi.execCalls.map((call) => call.args.join(" "))).toContain("log --oneline -10");
-    expect(pi.execCalls.map((call) => call.args.join(" "))).toContain("show --stat --oneline -5");
+    expect(pi.execCalls.map((call) => call.args.join(" "))).toContain(
+      "-c core.quotepath=false show --stat --oneline -5",
+    );
   });
 
   test("falls back to main when no branches are discoverable for create mode", async () => {

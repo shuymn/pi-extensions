@@ -67,7 +67,7 @@ describe("prepareTargetScope review policy", () => {
       if (key === "diff --cached --name-status -z") {
         return gitResult("R100\0old.ts\0new.ts\0M\0src/app.ts\0");
       }
-      if (key === "diff --cached -- old.ts new.ts src/app.ts") {
+      if (key === "-c core.quotepath=false diff --cached -- old.ts new.ts src/app.ts") {
         return gitResult("cached diff");
       }
       return gitResult("", 1, `unexpected ${key}`);
@@ -83,7 +83,7 @@ describe("prepareTargetScope review policy", () => {
 
     expect(calls.map((args) => args.join(" "))).toEqual([
       "diff --cached --name-status -z",
-      "diff --cached -- old.ts new.ts src/app.ts",
+      "-c core.quotepath=false diff --cached -- old.ts new.ts src/app.ts",
     ]);
     expect(scope.targets).toEqual([
       { path: "new.ts", oldPath: "old.ts", status: "R100", source: "diff" },
@@ -100,7 +100,8 @@ describe("prepareTargetScope review policy", () => {
       if (key === "diff --name-status -z") return gitResult("M\0src/app.ts\0");
       if (key === "diff --cached --name-status -z") return gitResult("A\0src/staged.ts\0");
       if (key === "ls-files --others --exclude-standard -z") return gitResult("notes.txt\0");
-      if (key === "diff HEAD -- src/app.ts src/staged.ts") return gitResult("combined diff");
+      if (key === "-c core.quotepath=false diff HEAD -- src/app.ts src/staged.ts")
+        return gitResult("combined diff");
       return gitResult("", 1, `unexpected ${key}`);
     });
 
@@ -116,7 +117,7 @@ describe("prepareTargetScope review policy", () => {
       "diff --name-status -z",
       "diff --cached --name-status -z",
       "ls-files --others --exclude-standard -z",
-      "diff HEAD -- src/app.ts src/staged.ts",
+      "-c core.quotepath=false diff HEAD -- src/app.ts src/staged.ts",
     ]);
     expect(scope.targets).toEqual([
       { path: "src/app.ts", status: "M", source: "diff" },
@@ -169,7 +170,7 @@ describe("prepareTargetScope review policy", () => {
       if (key === "diff --name-status -z") return gitResult("M\0src/app.ts\0");
       if (key === "diff --cached --name-status -z") return gitResult("");
       if (key === "ls-files --others --exclude-standard -z") return gitResult("");
-      if (key === "diff HEAD -- src/app.ts") return gitResult(longDiff);
+      if (key === "-c core.quotepath=false diff HEAD -- src/app.ts") return gitResult(longDiff);
       return gitResult("", 1, `unexpected ${key}`);
     });
 
@@ -214,7 +215,7 @@ describe("prepareTargetScope simplify policy", () => {
     const { execGit, calls } = createExecGit((args) => {
       const key = args.join(" ");
       if (key === "diff --cached --name-status -z") return gitResult("M\0staged-only.ts\0");
-      if (key === "diff --cached") return gitResult("cached diff only");
+      if (key === "-c core.quotepath=false diff --cached") return gitResult("cached diff only");
       return gitResult("", 1, `unexpected ${key}`);
     });
 
@@ -228,7 +229,7 @@ describe("prepareTargetScope simplify policy", () => {
 
     expect(calls.map((args) => args.join(" "))).toEqual([
       "diff --cached --name-status -z",
-      "diff --cached",
+      "-c core.quotepath=false diff --cached",
     ]);
     expect(scope.targets).toEqual([{ path: "staged-only.ts", status: "M", source: "diff" }]);
     expect(scope.diff).toBe("## Staged diff\n\ncached diff only");
@@ -241,8 +242,8 @@ describe("prepareTargetScope simplify policy", () => {
         return gitResult("M\0src/app.ts\0R100\0old.ts\0new.ts\0");
       if (key === "diff --cached --name-status -z") return gitResult("A\0src/staged.ts\0");
       if (key === "ls-files --others --exclude-standard -z") return gitResult("notes.txt\0");
-      if (key === "diff") return gitResult("unstaged diff");
-      if (key === "diff --cached") return gitResult("staged diff");
+      if (key === "-c core.quotepath=false diff") return gitResult("unstaged diff");
+      if (key === "-c core.quotepath=false diff --cached") return gitResult("staged diff");
       return gitResult("", 1, `unexpected ${key}`);
     });
 
@@ -258,8 +259,8 @@ describe("prepareTargetScope simplify policy", () => {
       "diff --name-status -z",
       "diff --cached --name-status -z",
       "ls-files --others --exclude-standard -z",
-      "diff",
-      "diff --cached",
+      "-c core.quotepath=false diff",
+      "-c core.quotepath=false diff --cached",
     ]);
     expect(scope.targets).toEqual([
       { path: "src/app.ts", status: "M", source: "diff" },
@@ -318,8 +319,8 @@ describe("prepareTargetScope simplify policy", () => {
       if (key === "diff --name-status -z") return gitResult("M\0src/app.ts\0");
       if (key === "diff --cached --name-status -z") return gitResult("");
       if (key === "ls-files --others --exclude-standard -z") return gitResult("");
-      if (key === "diff") return gitResult(longDiff);
-      if (key === "diff --cached") return gitResult("");
+      if (key === "-c core.quotepath=false diff") return gitResult(longDiff);
+      if (key === "-c core.quotepath=false diff --cached") return gitResult("");
       return gitResult("", 1, `unexpected ${key}`);
     });
 

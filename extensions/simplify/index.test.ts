@@ -54,10 +54,10 @@ function defaultExec(call: ExecCall): ExecResult {
   if (call.command === "git" && args === "ls-files --others --exclude-standard -z") {
     return { code: 0, stdout: "notes.txt\0", stderr: "" };
   }
-  if (call.command === "git" && args === "diff") {
+  if (call.command === "git" && args === "-c core.quotepath=false diff") {
     return { code: 0, stdout: "unstaged diff", stderr: "" };
   }
-  if (call.command === "git" && args === "diff --cached") {
+  if (call.command === "git" && args === "-c core.quotepath=false diff --cached") {
     return { code: 0, stdout: "staged diff", stderr: "" };
   }
   if (call.command === "git" && args === "ls-files -z") {
@@ -199,13 +199,45 @@ describe("simplify extension", () => {
       "diff --name-status -z",
       "diff --cached --name-status -z",
       "ls-files --others --exclude-standard -z",
-      "diff",
-      "diff --cached",
+      "-c core.quotepath=false diff",
+      "-c core.quotepath=false diff --cached",
     ]);
     const prompt = pi.sentMessages[0].message.content;
     expect(prompt).toContain("## Unstaged diff\n\nunstaged diff");
     expect(prompt).toContain("## Staged diff\n\nstaged diff");
     expect(prompt).toContain("- new.ts (R100; diff)");
+  });
+
+  test("keeps non-ASCII paths readable in simplify diff context", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      const args = call.args.join(" ");
+      if (args === "diff --name-status -z")
+        return { code: 0, stdout: "M\0src/日本語ファイル.ts\0", stderr: "" };
+      if (
+        args === "diff --cached --name-status -z" ||
+        args === "ls-files --others --exclude-standard -z"
+      )
+        return { code: 0, stdout: "", stderr: "" };
+      if (args === "-c core.quotepath=false diff") {
+        return {
+          code: 0,
+          stdout: "diff --git a/src/日本語ファイル.ts b/src/日本語ファイル.ts\n+changed\n",
+          stderr: "",
+        };
+      }
+      if (args === "-c core.quotepath=false diff --cached")
+        return { code: 0, stdout: "", stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    extension(pi as never);
+
+    await pi.tools.get("simplify")!.execute("call", {}, undefined, undefined, { cwd: "/repo" });
+
+    const prompt = pi.sentMessages[0].message.content;
+    expect(prompt).toContain("src/日本語ファイル.ts");
+    expect(prompt).not.toContain("\\351");
+    expect(prompt).not.toContain("\\344");
   });
 
   test("staged mode reviews only cached changes", async () => {
@@ -214,7 +246,8 @@ describe("simplify extension", () => {
       const args = call.args.join(" ");
       if (args === "diff --cached --name-status -z")
         return { code: 0, stdout: "M\0staged-only.ts\0", stderr: "" };
-      if (args === "diff --cached") return { code: 0, stdout: "cached diff only", stderr: "" };
+      if (args === "-c core.quotepath=false diff --cached")
+        return { code: 0, stdout: "cached diff only", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     });
     extension(pi as never);
@@ -230,7 +263,7 @@ describe("simplify extension", () => {
     });
     expect(pi.execCalls.map((call) => call.args.join(" "))).toEqual([
       "diff --cached --name-status -z",
-      "diff --cached",
+      "-c core.quotepath=false diff --cached",
     ]);
     expect(pi.sentMessages[0].message.content).toContain("## Staged diff\n\ncached diff only");
   });
@@ -315,8 +348,9 @@ describe("simplify extension", () => {
         args === "ls-files --others --exclude-standard -z"
       )
         return { code: 0, stdout: "", stderr: "" };
-      if (args === "diff") return { code: 0, stdout: longDiff, stderr: "" };
-      if (args === "diff --cached") return { code: 0, stdout: "", stderr: "" };
+      if (args === "-c core.quotepath=false diff") return { code: 0, stdout: longDiff, stderr: "" };
+      if (args === "-c core.quotepath=false diff --cached")
+        return { code: 0, stdout: "", stderr: "" };
       return { code: 1, stdout: "", stderr: "unexpected" };
     });
     extension(pi as never);

@@ -37,13 +37,16 @@ function defaultExec(call: ExecCall): ExecResult {
   }
   if (joined === "config --get user.email")
     return { code: 0, stdout: "dev@example.com\n", stderr: "" };
-  if (joined === "status --short") return { code: 0, stdout: " M src/app.ts\n", stderr: "" };
+  if (joined === "-c core.quotepath=false status --short")
+    return { code: 0, stdout: " M src/app.ts\n", stderr: "" };
   if (joined === "branch --show-current") return { code: 0, stdout: "feature\n", stderr: "" };
   if (joined === "log --author=dev@example\\.com --format=%s -10")
     return { code: 0, stdout: "feat: self commit\n", stderr: "" };
   if (joined === "log --format=%s -10") return { code: 0, stdout: "fix: all commit\n", stderr: "" };
-  if (joined === "diff --stat") return { code: 0, stdout: "src/app.ts | 2 +-\n", stderr: "" };
-  if (joined === "diff --cached --stat") return { code: 0, stdout: "", stderr: "" };
+  if (joined === "-c core.quotepath=false diff --stat")
+    return { code: 0, stdout: "src/app.ts | 2 +-\n", stderr: "" };
+  if (joined === "-c core.quotepath=false diff --cached --stat")
+    return { code: 0, stdout: "", stderr: "" };
   return { code: 1, stdout: "", stderr: `unexpected git args: ${joined}` };
 }
 
@@ -249,13 +252,40 @@ describe("commit extension", () => {
     );
     expect(pi.execCalls.map((call) => call.args.join(" "))).toEqual([
       "config --get user.email",
-      "status --short",
+      "-c core.quotepath=false status --short",
       "branch --show-current",
       "log --author=dev@example\\.com --format=%s -10",
       "log --format=%s -10",
-      "diff --stat",
-      "diff --cached --stat",
+      "-c core.quotepath=false diff --stat",
+      "-c core.quotepath=false diff --cached --stat",
     ]);
+  });
+
+  test("keeps non-ASCII paths readable in the initial git snapshot", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      if (call.args.join(" ") === "-c core.quotepath=false status --short") {
+        return { code: 0, stdout: " M docs/日本語ファイル.md\n", stderr: "" };
+      }
+      if (call.args.join(" ") === "-c core.quotepath=false diff --stat") {
+        return { code: 0, stdout: " docs/日本語ファイル.md | 16 +++++-\n", stderr: "" };
+      }
+      return defaultExec(call);
+    });
+    extension(pi as never);
+    pi.flags.set("commit", true);
+    const ctx = createContext([
+      { kind: "select", value: "japanese" },
+      { kind: "select", value: "no" },
+      { kind: "input", value: "" },
+    ]);
+
+    await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
+
+    const prompt = pi.sentUserMessages[0];
+    expect(prompt).toContain("M docs/日本語ファイル.md");
+    expect(prompt).toContain("docs/日本語ファイル.md | 16 +++++-");
+    expect(prompt).not.toContain("\\344\\275\\223");
   });
 
   test("reapplies active tools before agent start while workflow is active", async () => {

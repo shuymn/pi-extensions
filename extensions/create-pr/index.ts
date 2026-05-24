@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
+import { readablePathGitArgs } from "../../lib/git";
 import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
 import { inputOptional, selectFuzzy } from "../../lib/tui";
 import {
@@ -210,7 +211,7 @@ async function gitSnapshot(pi: ExtensionAPI, options: CreatePrOptions): Promise<
     ["Remote branches", ["branch", "-r"]],
     ["Default branch", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]],
     ["Repository root", ["rev-parse", "--show-toplevel"]],
-    ["Push status", ["status", "-sb"]],
+    ["Push status", readablePathGitArgs(["status", "-sb"])],
     [
       "Committed changes",
       options.mode === "create" ? ["log", baseRange, "--oneline"] : ["log", "--oneline", "-10"],
@@ -218,8 +219,8 @@ async function gitSnapshot(pi: ExtensionAPI, options: CreatePrOptions): Promise<
     [
       "Files changed",
       options.mode === "create"
-        ? ["diff", "--name-status", baseRange]
-        : ["show", "--stat", "--oneline", "-5"],
+        ? readablePathGitArgs(["diff", "--name-status", baseRange])
+        : readablePathGitArgs(["show", "--stat", "--oneline", "-5"]),
     ],
   ];
 
