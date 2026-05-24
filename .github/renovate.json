@@ -1,3 +1,9 @@
 {
-  "extends": ["github>shuymn/github-actions#main"]
+  "extends": ["github>shuymn/github-actions#main"],
+  "packageRules": [
+    {
+      "matchPackageNames": ["@earendil-works/pi-*"],
+      "groupName": "earendil-works pi packages"
+    }
+  ]
 }
