@@ -61,6 +61,7 @@ function additionalInstructionsSection(instructions: string): string {
     "<additional_user_instructions>",
     instructions,
     "</additional_user_instructions>",
+    "",
   ].join("\n");
 }
 
