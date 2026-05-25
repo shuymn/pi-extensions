@@ -24,6 +24,7 @@ export type ReviewRunSeed = {
   diff: string;
   phases: WorkflowPhase[];
   noFix: boolean;
+  base?: string;
   instructions: string;
 };
 

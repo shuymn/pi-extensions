@@ -1,8 +1,11 @@
 import { lstat, open, readFile, readlink, stat } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  branchDiffRange,
   collectChangedTargets,
   type ExecGit,
+  formatGitFailure,
+  formatPathForPrompt,
   isExplicitFileMode,
   readablePathGitArgs,
   type Target,
@@ -24,16 +27,13 @@ export type PrepareTargetScopeOptions = {
   cwd: string;
   files: string[];
   staged: boolean;
+  base?: string;
 };
 
 export type PreparedTargetScope = {
   targets: Target[];
   diff: string;
 };
-
-function formatPathForPrompt(path: string): string {
-  return JSON.stringify(path);
-}
 
 async function readTextPrefix(path: string, maxChars: number): Promise<string> {
   const file = await open(path, "r");
@@ -73,7 +73,7 @@ async function collectReviewUntrackedFileChunk(
 
     return `${heading}\n\n${truncate(content, REVIEW_MAX_UNTRACKED_FILE_CHARS)}`;
   } catch (error) {
-    return `## Untracked file: ${formatPathForPrompt(target.path)}\n\n[Could not read file: ${error instanceof Error ? error.message : String(error)}]`;
+    return `${heading}\n\n[Could not read file: ${error instanceof Error ? error.message : String(error)}]`;
   }
 }
 
@@ -81,10 +81,20 @@ function addDiffChunk(chunks: string[], label: string, result: Awaited<ReturnTyp
   if (result.code === 0 && result.stdout.trim()) chunks.push(`## ${label}\n\n${result.stdout}`);
 }
 
+function addRequiredDiffChunk(
+  chunks: string[],
+  label: string,
+  result: Awaited<ReturnType<ExecGit>>,
+): void {
+  if (result.code !== 0) throw new Error(formatGitFailure(`Collecting ${label}`, result));
+  addDiffChunk(chunks, label, result);
+}
+
 async function collectReviewDiff(
   execGit: ExecGit,
   cwd: string,
   staged: boolean,
+  base: string | undefined,
   targets: Target[],
 ): Promise<string> {
   if (isExplicitFileMode(targets)) return "";
@@ -93,7 +103,13 @@ async function collectReviewDiff(
   const trackedPaths = targetPathsForDiff(targets);
 
   if (trackedPaths.length > 0) {
-    if (staged) {
+    if (base) {
+      addRequiredDiffChunk(
+        chunks,
+        `Diff against ${JSON.stringify(base)}`,
+        await execGit(readablePathGitArgs(["diff", branchDiffRange(base), "--", ...trackedPaths])),
+      );
+    } else if (staged) {
       addDiffChunk(
         chunks,
         "Staged diff",
@@ -159,14 +175,17 @@ async function collectSimplifyTargets(
   cwd: string,
   files: string[],
   staged: boolean,
+  base: string | undefined,
 ): Promise<Target[]> {
-  const targets = await collectChangedTargets(execGit, { files, staged });
-  return targets.length > 0 ? targets : getSimplifyRecentTrackedFiles(execGit, cwd);
+  const targets = await collectChangedTargets(execGit, { files, staged, base });
+  if (targets.length > 0 || base) return targets;
+  return getSimplifyRecentTrackedFiles(execGit, cwd);
 }
 
 async function collectSimplifyDiff(
   execGit: ExecGit,
   staged: boolean,
+  base: string | undefined,
   targets: Target[],
 ): Promise<string> {
   if (isExplicitFileMode(targets) || targets.every((target) => target.source === "recent")) {
@@ -174,7 +193,13 @@ async function collectSimplifyDiff(
   }
 
   const chunks: string[] = [];
-  if (staged) {
+  if (base) {
+    addRequiredDiffChunk(
+      chunks,
+      `Diff against ${JSON.stringify(base)}`,
+      await execGit(readablePathGitArgs(["diff", branchDiffRange(base)])),
+    );
+  } else if (staged) {
     addDiffChunk(chunks, "Staged diff", await execGit(readablePathGitArgs(["diff", "--cached"])));
   } else {
     const [unstaged, cached] = await Promise.all([
@@ -195,11 +220,18 @@ export async function prepareTargetScope(
     const targets = await collectChangedTargets(options.execGit, {
       files: options.files,
       staged: options.staged,
+      base: options.base,
       preserveOldPath: true,
     });
     return {
       targets,
-      diff: await collectReviewDiff(options.execGit, options.cwd, options.staged, targets),
+      diff: await collectReviewDiff(
+        options.execGit,
+        options.cwd,
+        options.staged,
+        options.base,
+        targets,
+      ),
     };
   }
 
@@ -208,9 +240,10 @@ export async function prepareTargetScope(
     options.cwd,
     options.files,
     options.staged,
+    options.base,
   );
   return {
     targets,
-    diff: await collectSimplifyDiff(options.execGit, options.staged, targets),
+    diff: await collectSimplifyDiff(options.execGit, options.staged, options.base, targets),
   };
 }

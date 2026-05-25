@@ -5,6 +5,7 @@ import {
   type ExecGit,
   formatPlainTarget,
   isExplicitFileMode,
+  normalizeBaseBranch,
   shellQuote,
   type Target,
 } from "../../lib/git";
@@ -17,6 +18,7 @@ const TOOL_NAME = "simplify";
 type SimplifyOptions = {
   files: string[];
   staged: boolean;
+  base?: string;
   instructions: string;
 };
 
@@ -24,11 +26,15 @@ function parseArgs(args: string): SimplifyOptions {
   const parsed = parseCommandArgs({
     args,
     booleanFlags: ["--staged", "--cached"] as const,
+    valueFlags: ["--base"] as const,
   });
+  if (parsed.valueErrors["--base"]) throw new Error(parsed.valueErrors["--base"]);
+  const base = normalizeBaseBranch(parsed.values["--base"]);
 
   return {
     files: parsed.files,
     staged: parsed.flags["--staged"] || parsed.flags["--cached"],
+    base,
     instructions: parsed.instructions,
   };
 }
@@ -48,6 +54,7 @@ async function collectScope(
     cwd,
     files: options.files,
     staged: options.staged,
+    base: options.base,
   });
 }
 
@@ -67,13 +74,20 @@ function buildReviewPrompt(kind: ReviewKind, targetList: string, scopeInstructio
   return `${shared}\n\n${REVIEW_FOCUS[kind]}`;
 }
 
-function buildSimplifyPrompt(targets: Target[], diff: string, instructions: string): string {
+function buildSimplifyPrompt(
+  targets: Target[],
+  diff: string,
+  instructions: string,
+  base?: string,
+): string {
   const targetList = targets.map(formatPlainTarget).join("\n");
   const quotedTargets = targets.map((target) => shellQuote(target.path)).join(" ");
   const explicitFileMode = isExplicitFileMode(targets);
   const scopeInstruction = explicitFileMode
     ? "The user explicitly passed file path(s). Ignore repository git status/diffs for scope selection. Review each listed file as a whole-file target, and do not inspect unrelated changed files just because git status/diff shows them."
-    : "Inspect the target files and use git diff/status as needed to focus on the recent changes.";
+    : base
+      ? `Review the branch diff from ${JSON.stringify(`${base}...HEAD`)}. Treat only files changed in that base comparison as the target scope; do not include unrelated local working tree changes.`
+      : "Inspect the target files and use git diff/status as needed to focus on the recent changes.";
   const diffContext = explicitFileMode
     ? "[Explicit file mode: git diff is intentionally ignored; inspect the listed files directly as whole-file targets.]"
     : diff || "[No git diff available for these targets; inspect the listed files directly.]";
@@ -95,7 +109,7 @@ async function queueSimplifyPass(
   pi.sendMessage(
     {
       customType: "simplify-command",
-      content: buildSimplifyPrompt(targets, diff, options.instructions),
+      content: buildSimplifyPrompt(targets, diff, options.instructions, options.base),
       display: false,
     },
     { deliverAs: "followUp", triggerTurn: true },
@@ -133,7 +147,7 @@ export default function (pi: ExtensionAPI): void {
       "Queue a /simplify pass that reviews target files with reuse, quality, and efficiency subagents, then applies verified simplifications.",
     promptGuidelines: [
       "Use simplify when the user asks to simplify, clean up, reduce duplication, improve code reuse, or optimize recently changed code while preserving behavior.",
-      "Use simplify with explicit files when the user names file paths; otherwise let simplify target current git changes, or recent tracked files when there are no changes.",
+      "Use simplify with explicit files when the user names file paths; otherwise let simplify target current git changes, recent tracked files when there are no changes, or base when the user asks to simplify/review a branch against a base branch. Precedence is files over base over staged.",
     ],
     parameters: Type.Object({
       files: Type.Optional(
@@ -152,6 +166,12 @@ export default function (pi: ExtensionAPI): void {
           description: "When true and files is omitted, review only staged/cached git changes.",
         }),
       ),
+      base: Type.Optional(
+        Type.String({
+          description:
+            "Optional base branch. When files is omitted, review the diff from base...HEAD instead of local working tree changes or recent files. If staged is also true, base takes precedence.",
+        }),
+      ),
       instructions: Type.Optional(
         Type.String({
           description: "Additional user instructions for this simplify pass.",
@@ -162,6 +182,7 @@ export default function (pi: ExtensionAPI): void {
       const options: SimplifyOptions = {
         files: params.files ?? [],
         staged: params.staged ?? false,
+        base: normalizeBaseBranch(params.base),
         instructions: params.instructions?.trim() ?? "",
       };
       const targets = await queueSimplifyPass(pi, ctx.cwd, options);

@@ -5,7 +5,13 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parseCommandArgs } from "../../lib/command-args";
-import { type ExecGit, formatJsonTarget, type Target, truncate } from "../../lib/git";
+import {
+  type ExecGit,
+  formatJsonTarget,
+  normalizeBaseBranch,
+  type Target,
+  truncate,
+} from "../../lib/git";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
 import { prepareTargetScope } from "../../lib/target-scope";
 import { notifyIfUI } from "../../lib/tui";
@@ -62,6 +68,7 @@ type ReviewOptions = {
   files: string[];
   staged: boolean;
   noFix: boolean;
+  base?: string;
   instructions: string;
 };
 
@@ -69,12 +76,16 @@ function parseArgs(args: string): ReviewOptions {
   const parsed = parseCommandArgs({
     args,
     booleanFlags: ["--staged", "--cached", "--no-fix"] as const,
+    valueFlags: ["--base"] as const,
   });
+  if (parsed.valueErrors["--base"]) throw new Error(parsed.valueErrors["--base"]);
+  const base = normalizeBaseBranch(parsed.values["--base"]);
 
   return {
     files: parsed.files,
     staged: parsed.flags["--staged"] || parsed.flags["--cached"],
     noFix: parsed.flags["--no-fix"],
+    base,
     instructions: parsed.instructions,
   };
 }
@@ -94,6 +105,7 @@ async function collectScope(
     cwd,
     files: options.files,
     staged: options.staged,
+    base: options.base,
   });
 }
 
@@ -114,6 +126,7 @@ async function createReviewRun(
     diff,
     phases,
     noFix: options.noFix,
+    base: options.base,
     instructions: options.instructions,
   };
 }
@@ -187,6 +200,7 @@ function emitWorkflowLifecycleEvent(
     targets: run.targets,
     phaseCount: run.phases.length,
     noFix: run.noFix,
+    base: run.base,
     ...extra,
   };
 
@@ -303,7 +317,7 @@ export function createReviewExtension() {
       if (!decision) return;
 
       if (decision.kind === "completed") {
-        if (completingRun) emitWorkflowLifecycleEvent(pi, "completed", completingRun);
+        emitWorkflowLifecycleEvent(pi, "completed", completingRun);
         clearQueuedPhaseTimer();
         runStarting = false;
         clearReviewWidget(ctx);
@@ -381,7 +395,7 @@ export function createReviewExtension() {
         "Queue a /review pass that runs Recon, Hunt, Validate, Gapfill, Dedupe, Trace, Fix, and Verify stages before applying only validated fixes. Set noFix to produce a consolidated report without fixes.",
       promptGuidelines: [
         "Use review when the user asks for a code review workflow that should identify actionable issues, verify them, fix the valid ones, and run relevant checks.",
-        "Use review with explicit files when the user names file paths; otherwise let review target current git changes. Use staged when the user specifically asks to review staged/cached changes.",
+        "Use review with explicit files when the user names file paths; otherwise let review target current git changes. Use staged when the user specifically asks to review staged/cached changes, or base when the user asks to review a branch against a base branch. Precedence is files over base over staged.",
         "Use noFix when the user asks to report findings without fixing or editing files.",
       ],
       parameters: Type.Object({
@@ -398,6 +412,12 @@ export function createReviewExtension() {
         staged: Type.Optional(
           Type.Boolean({
             description: "When true and files is omitted, review only staged/cached git changes.",
+          }),
+        ),
+        base: Type.Optional(
+          Type.String({
+            description:
+              "Optional base branch. When files is omitted, review the diff from base...HEAD instead of local working tree changes. If staged is also true, base takes precedence.",
           }),
         ),
         noFix: Type.Optional(
@@ -429,6 +449,7 @@ export function createReviewExtension() {
           files: params.files ?? [],
           staged: params.staged ?? false,
           noFix: params.noFix ?? false,
+          base: normalizeBaseBranch(params.base),
           instructions: params.instructions?.trim() ?? "",
         };
         const creation = await createReviewRunWithStartGuard(pi, ctx.cwd, options);

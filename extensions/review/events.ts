@@ -31,6 +31,7 @@ export type ReviewWorkflowLifecycleEvent = ReviewWorkflowLifecycleEventHeader & 
   targets: Target[];
   phaseCount: number;
   noFix: boolean;
+  base?: string;
   reason?: string;
   error?: string;
 };

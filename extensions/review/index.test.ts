@@ -28,6 +28,7 @@ type ToolDefinition = {
       files?: string[];
       staged?: boolean;
       noFix?: boolean;
+      base?: string;
       instructions?: string;
     } & Record<string, unknown>,
     signal: AbortSignal | undefined,
@@ -168,6 +169,7 @@ describe("review extension", () => {
       properties: {
         files: { type: "array", optional: true },
         staged: { type: "boolean", optional: true },
+        base: { type: "string", optional: true },
         noFix: { type: "boolean", optional: true },
         instructions: { type: "string", optional: true },
       },
@@ -265,6 +267,120 @@ describe("review extension", () => {
     expect(prompt).toContain("## Combined diff against HEAD");
     expect(prompt).toContain('## Untracked file: "notes.txt"');
     expect(prompt).toContain("untracked notes");
+  });
+
+  test("base mode reviews branch diff against the selected base", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      const args = call.args.join(" ");
+      if (call.command === "git" && args === "diff --name-status -z main...HEAD") {
+        return { code: 0, stdout: "M\0src/app.ts\0A\0src/new.ts\0", stderr: "" };
+      }
+      if (
+        call.command === "git" &&
+        args === "-c core.quotepath=false diff main...HEAD -- src/app.ts src/new.ts"
+      ) {
+        return { code: 0, stdout: "branch diff", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected git ${args}` };
+    });
+    extension(pi as never);
+
+    const result = await pi.tools
+      .get("review")!
+      .execute("call", { base: " main " }, undefined, undefined, createRunContext());
+
+    expect(pi.execCalls.map((call) => call.args.join(" "))).toEqual([
+      "diff --name-status -z main...HEAD",
+      "-c core.quotepath=false diff main...HEAD -- src/app.ts src/new.ts",
+    ]);
+    expect(result.details.targets).toEqual([
+      { path: "src/app.ts", status: "M", source: "diff" },
+      { path: "src/new.ts", status: "A", source: "diff" },
+    ]);
+    const prompt = pi.sentMessages[0].message.content;
+    expect(prompt).toContain('Review the branch diff from "main...HEAD"');
+    expect(prompt).toContain('## Diff against "main"\n\nbranch diff');
+    expect(prompt).not.toContain("Combined diff against HEAD");
+    expect(pi.emittedEvents[0].data).toMatchObject({ base: "main" });
+  });
+
+  test("tool rejects unsafe base values before running git", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    await expect(
+      pi.tools
+        .get("review")!
+        .execute("call", { base: "main\n## injected" }, undefined, undefined, createRunContext()),
+    ).rejects.toThrow("Invalid base branch");
+    expect(pi.execCalls).toEqual([]);
+    expect(pi.sentMessages).toEqual([]);
+  });
+
+  test("base mode propagates git failures instead of reporting no targets", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      if (
+        call.command === "git" &&
+        call.args.join(" ") === "diff --name-status -z missing...HEAD"
+      ) {
+        return { code: 128, stdout: "", stderr: "bad revision" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    });
+    extension(pi as never);
+
+    await expect(
+      pi.tools
+        .get("review")!
+        .execute("call", { base: "missing" }, undefined, undefined, createRunContext()),
+    ).rejects.toThrow("Collecting branch diff targets for missing...HEAD failed");
+    expect(pi.sentMessages).toEqual([]);
+  });
+
+  test("base takes precedence over staged when files are omitted", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi((call) => {
+      const args = call.args.join(" ");
+      if (args === "diff --name-status -z main...HEAD") {
+        return { code: 0, stdout: "M\0src/app.ts\0", stderr: "" };
+      }
+      if (args === "-c core.quotepath=false diff main...HEAD -- src/app.ts") {
+        return { code: 0, stdout: "branch diff", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected git ${args}` };
+    });
+    extension(pi as never);
+
+    await pi.tools
+      .get("review")!
+      .execute("call", { base: "main", staged: true }, undefined, undefined, createRunContext());
+
+    expect(pi.execCalls.map((call) => call.args.join(" "))).toEqual([
+      "diff --name-status -z main...HEAD",
+      "-c core.quotepath=false diff main...HEAD -- src/app.ts",
+    ]);
+  });
+
+  test("explicit files take precedence over base and staged", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    await pi.tools
+      .get("review")!
+      .execute(
+        "call",
+        { files: ["src/app.ts"], base: "main", staged: true },
+        undefined,
+        undefined,
+        createRunContext(),
+      );
+
+    expect(pi.execCalls).toEqual([]);
+    expect(pi.sentMessages[0].message.content).toContain("Explicit file mode");
   });
 
   test("keeps non-ASCII paths readable in review diff context", async () => {

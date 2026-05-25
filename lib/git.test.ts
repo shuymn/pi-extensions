@@ -3,6 +3,7 @@ import {
   collectChangedTargets,
   type ExecGit,
   formatJsonTarget,
+  normalizeBaseBranch,
   formatPlainTarget,
   isExplicitFileMode,
   normalizeFileArg,
@@ -87,6 +88,45 @@ describe("git helpers", () => {
       { path: "docs/readme.md", status: "explicit", source: "explicit" },
     ]);
     expect(calls).toEqual([]);
+  });
+
+  test("validates base branch names", () => {
+    expect(normalizeBaseBranch(" origin/main ")).toBe("origin/main");
+    expect(normalizeBaseBranch(" ")).toBeUndefined();
+    for (const value of [
+      "-main",
+      "@main",
+      "main\n## injected",
+      "main..other",
+      "main^",
+      "main lock",
+    ]) {
+      expect(() => normalizeBaseBranch(value)).toThrow("Invalid base branch");
+    }
+  });
+
+  test("collects base branch targets only", async () => {
+    const calls: string[][] = [];
+    const execGit: ExecGit = async (args) => {
+      calls.push(args);
+      if (args.join(" ") === "diff --name-status -z main...HEAD") {
+        return { code: 0, stdout: "M\0src/app.ts\0", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+
+    await expect(
+      collectChangedTargets(execGit, { files: [], staged: false, base: "main" }),
+    ).resolves.toEqual([{ path: "src/app.ts", status: "M", source: "diff" }]);
+    expect(calls).toEqual([["diff", "--name-status", "-z", "main...HEAD"]]);
+  });
+
+  test("throws when base branch target collection fails", async () => {
+    const execGit: ExecGit = async () => ({ code: 128, stdout: "", stderr: "bad revision" });
+
+    await expect(
+      collectChangedTargets(execGit, { files: [], staged: false, base: "missing" }),
+    ).rejects.toThrow("Collecting branch diff targets for missing...HEAD failed");
   });
 
   test("collects staged targets only", async () => {

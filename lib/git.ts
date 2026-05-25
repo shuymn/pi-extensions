@@ -13,6 +13,7 @@ export type ExecGit = (args: string[]) => Promise<GitResult>;
 export type CollectChangedTargetsOptions = {
   files: string[];
   staged: boolean;
+  base?: string;
   preserveOldPath?: boolean;
 };
 
@@ -31,6 +32,44 @@ export function shellQuote(value: string): string {
 
 export function readablePathGitArgs(args: string[]): string[] {
   return ["-c", "core.quotepath=false", ...args];
+}
+
+function hasWhitespaceOrControl(value: string): boolean {
+  return [...value].some((char) => {
+    const code = char.charCodeAt(0);
+    return char.trim() === "" || code < 32 || code === 127;
+  });
+}
+
+export function normalizeBaseBranch(base: string | undefined): string | undefined {
+  const trimmed = base?.trim();
+  if (!trimmed) return undefined;
+  if (
+    trimmed.startsWith("-") ||
+    trimmed.startsWith("@") ||
+    hasWhitespaceOrControl(trimmed) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(trimmed) ||
+    trimmed.includes("..") ||
+    trimmed.includes("//") ||
+    trimmed.includes("@{") ||
+    trimmed.endsWith("/") ||
+    trimmed.endsWith(".") ||
+    trimmed.endsWith(".lock")
+  ) {
+    throw new Error(
+      "Invalid base branch. Use a branch/ref name such as main or origin/main; whitespace, control characters, leading '-'/'@', and revision syntax are not allowed.",
+    );
+  }
+  return trimmed;
+}
+
+export function branchDiffRange(base: string): string {
+  return `${base}...HEAD`;
+}
+
+export function formatGitFailure(context: string, result: GitResult): string {
+  const output = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n");
+  return `${context} failed with exit code ${result.code}${output ? `: ${truncate(output, 1000)}` : ""}`;
 }
 
 export function parseNameStatus(
@@ -85,7 +124,7 @@ function formatDetails(target: Target): string {
   return target.status === target.source ? target.status : `${target.status}; ${target.source}`;
 }
 
-function formatPathForPrompt(path: string): string {
+export function formatPathForPrompt(path: string): string {
   return JSON.stringify(path);
 }
 
@@ -125,7 +164,18 @@ export async function collectChangedTargets(
   const targets: Target[] = [];
   const parseOptions = { preserveOldPath: options.preserveOldPath ?? false };
 
-  if (options.staged) {
+  if (options.base) {
+    const branch = await execGit(["diff", "--name-status", "-z", branchDiffRange(options.base)]);
+    if (branch.code !== 0) {
+      throw new Error(
+        formatGitFailure(
+          `Collecting branch diff targets for ${branchDiffRange(options.base)}`,
+          branch,
+        ),
+      );
+    }
+    targets.push(...parseNameStatus(branch.stdout, "diff", parseOptions));
+  } else if (options.staged) {
     const staged = await execGit(["diff", "--cached", "--name-status", "-z"]);
     if (staged.code === 0) targets.push(...parseNameStatus(staged.stdout, "diff", parseOptions));
   } else {

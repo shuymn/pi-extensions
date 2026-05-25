@@ -61,6 +61,60 @@ describe("prepareTargetScope review policy", () => {
     });
   });
 
+  test("base mode preserves rename old paths and collects branch path-limited diff", async () => {
+    const { execGit, calls } = createExecGit((args) => {
+      const key = args.join(" ");
+      if (key === "diff --name-status -z main...HEAD") {
+        return gitResult("R100\0old.ts\0new.ts\0M\0src/app.ts\0");
+      }
+      if (key === "-c core.quotepath=false diff main...HEAD -- old.ts new.ts src/app.ts") {
+        return gitResult("branch diff");
+      }
+      return gitResult("", 1, `unexpected ${key}`);
+    });
+
+    const scope = await prepareTargetScope({
+      kind: "review",
+      execGit,
+      cwd: "/repo",
+      files: [],
+      staged: false,
+      base: "main",
+    });
+
+    expect(calls.map((args) => args.join(" "))).toEqual([
+      "diff --name-status -z main...HEAD",
+      "-c core.quotepath=false diff main...HEAD -- old.ts new.ts src/app.ts",
+    ]);
+    expect(scope.targets).toEqual([
+      { path: "new.ts", oldPath: "old.ts", status: "R100", source: "diff" },
+      { path: "src/app.ts", status: "M", source: "diff" },
+    ]);
+    expect(scope.diff).toBe('## Diff against "main"\n\nbranch diff');
+  });
+
+  test("base mode propagates branch path-limited diff failures", async () => {
+    const { execGit } = createExecGit((args) => {
+      const key = args.join(" ");
+      if (key === "diff --name-status -z main...HEAD") return gitResult("M\0src/app.ts\0");
+      if (key === "-c core.quotepath=false diff main...HEAD -- src/app.ts") {
+        return gitResult("", 128, "bad revision");
+      }
+      return gitResult("", 1, `unexpected ${key}`);
+    });
+
+    await expect(
+      prepareTargetScope({
+        kind: "review",
+        execGit,
+        cwd: "/repo",
+        files: [],
+        staged: false,
+        base: "main",
+      }),
+    ).rejects.toThrow('Collecting Diff against "main" failed');
+  });
+
   test("staged mode preserves rename old paths and collects cached path-limited diff", async () => {
     const { execGit, calls } = createExecGit((args) => {
       const key = args.join(" ");
@@ -209,6 +263,53 @@ describe("prepareTargetScope simplify policy", () => {
       ],
       diff: "",
     });
+  });
+
+  test("base mode collects branch targets and branch diff without recent fallback", async () => {
+    const { execGit, calls } = createExecGit((args) => {
+      const key = args.join(" ");
+      if (key === "diff --name-status -z main...HEAD") return gitResult("M\0src/app.ts\0");
+      if (key === "-c core.quotepath=false diff main...HEAD") return gitResult("branch diff");
+      return gitResult("", 1, `unexpected ${key}`);
+    });
+
+    const scope = await prepareTargetScope({
+      kind: "simplify",
+      execGit,
+      cwd: "/repo",
+      files: [],
+      staged: false,
+      base: "main",
+    });
+
+    expect(calls.map((args) => args.join(" "))).toEqual([
+      "diff --name-status -z main...HEAD",
+      "-c core.quotepath=false diff main...HEAD",
+    ]);
+    expect(scope.targets).toEqual([{ path: "src/app.ts", status: "M", source: "diff" }]);
+    expect(scope.diff).toBe('## Diff against "main"\n\nbranch diff');
+  });
+
+  test("base mode propagates simplify diff failures", async () => {
+    const { execGit } = createExecGit((args) => {
+      const key = args.join(" ");
+      if (key === "diff --name-status -z main...HEAD") return gitResult("M\0src/app.ts\0");
+      if (key === "-c core.quotepath=false diff main...HEAD") {
+        return gitResult("", 128, "bad revision");
+      }
+      return gitResult("", 1, `unexpected ${key}`);
+    });
+
+    await expect(
+      prepareTargetScope({
+        kind: "simplify",
+        execGit,
+        cwd: "/repo",
+        files: [],
+        staged: false,
+        base: "main",
+      }),
+    ).rejects.toThrow('Collecting Diff against "main" failed');
   });
 
   test("staged mode collects changed targets and cached diff", async () => {
