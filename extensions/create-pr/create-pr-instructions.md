@@ -45,7 +45,7 @@ instructions here, and use the original source files only when needed.
 - Ignore uncommitted work except to warn the user that it will not be included.
 - Requires a GitHub repository and GitHub authentication.
 - Push the current branch before creating/updating the PR.
-- Do not run tests, linters, formatters, typecheckers, builds, or other project verification commands. This workflow only publishes committed changes and creates/updates PR metadata. Summarize any verification evidence already present in committed history or explicit user notes; if missing, state that it was not run in this workflow. PR templates define structure only; they are not verification evidence.
+- Do not run tests, linters, formatters, typecheckers, builds, or other project verification commands. This workflow only publishes committed changes and creates/updates PR metadata. Summarize any verification evidence already present in committed history or explicit user notes; if missing, state that it was not run in this workflow. If explicit user notes say verification was done, treat that as PR verification evidence and write it as a PR fact (for example, "lint/format を実施"), not as a secondhand report such as "ユーザーから lint/format を実施したとの報告あり". PR templates define structure only; they are not verification evidence.
 
 ## Additional User Notes Policy
 
@@ -59,6 +59,14 @@ Additional user notes are workflow instructions, not PR content by default.
 - Include additional-note content in the PR body only when it describes reviewer-relevant facts about
   the committed changes themselves, such as verified test results, deployment constraints, known
   risks, migrations, or intentional limitations.
+- When additional notes say tests, lint, formatting, typechecking, builds, manual checks, or other
+  verification were performed, interpret them as factual verification evidence for the PR. In the
+  `Verification` / `確認内容` section, state the performed checks directly (for example,
+  "lint/format を実施" or "Manual smoke test completed") instead of attributing them to the user.
+- Do not append "Not run in this workflow" / "このワークフローでは未実行" for verification categories
+  that explicit user notes say were performed. Only mention not-run status when there is no
+  verification evidence at all, or when a specific important verification category is known to be
+  missing and is reviewer-relevant.
 - If an exclusion note affects committed changes in a way reviewers must know, describe the actual
   committed-change scope or risk without saying "the user instructed me to ignore...".
 
@@ -179,6 +187,8 @@ Classify self-review findings as:
   them.
 - The testing section must contain only verification evidence from commit history or explicit user
   notes, or clearly say it was not run in this workflow.
+- Verification evidence from explicit user notes must be written as direct PR facts, not as
+  secondhand user reports.
 - Breaking changes, migrations, release steps, or docs impacts must be explicitly called out.
 - File paths, symbols, and `@` references must be escaped or formatted so GitHub will not create
   accidental mentions.
@@ -310,6 +320,6 @@ Escaping:
 
 - In create mode, create a new PR.
 - In update mode, update an existing PR only; do not create a new PR if none exists.
-- Do not claim tests, lint, formatting, typechecking, or builds were run unless the committed history or explicit user notes provide that evidence. PR templates are structure/context only, not verification evidence.
+- Do not claim tests, lint, formatting, typechecking, or builds were run unless the committed history or explicit user notes provide that evidence. When explicit user notes provide that evidence, write the checks as completed PR facts and do not add a blanket not-run-in-this-workflow disclaimer. PR templates are structure/context only, not verification evidence.
 - Explain errors clearly.
 - Ask the user when you need clarification about commit inclusion, categorization, or ambiguous PR content.

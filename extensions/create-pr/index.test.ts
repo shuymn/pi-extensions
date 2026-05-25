@@ -315,6 +315,14 @@ describe("create-pr extension", () => {
     );
     expect(prompt).toContain("must not appear in `Verification` / `確認内容`");
     expect(prompt).toContain(
+      "When additional notes say tests, lint, formatting, typechecking, builds, manual checks",
+    );
+    expect(prompt).toContain("state the performed checks directly");
+    expect(prompt).toContain("instead of attributing them to the user");
+    expect(prompt).toContain(
+      'Do not append "Not run in this workflow" / "このワークフローでは未実行"',
+    );
+    expect(prompt).toContain(
       "Do not quote, paraphrase, or mention additional notes in the PR title/body",
     );
     expect(prompt).toContain(
@@ -339,10 +347,15 @@ describe("create-pr extension", () => {
     expect(prompt).toContain(
       "Existing verification evidence from committed history or explicit user notes",
     );
+    expect(prompt).toContain(
+      "Verification evidence from explicit user notes must be written as direct PR facts",
+    );
     expect(prompt).toContain("[If no evidence is available: Not run in this workflow]");
     expect(prompt).toContain("## 確認内容");
     expect(prompt).toContain("コミット履歴または明示的なユーザーメモにある既存の確認内容");
     expect(prompt).toContain("PR templates define structure only");
+    expect(prompt).toContain("write the checks as completed PR facts");
+    expect(prompt).toContain("do not add a blanket not-run-in-this-workflow disclaimer");
     expect(prompt).toContain("Google Engineering Practices as an on-demand reference");
     expect(prompt).toContain("Source: https://github.com/google/eng-practices (CC BY 3.0)");
     expect(prompt).toContain("/extensions/create-pr/references/eng-practices");
