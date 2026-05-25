@@ -6,7 +6,7 @@ function escapeClosingTag(content: string, tagName: string): string {
 }
 
 export function formatXmlLikeBlock(tagName: string, content: string): string {
-  return `<${tagName}>\n${escapeClosingTag(content, tagName)}\n</${tagName}>`;
+  return `<${tagName}>\n${escapeClosingTag(content, tagName)}\n</${tagName}>\n`;
 }
 
 export function formatAdditionalUserInstructionsBlock(content: string): string {
