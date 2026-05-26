@@ -26,7 +26,6 @@ Available extensions live under `extensions/`.
 - `research` — Run staged deep-research workflows and Tavily Research escalation.
 - `review` — Run the multi-phase code review workflow.
 - `session-title` — Generate a session title from the first user message.
-- `simplify` — Run simplification reviews over changed or recent code.
 - `statusline` — Replace the TUI footer with project, model, and context status.
 - `subagents` — Spawn isolated subagent sessions for delegated work.
 - `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.

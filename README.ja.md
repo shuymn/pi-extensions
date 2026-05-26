@@ -24,7 +24,6 @@ https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name> �
 - `research` — staged deep-research workflows と Tavily Research escalation を実行します。
 - `review` — multi-phase code review workflow を実行します。
 - `session-title` — 最初の user message から session title を生成します。
-- `simplify` — 変更済みまたは最近の code に対して simplification reviews を実行します。
 - `statusline` — TUI footer を project、model、context status 表示に置き換えます。
 - `subagents` — delegated work 用に isolated subagent sessions を起動します。
 - `tavily` — Tavily search、extract、map、crawl、auth tools を追加します。
