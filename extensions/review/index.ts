@@ -22,7 +22,7 @@ import {
   resetSandboxState,
 } from "../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
-import { prepareTargetScope } from "../../lib/target-scope";
+import { prepareTargetScope } from "./target-scope";
 import { notifyIfUI } from "../../lib/tui";
 import {
   REVIEW_WORKFLOW_EVENT_NAME,
@@ -110,7 +110,6 @@ async function collectScope(
   options: ReviewOptions,
 ): Promise<{ targets: Target[]; diff: string }> {
   return prepareTargetScope({
-    kind: "review",
     execGit: makeExecGit(pi, cwd),
     cwd,
     files: options.files,
