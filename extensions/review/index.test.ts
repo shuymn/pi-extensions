@@ -499,11 +499,7 @@ describe("review extension", () => {
         toolName: "bash",
         input: { command: "sed -n '1,120p' review/index.ts" },
       }),
-    ).resolves.toEqual({
-      block: true,
-      reason:
-        "/review investigation phases are read-only. This tool is allowed only in Fix and Verify phases.",
-    });
+    ).resolves.toBeUndefined();
     await expect(
       pi.getEventHandlers("tool_call")?.[0]({
         toolName: "edit",
@@ -680,11 +676,7 @@ describe("review extension", () => {
         toolName: "bash",
         input: { command: "echo hi" },
       }),
-    ).resolves.toEqual({
-      block: true,
-      reason:
-        "/review investigation phases are read-only. This tool is allowed only in Fix and Verify phases.",
-    });
+    ).resolves.toBeUndefined();
   });
 
   test("sendMessage failure clears active run during initial dispatch", async () => {
@@ -799,11 +791,7 @@ describe("review extension", () => {
         toolName: "bash",
         input: { command: "echo hi" },
       }),
-    ).resolves.toEqual({
-      block: true,
-      reason:
-        "/review --no-fix mode is read-only. This tool is not allowed while producing a report.",
-    });
+    ).resolves.toBeUndefined();
     await expect(
       pi.getEventHandlers("tool_call")?.[0]({
         toolName: "review_phase_artifact",

@@ -3,18 +3,25 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
+  createBashToolDefinition,
   DefaultResourceLoader,
   type ExtensionAPI,
   type ExtensionContext,
   getAgentDir,
   SessionManager,
   SettingsManager,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import {
+  createProtectedBashOperations,
+  type ExecFn,
+  resetSandboxState,
+} from "../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
 
 const DEFAULT_SUBAGENT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
-const READ_ONLY_SUBAGENT_TOOLS = ["read", "grep", "find", "ls"];
+const READ_ONLY_SUBAGENT_TOOLS = ["read", "grep", "find", "ls", "bash"];
 const DEFAULT_SUBAGENT_TOOL_LIST = formatToolList(DEFAULT_SUBAGENT_TOOLS);
 const READ_ONLY_SUBAGENT_TOOL_LIST = formatToolList(READ_ONLY_SUBAGENT_TOOLS);
 type SubagentStatus = "running" | "stopping" | "completed" | "error" | "stopped";
@@ -95,9 +102,18 @@ Operational rules:
 - Be concise but complete in your final answer.
 - Do not ask the parent agent to do work you can do yourself.
 - Do not call or simulate subagents recursively.
-${readOnly ? "- This subagent is read-only: do not edit files or run mutating shell commands.\n" : ""}
+${readOnly ? "- This subagent is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.\n" : ""}
 Working directory: ${cwd}
 </subagent_context>`;
+}
+
+function createProtectedBashToolDef(cwd: string, execFn: ExecFn): ToolDefinition {
+  const protectedOps = createProtectedBashOperations(execFn, cwd);
+  return {
+    ...createBashToolDefinition(cwd, { operations: protectedOps }),
+    name: "bash",
+    label: "bash",
+  } as ToolDefinition;
 }
 
 async function runSubagent(
@@ -125,6 +141,16 @@ async function runSubagent(
   });
   await loader.reload();
 
+  const execFn: ExecFn = (command, args, opts) =>
+    pi.exec(command, args, {
+      cwd: opts?.cwd ?? ctx.cwd,
+      timeout: opts?.timeout,
+    });
+
+  const customTools: ToolDefinition[] = readOnly
+    ? [createProtectedBashToolDef(ctx.cwd, execFn)]
+    : [];
+
   const { session } = await createAgentSession({
     cwd: ctx.cwd,
     agentDir,
@@ -134,6 +160,7 @@ async function runSubagent(
     model: ctx.model,
     thinkingLevel: pi.getThinkingLevel(),
     tools: readOnly ? READ_ONLY_SUBAGENT_TOOLS : DEFAULT_SUBAGENT_TOOLS,
+    customTools,
     resourceLoader: loader,
   });
 
@@ -185,7 +212,7 @@ export default function (pi: ExtensionAPI) {
       readOnly: Type.Optional(
         Type.Boolean({
           description:
-            "When true, run the subagent with read-only inspection tools, without shell or editing tools. Default: false.",
+            "When true, run the subagent with read-only inspection tools and sandboxed bash, without edit/write tools. Default: false.",
         }),
       ),
     }),
@@ -366,5 +393,6 @@ export default function (pi: ExtensionAPI) {
     await Promise.allSettled(activeRecords.map((record) => record.promise));
     for (const record of activeRecords) record.session?.dispose?.();
     records.clear();
+    await resetSandboxState();
   });
 }

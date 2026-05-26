@@ -1,26 +1,13 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
 let uuidCounter = 0;
 mock.module("node:crypto", () => ({
   randomUUID: () => `id${String(++uuidCounter).padStart(6, "0")}-0000-4000-8000-000000000000`,
+  randomBytes: (size: number) => Buffer.alloc(size),
 }));
 
-mock.module("typebox", () => {
-  const Type = {
-    Object: (properties: Record<string, unknown>, options = {}) => ({
-      type: "object",
-      properties,
-      ...options,
-    }),
-    String: (options = {}) => ({ type: "string", ...options }),
-    Boolean: (options = {}) => ({ type: "boolean", ...options }),
-    Optional: (schema: Record<string, unknown>) => ({
-      ...schema,
-      optional: true,
-    }),
-  };
-  return { Type };
-});
+installTypeboxMock();
 
 type Subscriber = (event: any) => void;
 type SessionBehavior = {
@@ -137,6 +124,14 @@ function createSession(behavior: SessionBehavior) {
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
   getAgentDir: () => "/agent-dir",
+  createBashToolDefinition: (_cwd: string, _options?: unknown) => ({
+    name: "bash",
+    label: "bash",
+    execute: async (..._args: unknown[]) => ({ content: [], details: undefined }),
+  }),
+  createLocalBashOperations: () => ({
+    exec: async (_command: string, _cwd: string, _options: unknown) => ({ exitCode: 0 }),
+  }),
   DefaultResourceLoader: class {
     options: unknown;
     reloaded = false;
@@ -186,6 +181,10 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
     createAgentSessionCalls.push(options);
     const loader = options.resourceLoader;
     loader.allowedTools = new Set(options.tools ?? []);
+    // Register custom tools via the same path as extension-factory registered tools
+    for (const customTool of options.customTools ?? []) {
+      loader.registeredTools.add(customTool.name);
+    }
     loader.activeTools = (options.tools ?? []).filter(
       (tool: string) => BUILTIN_TOOLS.has(tool) || loader.registeredTools.has(tool),
     );
@@ -355,18 +354,18 @@ describe("subagents extension", () => {
         createContext(),
       );
 
-    expect(createAgentSessionCalls[0].tools).toEqual(["read", "grep", "find", "ls"]);
-    expect(createdSessions[0].registeredTools).toEqual([]);
-    expect(createdSessions[0].activeTools).toEqual(["read", "grep", "find", "ls"]);
+    expect(createAgentSessionCalls[0].tools).toEqual(["read", "grep", "find", "ls", "bash"]);
+    expect(createdSessions[0].registeredTools).toEqual(["bash"]);
+    expect(createdSessions[0].activeTools).toEqual(["read", "grep", "find", "ls", "bash"]);
     expect(loaderInstances[0].options.extensionFactories).toEqual([]);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "This subagent is read-only: do not edit files or run mutating shell commands.",
+      "This subagent is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
       "Default subagents have read, grep, find, ls, bash, edit, and write.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Read-only subagents have read, grep, find, and ls only.",
+      "Read-only subagents have read, grep, find, ls, and bash only.",
     );
   });
 

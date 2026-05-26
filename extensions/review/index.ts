@@ -3,6 +3,10 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+  createBashToolDefinition,
+  createLocalBashOperations,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parseCommandArgs } from "../../lib/command-args";
 import {
@@ -12,6 +16,11 @@ import {
   type Target,
   truncate,
 } from "../../lib/git";
+import {
+  createProtectedBashOperations,
+  type ExecFn,
+  resetSandboxState,
+} from "../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
 import { prepareTargetScope } from "../../lib/target-scope";
 import { notifyIfUI } from "../../lib/tui";
@@ -39,6 +48,7 @@ const INVESTIGATION_ALLOWED_TOOLS = new Set([
   "grep",
   "find",
   "ls",
+  "bash",
   "spawn_subagent",
   "get_subagent_result",
   "list_subagents",
@@ -336,6 +346,7 @@ export function createReviewExtension() {
           reason: "session_shutdown",
         });
       clearActiveRun(ctx);
+      await resetSandboxState();
     });
 
     pi.registerCommand(COMMAND_NAME, {
@@ -386,6 +397,7 @@ export function createReviewExtension() {
       },
     });
 
+    // Register the review tool.
     pi.registerTool({
       name: TOOL_NAME,
       label: "Review",
@@ -485,6 +497,44 @@ export function createReviewExtension() {
           ],
           details: { runId: active.id, targets: active.targets },
         };
+      },
+    });
+
+    // Register a conditional bash tool override that sandboxes bash
+    // during read-only review phases.
+    const defaultBashTool = createBashToolDefinition(process.cwd());
+    pi.registerTool({
+      ...defaultBashTool,
+      name: "bash",
+      label: "bash",
+      async execute(toolCallId, params, signal, onUpdate, ctx) {
+        if (!workflow.isReadOnlyPhase()) {
+          const normalBashDef = createBashToolDefinition(ctx.cwd, {
+            operations: createLocalBashOperations(),
+          });
+          return normalBashDef.execute(toolCallId, params, signal, onUpdate, ctx);
+        }
+
+        const execFn: ExecFn = (command, args, opts) =>
+          pi.exec(command, args, {
+            cwd: opts?.cwd ?? ctx.cwd,
+            timeout: opts?.timeout,
+          });
+
+        const protectedOps = createProtectedBashOperations(execFn, ctx.cwd);
+        const protectedBashDef = createBashToolDefinition(ctx.cwd, {
+          operations: protectedOps,
+        });
+
+        try {
+          return await protectedBashDef.execute(toolCallId, params, signal, onUpdate, ctx);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          return {
+            content: [{ type: "text" as const, text: message }],
+            details: undefined,
+          };
+        }
       },
     });
   };

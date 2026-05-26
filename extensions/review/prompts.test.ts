@@ -43,10 +43,12 @@ describe("review prompt rendering", () => {
     );
   });
 
-  test("read-only phase prompt avoids shell-oriented inspection guidance", () => {
+  test("read-only phase prompt includes sandboxed bash guidance", () => {
     const prompt = buildPhasePrompt(run(), 0);
 
-    expect(prompt).toContain("do not edit files, write files, run shell commands");
+    expect(prompt).toContain(
+      "ask subagents to modify files. Bash commands are allowed but sandboxed",
+    );
     expect(prompt).toContain("Use read, grep, find, and ls for inspection.");
     expect(prompt).toContain('For quick inspection, target file paths are: "src/app.ts"');
     expect(prompt).not.toContain("target file shell arguments");

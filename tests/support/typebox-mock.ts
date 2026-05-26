@@ -30,6 +30,12 @@ export function installTypeboxMock() {
         ...options,
       }),
       Unsafe: (schema: Record<string, unknown>) => schema,
+      Record: (_keySchema: unknown, valueSchema: unknown, options = {}) => ({
+        type: "object",
+        additionalProperties: valueSchema,
+        ...options,
+      }),
+      Null: (options = {}) => ({ type: "null", ...options }),
     };
     return { Type };
   });
