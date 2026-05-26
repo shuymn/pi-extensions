@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { readablePathGitArgs } from "../../lib/git";
+import { getDefaultBranch, listBranches } from "../../lib/git-branch";
+import { buildGitSnapshot, type GitSnapshotEntry } from "../../lib/git-snapshot";
 import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
 import { inputOptional, selectFuzzy } from "../../lib/tui";
 import {
@@ -31,65 +33,6 @@ type CreatePrOptions = {
   baseBranch?: string;
   additionalNotes?: string;
 };
-
-async function getDefaultBranch(pi: ExtensionAPI): Promise<string | undefined> {
-  const symbolic = await pi
-    .exec("git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], {
-      timeout: 3000,
-    })
-    .catch(() => undefined);
-  if (symbolic?.code === 0) return symbolic.stdout.trim().replace(/^origin\//, "") || undefined;
-
-  for (const candidate of ["main", "master"]) {
-    const exists = await pi
-      .exec("git", ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`], {
-        timeout: 3000,
-      })
-      .catch(() => undefined);
-    if (exists?.code === 0) return candidate;
-  }
-
-  return undefined;
-}
-
-async function getBranches(pi: ExtensionAPI, defaultBranch?: string): Promise<SelectItem[]> {
-  const result = await pi
-    .exec(
-      "git",
-      ["for-each-ref", "--format=%(refname)%09%(refname:short)", "refs/heads", "refs/remotes"],
-      { timeout: 5000 },
-    )
-    .catch(() => undefined);
-
-  const seen = new Set<string>();
-  const branches = (result?.stdout ?? "")
-    .split("\n")
-    .map((line) => {
-      const [refname, shortName] = line.trim().split("\t");
-      return { refname, shortName };
-    })
-    .filter(({ refname, shortName }) => refname && shortName)
-    .filter(({ refname }) => !refname.endsWith("/HEAD"))
-    .map(({ shortName }) => shortName.replace(/^origin\//, ""))
-    .filter((branch) => branch !== "origin")
-    .filter((branch) => {
-      if (seen.has(branch)) return false;
-      seen.add(branch);
-      return true;
-    });
-
-  const sorted = branches.sort((a, b) => {
-    if (a === defaultBranch) return -1;
-    if (b === defaultBranch) return 1;
-    return a.localeCompare(b);
-  });
-
-  return sorted.map((branch) => ({
-    value: branch,
-    label: branch,
-    description: branch === defaultBranch ? "デフォルトブランチ" : undefined,
-  }));
-}
 
 async function collectAdditionalNotes(ctx: ExtensionContext): Promise<string | null | undefined> {
   return await inputOptional(ctx, {
@@ -158,7 +101,7 @@ async function collectCreatePrOptions(
     if (step === "baseBranch") {
       if (!branches) {
         defaultBranch = await getDefaultBranch(pi);
-        branches = await getBranches(pi, defaultBranch);
+        branches = await listBranches(pi, { defaultBranch });
       }
       const selectedBaseBranch = await selectFuzzy(ctx, {
         title: "Pull request のベースブランチ",
@@ -206,22 +149,28 @@ function optionsForPrompt(options: CreatePrOptions): string {
 async function gitSnapshot(pi: ExtensionAPI, options: CreatePrOptions): Promise<string> {
   const base = options.baseBranch ?? "<existing PR base>";
   const baseRange = `origin/${base}..HEAD`;
-  const commands: Array<[label: string, args: string[]]> = [
-    ["Current branch", ["branch", "--show-current"]],
-    ["Remote branches", ["branch", "-r"]],
-    ["Default branch", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]],
-    ["Repository root", ["rev-parse", "--show-toplevel"]],
-    ["Push status", readablePathGitArgs(["status", "-sb"])],
-    [
-      "Committed changes",
-      options.mode === "create" ? ["log", baseRange, "--oneline"] : ["log", "--oneline", "-10"],
-    ],
-    [
-      "Files changed",
-      options.mode === "create"
-        ? readablePathGitArgs(["diff", "--name-status", baseRange])
-        : readablePathGitArgs(["show", "--stat", "--oneline", "-5"]),
-    ],
+  const entries: GitSnapshotEntry[] = [
+    { label: "Current branch", args: ["branch", "--show-current"] },
+    { label: "Remote branches", args: ["branch", "-r"] },
+    {
+      label: "Default branch",
+      args: ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+      transform: (output) => output.replace(/^origin\//, "") || "No default branch",
+    },
+    { label: "Repository root", args: ["rev-parse", "--show-toplevel"] },
+    { label: "Push status", args: readablePathGitArgs(["status", "-sb"]) },
+    {
+      label: "Committed changes",
+      args:
+        options.mode === "create" ? ["log", baseRange, "--oneline"] : ["log", "--oneline", "-10"],
+    },
+    {
+      label: "Files changed",
+      args:
+        options.mode === "create"
+          ? readablePathGitArgs(["diff", "--name-status", baseRange])
+          : readablePathGitArgs(["show", "--stat", "--oneline", "-5"]),
+    },
   ];
 
   const templateCommand =
@@ -236,28 +185,14 @@ async function gitSnapshot(pi: ExtensionAPI, options: CreatePrOptions): Promise<
       stderr: error instanceof Error ? error.message : String(error),
     }));
 
-  const results = await Promise.all(
-    commands.map(async ([label, args]) => {
-      const result = await pi.exec("git", args, { timeout: 5000 }).catch((error: unknown) => ({
-        code: 1,
-        stdout: "",
-        stderr: error instanceof Error ? error.message : String(error),
-      }));
-      const output = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
-      const normalizedOutput =
-        label === "Default branch"
-          ? output.replace(/^origin\//, "") || "No default branch"
-          : output;
-      return `### ${label}\n${normalizedOutput || "(empty)"}`;
-    }),
-  );
+  const blocks = await buildGitSnapshot(pi, entries);
 
   const template = await templatePromise;
   const templateOutput =
     `${template.stdout}${template.stderr ? `\n${template.stderr}` : ""}`.trim();
-  results.push(`### PR template\n${templateOutput || "(empty)"}`);
+  blocks.push(`### PR template\n${templateOutput || "(empty)"}`);
 
-  return results.join("\n\n");
+  return blocks.join("\n\n");
 }
 
 export default function (pi: ExtensionAPI) {

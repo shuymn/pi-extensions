@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { readablePathGitArgs } from "../../lib/git";
+import { getCurrentBranch, getDefaultBranch, listBranches } from "../../lib/git-branch";
+import { buildGitSnapshot, type GitSnapshotEntry } from "../../lib/git-snapshot";
 import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
 import { inputOptional, selectFuzzy } from "../../lib/tui";
 import {
@@ -26,84 +28,6 @@ type CommitOptions = {
   baseBranch?: string;
   additionalNotes?: string;
 };
-
-async function getDefaultBranch(pi: ExtensionAPI): Promise<string | undefined> {
-  const symbolic = await pi
-    .exec("git", ["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], {
-      timeout: 3000,
-    })
-    .catch(() => undefined);
-  if (symbolic?.code === 0) return symbolic.stdout.trim().replace(/^origin\//, "") || undefined;
-
-  for (const candidate of ["main", "master"]) {
-    const exists = await pi
-      .exec("git", ["show-ref", "--verify", "--quiet", `refs/heads/${candidate}`], {
-        timeout: 3000,
-      })
-      .catch(() => undefined);
-    if (exists?.code === 0) return candidate;
-  }
-
-  return undefined;
-}
-
-async function getCurrentBranch(pi: ExtensionAPI): Promise<string | undefined> {
-  const result = await pi
-    .exec("git", ["branch", "--show-current"], { timeout: 3000 })
-    .catch(() => undefined);
-  if (result?.code !== 0) return undefined;
-  return result.stdout.trim() || undefined;
-}
-
-async function getBranches(
-  pi: ExtensionAPI,
-  options: { currentBranch?: string; defaultBranch?: string } = {},
-): Promise<SelectItem[]> {
-  const { currentBranch, defaultBranch } = options;
-  const result = await pi
-    .exec(
-      "git",
-      ["for-each-ref", "--format=%(refname)%09%(refname:short)", "refs/heads", "refs/remotes"],
-      { timeout: 5000 },
-    )
-    .catch(() => undefined);
-
-  const seen = new Set<string>();
-  const branches = (result?.stdout ?? "")
-    .split("\n")
-    .map((line) => {
-      const [refname, shortName] = line.trim().split("\t");
-      return { refname, shortName };
-    })
-    .filter(({ refname, shortName }) => refname && shortName)
-    .filter(({ refname }) => !refname.endsWith("/HEAD"))
-    .map(({ shortName }) => shortName.replace(/^origin\//, ""))
-    .filter((branch) => branch !== "origin")
-    .filter((branch) => {
-      if (seen.has(branch)) return false;
-      seen.add(branch);
-      return true;
-    });
-
-  const sorted = branches.sort((a, b) => {
-    if (a === currentBranch) return -1;
-    if (b === currentBranch) return 1;
-    if (a === defaultBranch) return -1;
-    if (b === defaultBranch) return 1;
-    return a.localeCompare(b);
-  });
-
-  return sorted.map((branch) => ({
-    value: branch,
-    label: branch,
-    description:
-      branch === currentBranch
-        ? "現在のブランチ"
-        : branch === defaultBranch
-          ? "デフォルトブランチ"
-          : undefined,
-  }));
-}
 
 async function collectAdditionalNotes(ctx: ExtensionContext): Promise<string | null | undefined> {
   return await inputOptional(ctx, {
@@ -181,7 +105,7 @@ async function collectCommitOptions(
           getCurrentBranch(pi),
           getDefaultBranch(pi),
         ]);
-        branches = await getBranches(pi, { currentBranch, defaultBranch });
+        branches = await listBranches(pi, { currentBranch, defaultBranch });
       }
       const fallbackBranch = currentBranch ?? defaultBranch ?? "main";
       const selectedBaseBranch = await selectFuzzy(ctx, {
@@ -259,37 +183,29 @@ async function getSelfAuthorPattern(pi: ExtensionAPI): Promise<string | undefine
 
 async function gitSnapshot(pi: ExtensionAPI): Promise<string> {
   const selfAuthorPattern = await getSelfAuthorPattern(pi);
-  const commands: Array<[label: string, args: string[]]> = [
-    ["Status", readablePathGitArgs(["status", "--short"])],
-    ["Branch", ["branch", "--show-current"]],
+  const entries: GitSnapshotEntry[] = [
+    { label: "Status", args: readablePathGitArgs(["status", "--short"]) },
+    { label: "Branch", args: ["branch", "--show-current"] },
   ];
 
   if (selfAuthorPattern) {
-    commands.push([
-      "Recent Self Commits (primary for auto language)",
-      ["log", `--author=${selfAuthorPattern}`, "--format=%s", "-10"],
-    ]);
+    entries.push({
+      label: "Recent Self Commits (primary for auto language)",
+      args: ["log", `--author=${selfAuthorPattern}`, "--format=%s", "-10"],
+    });
   }
 
-  commands.push(
-    ["Recent All Commits (fallback for auto language)", ["log", "--format=%s", "-10"]],
-    ["Unstaged", readablePathGitArgs(["diff", "--stat"])],
-    ["Staged", readablePathGitArgs(["diff", "--cached", "--stat"])],
+  entries.push(
+    {
+      label: "Recent All Commits (fallback for auto language)",
+      args: ["log", "--format=%s", "-10"],
+    },
+    { label: "Unstaged", args: readablePathGitArgs(["diff", "--stat"]) },
+    { label: "Staged", args: readablePathGitArgs(["diff", "--cached", "--stat"]) },
   );
 
-  const results = await Promise.all(
-    commands.map(async ([label, args]) => {
-      const result = await pi.exec("git", args, { timeout: 5000 }).catch((error: unknown) => ({
-        code: 1,
-        stdout: "",
-        stderr: error instanceof Error ? error.message : String(error),
-      }));
-      const output = `${result.stdout}${result.stderr ? `\n${result.stderr}` : ""}`.trim();
-      return `### ${label}\n${output || "(empty)"}`;
-    }),
-  );
-
-  return results.join("\n\n");
+  const blocks = await buildGitSnapshot(pi, entries);
+  return blocks.join("\n\n");
 }
 
 export default function (pi: ExtensionAPI) {
