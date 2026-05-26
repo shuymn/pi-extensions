@@ -7,10 +7,8 @@ import { formatAdditionalUserNotesBlock } from "../../lib/prompt";
 import { inputOptional, selectFuzzy } from "../../lib/tui";
 import {
   applyWorkflowActiveTools,
-  createWorkflowToolPolicyState,
   evaluateWorkflowToolCall,
   registerWorkflowTempFileTool,
-  resetWorkflowToolPolicyState,
 } from "../../lib/workflow-tool-policy";
 
 const ENG_PRACTICES_REFERENCE_ROOT = fileURLToPath(
@@ -265,7 +263,6 @@ async function gitSnapshot(pi: ExtensionAPI, options: CreatePrOptions): Promise<
 export default function (pi: ExtensionAPI) {
   let createPrWorkflowActive = false;
   let startupCreatePrLaunched = false;
-  const toolPolicyState = createWorkflowToolPolicyState();
 
   pi.registerFlag("create-pr", {
     description: "対話式の create-pr ワークフローを実行して pi を終了する",
@@ -315,7 +312,6 @@ export default function (pi: ExtensionAPI) {
         snapshot,
       ].join("\n\n");
 
-      resetWorkflowToolPolicyState(toolPolicyState);
       createPrWorkflowActive = true;
       registerWorkflowTempFileTool(pi, "create-pr");
       applyWorkflowActiveTools(pi, "create-pr");
@@ -323,7 +319,6 @@ export default function (pi: ExtensionAPI) {
       pi.sendUserMessage(prompt);
     } catch (error) {
       createPrWorkflowActive = false;
-      resetWorkflowToolPolicyState(toolPolicyState);
       if (workflowToolsApplied) pi.setActiveTools(previousActiveTools);
       const message = error instanceof Error ? error.message : String(error);
       notifyAndShutdown(ctx, `--create-pr の開始に失敗しました: ${message}`, "warning");
@@ -342,15 +337,14 @@ export default function (pi: ExtensionAPI) {
     applyWorkflowActiveTools(pi, "create-pr");
   });
 
-  pi.on("tool_call", async (event, ctx) => {
+  pi.on("tool_call", async (event) => {
     if (!createPrWorkflowActive) return undefined;
-    return evaluateWorkflowToolCall("create-pr", event, { ctx, state: toolPolicyState });
+    return evaluateWorkflowToolCall("create-pr", event);
   });
 
   pi.on("agent_end", async (_event, ctx) => {
     if (!createPrWorkflowActive) return;
     createPrWorkflowActive = false;
-    resetWorkflowToolPolicyState(toolPolicyState);
     ctx.shutdown();
   });
 }

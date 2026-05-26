@@ -1,24 +1,9 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   type CustomAction,
   createCustomDriver,
   installTuiMocks,
 } from "../../tests/support/tui-mocks";
-
-let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
-  content: [
-    {
-      type: "toolCall",
-      id: "call-1",
-      name: "workflow_shell_review_decision",
-      arguments: { decision: "deny", rationale: "denied by test reviewer" },
-    },
-  ],
-});
-
-mock.module("@earendil-works/pi-ai", () => ({
-  complete: (...args: unknown[]) => completeImpl(...args),
-}));
 
 const tuiInstances = installTuiMocks({
   codingAgent: {
@@ -122,14 +107,11 @@ function createFakePi(
   };
 }
 
-function createContext(
-  actions: CustomAction[],
-  options: { idle?: boolean; hasUI?: boolean; reviewerContext?: boolean } = {},
-) {
+function createContext(actions: CustomAction[], options: { idle?: boolean; hasUI?: boolean } = {}) {
   const notifications: Array<{ message: string; level: string }> = [];
   let shutdownCount = 0;
 
-  const ctx = {
+  return {
     notifications,
     get shutdownCount() {
       return shutdownCount;
@@ -146,17 +128,6 @@ function createContext(
       custom: createCustomDriver(actions, tuiInstances),
     },
   };
-
-  if (!options.reviewerContext) return ctx;
-
-  return Object.assign(ctx, {
-    cwd: "/repo",
-    signal: undefined,
-    modelRegistry: {
-      find: (provider: string, modelId: string) => ({ provider, id: modelId }),
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
-    },
-  });
 }
 
 async function loadExtension() {
@@ -432,8 +403,6 @@ describe("commit extension", () => {
       "git restore .",
       "echo ok && git reset --hard",
       "git checkout -- src/app.ts",
-      "git checkout -f main",
-      "git switch feature --discard-changes",
       "git clean -fd",
     ];
     for (const command of destructiveCommands) {
@@ -445,6 +414,13 @@ describe("commit extension", () => {
       expect(result?.reason).toContain("/commit extension によりブロックしました");
       expect(result?.reason).toContain("destructive git cleanup/reset commands");
     }
+
+    const switchDiscardResult = await pi.events.get("tool_call")![0]({
+      toolName: "bash",
+      input: { command: "git switch feature --discard-changes" },
+    });
+    expect(switchDiscardResult?.block).toBe(true);
+    expect(switchDiscardResult?.reason).toContain("--discard-changes is forbidden");
 
     await expect(
       pi.events.get("tool_call")![0]({
@@ -520,14 +496,8 @@ describe("commit extension", () => {
     for (const command of [
       "git commit --amend",
       "git commit --no-verify -m test",
-      "git switch main",
-      "git apply /tmp/change.patch",
       "git add -Av commit/index.ts",
       "git add -uv commit/index.ts",
-      "git status --short || git add commit/index.ts",
-      "git add commit/index.ts || git status --short",
-      "bun run test",
-      "npm run lint",
     ]) {
       await expect(
         pi.events.get("tool_call")![0]({
@@ -535,6 +505,21 @@ describe("commit extension", () => {
           input: { command },
         }),
       ).resolves.toMatchObject({ block: true });
+    }
+    for (const command of [
+      "git status --short || git add commit/index.ts",
+      "git add commit/index.ts || git status --short",
+      "bun run test",
+      "npm run lint",
+      "git switch main",
+      "git apply /tmp/change.patch",
+    ]) {
+      await expect(
+        pi.events.get("tool_call")![0]({
+          toolName: "bash",
+          input: { command },
+        }),
+      ).resolves.toBeUndefined();
     }
     await expect(
       pi.events.get("tool_call")![0]({
@@ -552,53 +537,6 @@ describe("commit extension", () => {
     const subagentEvent = { toolName: "spawn_subagent", input: {} };
     await expect(pi.events.get("tool_call")![0](subagentEvent)).resolves.toBeUndefined();
     expect(subagentEvent.input).toEqual({ readOnly: true });
-  });
-
-  test("uses automatic reviewer fallback for statically unknown commit shell commands", async () => {
-    const completeCalls: unknown[][] = [];
-    completeImpl = async (...args: unknown[]) => {
-      completeCalls.push(args);
-      return {
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "workflow_shell_review_decision",
-            arguments: { decision: "allow", rationale: "branch listing is safe inspection" },
-          },
-        ],
-      };
-    };
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    pi.flags.set("commit", true);
-    const ctx = createContext(
-      [
-        { kind: "select", value: "auto" },
-        { kind: "select", value: "no" },
-        { kind: "input", value: "" },
-      ],
-      { reviewerContext: true },
-    );
-    await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
-
-    await expect(
-      pi.events.get("tool_call")![0](
-        {
-          toolName: "bash",
-          input: { command: "git branch" },
-        },
-        ctx,
-      ),
-    ).resolves.toBeUndefined();
-
-    expect(completeCalls).toHaveLength(1);
-    const context = completeCalls[0]?.[1] as {
-      messages: Array<{ content: Array<{ text: string }> }>;
-    };
-    expect(context.messages[0]?.content[0]?.text).toContain('"workflow": "commit"');
-    expect(context.messages[0]?.content[0]?.text).toContain('"command": "git branch"');
   });
 
   test("restores active tools if prompt delivery fails", async () => {

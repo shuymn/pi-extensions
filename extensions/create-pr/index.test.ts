@@ -1,26 +1,11 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   type CustomAction,
   createCustomDriver,
   installTuiMocks,
 } from "../../tests/support/tui-mocks";
-
-let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
-  content: [
-    {
-      type: "toolCall",
-      id: "call-1",
-      name: "workflow_shell_review_decision",
-      arguments: { decision: "deny", rationale: "denied by test reviewer" },
-    },
-  ],
-});
-
-mock.module("@earendil-works/pi-ai", () => ({
-  complete: (...args: unknown[]) => completeImpl(...args),
-}));
 
 const tuiInstances = installTuiMocks();
 
@@ -154,14 +139,11 @@ function createFakePi(
   };
 }
 
-function createContext(
-  actions: CustomAction[],
-  options: { idle?: boolean; hasUI?: boolean; reviewerContext?: boolean } = {},
-) {
+function createContext(actions: CustomAction[], options: { idle?: boolean; hasUI?: boolean } = {}) {
   const notifications: Array<{ message: string; level: string }> = [];
   let shutdownCount = 0;
 
-  const ctx = {
+  return {
     notifications,
     get shutdownCount() {
       return shutdownCount;
@@ -178,17 +160,6 @@ function createContext(
       custom: createCustomDriver(actions, tuiInstances),
     },
   };
-
-  if (!options.reviewerContext) return ctx;
-
-  return Object.assign(ctx, {
-    cwd: "/repo",
-    signal: undefined,
-    modelRegistry: {
-      find: (provider: string, modelId: string) => ({ provider, id: modelId }),
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "test-key", headers: {} }),
-    },
-  });
 }
 
 async function loadExtension() {
@@ -488,10 +459,6 @@ describe("create-pr extension", () => {
       "git push --tags",
       "git push origin :main",
       "git push origin +HEAD",
-      "git status --short || git push origin HEAD",
-      "git push origin HEAD || git status --short",
-      "bun run test",
-      "npm run lint",
     ]) {
       await expect(
         pi.events.get("tool_call")![0]({
@@ -500,79 +467,26 @@ describe("create-pr extension", () => {
         }),
       ).resolves.toMatchObject({ block: true });
     }
-    await expect(
-      pi.events.get("tool_call")![0]({
-        toolName: "bash",
-        input: {
-          command: `gh pr create --title test --body-file ${WORKFLOW_BODY_FILE}`,
-        },
-      }),
-    ).resolves.toBeUndefined();
-    await expect(
-      pi.events.get("tool_call")![0]({
-        toolName: "bash",
-        input: { command: "gh pr create --fill" },
-      }),
-    ).resolves.toMatchObject({ block: true });
-    await expect(
-      pi.events.get("tool_call")![0]({
-        toolName: "bash",
-        input: {
-          command: `gh pr edit 1 --title test --body-file ${WORKFLOW_BODY_FILE}`,
-        },
-      }),
-    ).resolves.toBeUndefined();
+    for (const command of [
+      "git status --short || git push origin HEAD",
+      "git push origin HEAD || git status --short",
+      "bun run test",
+      "npm run lint",
+      `gh pr create --title test --body-file ${WORKFLOW_BODY_FILE}`,
+      "gh pr create --fill",
+      `gh pr edit 1 --title test --body-file ${WORKFLOW_BODY_FILE}`,
+    ]) {
+      await expect(
+        pi.events.get("tool_call")![0]({
+          toolName: "bash",
+          input: { command },
+        }),
+      ).resolves.toBeUndefined();
+    }
 
     const subagentEvent = { toolName: "spawn_subagent", input: {} };
     await expect(pi.events.get("tool_call")![0](subagentEvent)).resolves.toBeUndefined();
     expect(subagentEvent.input).toEqual({ readOnly: true });
-  });
-
-  test("uses automatic reviewer fallback for statically unknown create-pr shell commands", async () => {
-    const completeCalls: unknown[][] = [];
-    completeImpl = async (...args: unknown[]) => {
-      completeCalls.push(args);
-      return {
-        content: [
-          {
-            type: "toolCall",
-            id: "call-1",
-            name: "workflow_shell_review_decision",
-            arguments: { decision: "allow", rationale: "gh pr status only reads PR state" },
-          },
-        ],
-      };
-    };
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    pi.flags.set("create-pr", true);
-    const ctx = createContext(
-      [
-        { kind: "select", value: "english" },
-        { kind: "select", value: "update" },
-        { kind: "input", value: "" },
-      ],
-      { reviewerContext: true },
-    );
-    await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
-
-    await expect(
-      pi.events.get("tool_call")![0](
-        {
-          toolName: "bash",
-          input: { command: "gh pr status" },
-        },
-        ctx,
-      ),
-    ).resolves.toBeUndefined();
-
-    expect(completeCalls).toHaveLength(1);
-    const context = completeCalls[0]?.[1] as {
-      messages: Array<{ content: Array<{ text: string }> }>;
-    };
-    expect(context.messages[0]?.content[0]?.text).toContain('"workflow": "create-pr"');
-    expect(context.messages[0]?.content[0]?.text).toContain('"command": "gh pr status"');
   });
 
   test("update mode skips base branch selection and snapshots existing PR context", async () => {
