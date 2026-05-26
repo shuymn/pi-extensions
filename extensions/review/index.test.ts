@@ -122,6 +122,21 @@ async function loadExtension() {
   return createReviewExtension();
 }
 
+async function setupReviewTest(execHandler?: (call: ExecCall) => ExecResult | Promise<ExecResult>) {
+  const extension = await loadExtension();
+  const pi = createFakePi(execHandler);
+  extension(pi as never);
+  return pi;
+}
+
+async function advancePhase(pi: FakePi, ctx: FakeRunContext, content: unknown = "done") {
+  // Yield to the timer-based phase dispatch inside the review extension.
+  // The extension's setTimeout is queued during the agent_end handler, so
+  // setTimeout(0) is guaranteed to fire after it (macrotask FIFO ordering).
+  await pi.getEventHandlers("agent_end")?.[0]({ messages: [{ role: "assistant", content }] }, ctx);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -149,10 +164,7 @@ afterEach(async () => {
 
 describe("review extension", () => {
   test("registers command and tool with schema and guidance", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-
-    extension(pi as never);
+    const pi = await setupReviewTest();
 
     expect([...pi.commands.keys()]).toEqual(["review"]);
     expect(pi.commands.get("review")?.description).toContain("multi-stage code review workflow");
@@ -200,9 +212,7 @@ describe("review extension", () => {
   });
 
   test("tool explicit-file mode queues the first phase without inspecting git status", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createRunContext();
 
     const result = await pi.tools
@@ -247,11 +257,9 @@ describe("review extension", () => {
   });
 
   test("tool collects unstaged, staged, renamed, and untracked targets with diff context", async () => {
-    const extension = await loadExtension();
     const cwd = await createTempDir();
     await writeFile(join(cwd, "notes.txt"), "untracked notes");
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createRunContext(cwd);
 
     const result = await pi.tools.get("review")!.execute("call", {}, undefined, undefined, ctx);
@@ -270,8 +278,7 @@ describe("review extension", () => {
   });
 
   test("base mode reviews branch diff against the selected base", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi((call) => {
+    const pi = await setupReviewTest((call) => {
       const args = call.args.join(" ");
       if (call.command === "git" && args === "diff --name-status -z main...HEAD") {
         return { code: 0, stdout: "M\0src/app.ts\0A\0src/new.ts\0", stderr: "" };
@@ -284,7 +291,6 @@ describe("review extension", () => {
       }
       return { code: 1, stdout: "", stderr: `unexpected git ${args}` };
     });
-    extension(pi as never);
 
     const result = await pi.tools
       .get("review")!
@@ -306,9 +312,7 @@ describe("review extension", () => {
   });
 
   test("tool rejects unsafe base values before running git", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
 
     await expect(
       pi.tools
@@ -320,8 +324,7 @@ describe("review extension", () => {
   });
 
   test("base mode propagates git failures instead of reporting no targets", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi((call) => {
+    const pi = await setupReviewTest((call) => {
       if (
         call.command === "git" &&
         call.args.join(" ") === "diff --name-status -z missing...HEAD"
@@ -330,7 +333,6 @@ describe("review extension", () => {
       }
       return { code: 1, stdout: "", stderr: "unexpected" };
     });
-    extension(pi as never);
 
     await expect(
       pi.tools
@@ -341,8 +343,7 @@ describe("review extension", () => {
   });
 
   test("base takes precedence over staged when files are omitted", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi((call) => {
+    const pi = await setupReviewTest((call) => {
       const args = call.args.join(" ");
       if (args === "diff --name-status -z main...HEAD") {
         return { code: 0, stdout: "M\0src/app.ts\0", stderr: "" };
@@ -352,7 +353,6 @@ describe("review extension", () => {
       }
       return { code: 1, stdout: "", stderr: `unexpected git ${args}` };
     });
-    extension(pi as never);
 
     await pi.tools
       .get("review")!
@@ -365,9 +365,7 @@ describe("review extension", () => {
   });
 
   test("explicit files take precedence over base and staged", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
 
     await pi.tools
       .get("review")!
@@ -384,8 +382,7 @@ describe("review extension", () => {
   });
 
   test("keeps non-ASCII paths readable in review diff context", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi((call) => {
+    const pi = await setupReviewTest((call) => {
       const args = call.args.join(" ");
       if (call.command === "git" && args === "diff --name-status -z")
         return { code: 0, stdout: "M\0src/日本語ファイル.ts\0", stderr: "" };
@@ -405,7 +402,6 @@ describe("review extension", () => {
       }
       return { code: 1, stdout: "", stderr: `unexpected git ${args}` };
     });
-    extension(pi as never);
 
     await pi.tools.get("review")!.execute("call", {}, undefined, undefined, createRunContext());
 
@@ -416,8 +412,7 @@ describe("review extension", () => {
   });
 
   test("staged mode reviews only cached changes and reports no-target cases", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi((call) => {
+    const pi = await setupReviewTest((call) => {
       if (call.command === "git" && call.args.join(" ") === "diff --cached --name-status -z")
         return { code: 0, stdout: "A\0staged.ts\0", stderr: "" };
       if (
@@ -427,7 +422,6 @@ describe("review extension", () => {
         return { code: 0, stdout: "+cached", stderr: "" };
       return { code: 0, stdout: "", stderr: "" };
     });
-    extension(pi as never);
 
     await pi.tools
       .get("review")
@@ -439,8 +433,7 @@ describe("review extension", () => {
     ]);
     await shutdownAllRuns();
 
-    const emptyPi = createFakePi(() => ({ code: 0, stdout: "", stderr: "" }));
-    extension(emptyPi as never);
+    const emptyPi = await setupReviewTest(() => ({ code: 0, stdout: "", stderr: "" }));
     const result = await emptyPi.tools
       .get("review")
       ?.execute("call", {}, undefined, undefined, createRunContext());
@@ -458,9 +451,7 @@ describe("review extension", () => {
   });
 
   test("read-only phases block mutating tools and force subagents to read-only", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     await pi.tools
       .get("review")
       ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, createRunContext());
@@ -513,26 +504,13 @@ describe("review extension", () => {
   });
 
   test("agent_end stores phase notes, advances phases, and completes workflow", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createRunContext();
     await pi.tools
       .get("review")
       ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
 
-    await pi.getEventHandlers("agent_end")?.[0](
-      {
-        messages: [
-          {
-            role: "assistant",
-            content: [{ type: "text", text: "recon notes" }],
-          },
-        ],
-      },
-      ctx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await advancePhase(pi, ctx, [{ type: "text", text: "recon notes" }]);
 
     expect(pi.sentMessages).toHaveLength(2);
     expect(pi.sentMessages[1].message.details.phase).toBe("02-hunt.md");
@@ -548,11 +526,7 @@ describe("review extension", () => {
     });
 
     for (let index = 2; index <= 9; index += 1) {
-      await pi.getEventHandlers("agent_end")?.[0](
-        { messages: [{ role: "assistant", content: `phase ${index} done` }] },
-        ctx,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await advancePhase(pi, ctx, `phase ${index} done`);
     }
 
     expect(ctx.ui.notifications.at(-1)?.message).toMatch(
@@ -578,9 +552,7 @@ describe("review extension", () => {
   });
 
   test("gapfill control can loop back to hunt but is capped", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createRunContext();
     await pi.tools
       .get("review")
@@ -588,72 +560,38 @@ describe("review extension", () => {
 
     // Finish Recon, Hunt, Validate, then Gapfill with continue_hunt.
     for (const text of ["recon", "hunt", "validate"]) {
-      await pi.getEventHandlers("agent_end")?.[0](
-        { messages: [{ role: "assistant", content: text }] },
-        ctx,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await advancePhase(pi, ctx, text);
     }
-    await pi.getEventHandlers("agent_end")?.[0](
-      {
-        messages: [
-          {
-            role: "assistant",
-            content:
-              '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
-          },
-        ],
-      },
+    await advancePhase(
+      pi,
       ctx,
+      '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
     );
-    await new Promise((resolve) => setTimeout(resolve, 5));
 
     expect(pi.sentMessages.at(-1)?.message.details.phase).toBe("02-hunt.md");
 
     // Second gapfill loop is still allowed; third one advances to Dedupe.
     for (const expected of ["02-hunt.md", "05-dedupe.md"]) {
-      await pi.getEventHandlers("agent_end")?.[0](
-        { messages: [{ role: "assistant", content: "hunt again" }] },
+      await advancePhase(pi, ctx, "hunt again");
+      await advancePhase(pi, ctx, "validate again");
+      await advancePhase(
+        pi,
         ctx,
+        '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
       );
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      await pi.getEventHandlers("agent_end")?.[0](
-        { messages: [{ role: "assistant", content: "validate again" }] },
-        ctx,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      await pi.getEventHandlers("agent_end")?.[0](
-        {
-          messages: [
-            {
-              role: "assistant",
-              content:
-                '## Follow-up Hunt focus\n\nCheck q.\n\n<review_control>{"continue_hunt":true}</review_control>',
-            },
-          ],
-        },
-        ctx,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 5));
       expect(pi.sentMessages.at(-1)?.message.details.phase).toBe(expected);
     }
   });
 
   test("normal-mode verify phase permits mutating tools and summary phase is read-only", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createRunContext();
     await pi.tools
       .get("review")
       ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
 
     for (let index = 1; index <= 7; index += 1) {
-      await pi.getEventHandlers("agent_end")?.[0](
-        { messages: [{ role: "assistant", content: `phase ${index}` }] },
-        ctx,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await advancePhase(pi, ctx, `phase ${index}`);
     }
 
     expect(pi.sentMessages.at(-1)?.message.details.phase).toBe("08-verify.md");
@@ -664,11 +602,7 @@ describe("review extension", () => {
       }),
     ).resolves.toBeUndefined();
 
-    await pi.getEventHandlers("agent_end")?.[0](
-      { messages: [{ role: "assistant", content: "phase 8" }] },
-      ctx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await advancePhase(pi, ctx, "phase 8");
 
     expect(pi.sentMessages.at(-1)?.message.details.phase).toBe("09-summary.md");
     await expect(
@@ -680,14 +614,11 @@ describe("review extension", () => {
   });
 
   test("sendMessage failure clears active run during initial dispatch", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const originalSendMessage = pi.sendMessage;
+    const pi = await setupReviewTest();
+    const ctx = createRunContext();
     pi.sendMessage = () => {
       throw new Error("send failed");
     };
-    const ctx = createRunContext();
 
     await expect(
       pi.tools.get("review")?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx),
@@ -715,18 +646,10 @@ describe("review extension", () => {
       noFix: false,
       error: "send failed",
     });
-
-    pi.sendMessage = originalSendMessage;
-    const retry = await pi.tools
-      .get("review")
-      ?.execute("call", { files: ["src/retry.ts"] }, undefined, undefined, createRunContext());
-    expect(retry?.content[0].text).toContain("Queued review workflow");
   });
 
-  test("sendMessage failure clears active run during timer dispatch", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+  test("sendMessage failure clears active run during timer dispatch and allows retry", async () => {
+    const pi = await setupReviewTest();
     const ctx = createRunContext();
     await pi.tools
       .get("review")
@@ -736,11 +659,7 @@ describe("review extension", () => {
     pi.sendMessage = () => {
       throw new Error("send failed");
     };
-    await pi.getEventHandlers("agent_end")?.[0](
-      { messages: [{ role: "assistant", content: "recon" }] },
-      ctx,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 5));
+    await advancePhase(pi, ctx, "recon");
 
     expect(ctx.ui.notifications).toContainEqual({
       message: "/review: 次の phase をキューに追加できませんでした。",
@@ -773,9 +692,7 @@ describe("review extension", () => {
   });
 
   test("no-fix mode skips fix phases and keeps every phase read-only", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createRunContext();
 
     await pi.tools
@@ -804,11 +721,7 @@ describe("review extension", () => {
     });
 
     for (let index = 1; index <= 6; index += 1) {
-      await pi.getEventHandlers("agent_end")?.[0](
-        { messages: [{ role: "assistant", content: `phase ${index}` }] },
-        ctx,
-      );
-      await new Promise((resolve) => setTimeout(resolve, 5));
+      await advancePhase(pi, ctx, `phase ${index}`);
     }
 
     expect(pi.sentMessages.at(-1)?.message.details.phase).toBe("09-summary.md");
@@ -818,11 +731,10 @@ describe("review extension", () => {
   });
 
   test("pending command startup does not queue a phase after cancellation", async () => {
-    const extension = await loadExtension();
     const delayedStatus = deferred<ExecResult>();
     const reachedStatus = deferred<void>();
     let delayed = false;
-    const pi = createFakePi((call) => {
+    const pi = await setupReviewTest((call) => {
       if (!delayed && call.command === "git" && call.args.join(" ") === "diff --name-status -z") {
         delayed = true;
         reachedStatus.resolve();
@@ -830,7 +742,6 @@ describe("review extension", () => {
       }
       return defaultExec(call);
     });
-    extension(pi as never);
     const ctx = createCommandContext();
 
     const startup = pi.commands.get("review")!.handler("", ctx);
@@ -849,9 +760,7 @@ describe("review extension", () => {
   });
 
   test("command passes additional instructions after -- into the first phase prompt", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createCommandContext();
 
     await pi.commands
@@ -868,9 +777,7 @@ describe("review extension", () => {
   });
 
   test("tool passes additional instructions into the first phase prompt", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
 
     await pi.tools
       .get("review")!
@@ -889,9 +796,7 @@ describe("review extension", () => {
   });
 
   test("command supports explicit args, busy guard, and cancellation", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
+    const pi = await setupReviewTest();
     const ctx = createCommandContext();
 
     await pi.commands.get("review")?.handler("--no-fix @src/app.ts", ctx);
