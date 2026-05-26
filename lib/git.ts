@@ -1,4 +1,4 @@
-export type TargetSource = "diff" | "explicit" | "recent";
+export type TargetSource = "diff" | "explicit";
 
 export type Target = {
   path: string;
@@ -24,10 +24,6 @@ export function normalizeFileArg(file: string): string {
 export function truncate(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   return `${text.slice(0, maxChars)}\n\n[diff truncated at ${maxChars} chars; inspect files directly before editing]`;
-}
-
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function readablePathGitArgs(args: string[]): string[] {
@@ -133,10 +129,6 @@ export function formatJsonTarget(target: Target): string {
     ? `${formatPathForPrompt(target.oldPath)} -> ${formatPathForPrompt(target.path)}`
     : formatPathForPrompt(target.path);
   return `- ${path} (${formatDetails(target)})`;
-}
-
-export function formatPlainTarget(target: Target): string {
-  return `- ${target.path} (${formatDetails(target)})`;
 }
 
 export function targetPathsForDiff(targets: Target[]): string[] {

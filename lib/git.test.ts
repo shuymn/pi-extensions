@@ -4,11 +4,9 @@ import {
   type ExecGit,
   formatJsonTarget,
   normalizeBaseBranch,
-  formatPlainTarget,
   isExplicitFileMode,
   normalizeFileArg,
   parseNameStatus,
-  shellQuote,
   targetPathsForDiff,
   truncate,
   uniqueTargets,
@@ -50,7 +48,7 @@ describe("git helpers", () => {
     ).toBe(true);
   });
 
-  test("formats targets for review and simplify prompts", () => {
+  test("formats targets for review prompts", () => {
     expect(
       formatJsonTarget({
         path: "new.ts",
@@ -59,13 +57,9 @@ describe("git helpers", () => {
         source: "diff",
       }),
     ).toBe('- "old.ts" -> "new.ts" (R100; diff)');
-    expect(formatPlainTarget({ path: "new.ts", status: "R100", source: "diff" })).toBe(
-      "- new.ts (R100; diff)",
-    );
   });
 
-  test("shell quotes and truncates with existing message", () => {
-    expect(shellQuote("a'b.ts")).toBe("'a'\\''b.ts'");
+  test("truncates with existing message", () => {
     expect(truncate("abcdef", 3)).toBe(
       "abc\n\n[diff truncated at 3 chars; inspect files directly before editing]",
     );
