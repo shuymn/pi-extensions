@@ -6,6 +6,8 @@ Spawn validator subagent(s) when there is more than one non-trivial candidate fi
 
 For any candidate finding whose correctness depends on external behavior (library APIs, framework semantics, runtime/platform behavior, protocol/spec behavior, or documented configuration), consult primary information before confirming or refuting it. Prefer official documentation, release notes/changelogs, package source/types, repository docs, standards/specs, or installed dependency code. Do not rely on memory, generic model knowledge, blog posts, or secondary summaries as the sole basis for validation. In the memo, name the primary source(s) consulted (URL, file path, package source/type file, or spec section). If primary information is unavailable or inconclusive, downgrade the finding to likely/speculative and state the evidence gap.
 
+Enumerate every candidate finding in the memo with its disposition and carry-forward decision. Carry confirmed and likely actionable findings forward, keep duplicate findings marked for Dedupe, and discard false positives and speculative findings.
+
 For every candidate finding, determine:
 
 - confirmed, likely, speculative, duplicate, or false positive
@@ -13,4 +15,4 @@ For every candidate finding, determine:
 - what evidence supports or refutes it
 - whether a fix would be behavior-preserving or behavior-changing
 
-Discard false positives and speculative findings.
+Do not silently drop candidates; record why each discarded finding was discarded.
