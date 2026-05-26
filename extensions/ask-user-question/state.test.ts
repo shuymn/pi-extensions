@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { AskUserQuestionParams } from "./types";
 import {
   createQuestionnaireState,
   questionnaireActionLabel,
   questionnaireSnapshot,
   updateQuestionnaireState,
 } from "./state";
+import type { AskUserQuestionParams } from "./types";
 
 function params(overrides: Partial<AskUserQuestionParams> = {}): AskUserQuestionParams {
   return {

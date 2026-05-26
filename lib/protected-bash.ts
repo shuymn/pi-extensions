@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { SandboxManager, type SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
-import { createLocalBashOperations, type BashOperations } from "@earendil-works/pi-coding-agent";
+import { type BashOperations, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
 
 export type RepoGitPaths = {
   worktree: string;

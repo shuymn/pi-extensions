@@ -1,7 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createFakePi } from "../../tests/support/fake-pi";
 import type { AskUserQuestionParams, QuestionAnswer, QuestionnaireResult } from "./types";
-import { createQuestionnaireComponent, type AskUiResult } from "./ui";
+import { type AskUiResult, createQuestionnaireComponent } from "./ui";
 
 mock.module("@earendil-works/pi-tui", () => ({
   Text: class {

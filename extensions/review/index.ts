@@ -22,7 +22,6 @@ import {
   resetSandboxState,
 } from "../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
-import { prepareTargetScope } from "./target-scope";
 import { notifyIfUI } from "../../lib/tui";
 import {
   REVIEW_WORKFLOW_EVENT_NAME,
@@ -32,6 +31,7 @@ import {
 } from "./events";
 import { loadWorkflowPhases } from "./phases";
 import { buildPhasePrompt } from "./prompts";
+import { prepareTargetScope } from "./target-scope";
 import { clearReviewWidget, refreshReviewWidget } from "./widget";
 import {
   type ActiveReviewRun,

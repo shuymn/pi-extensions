@@ -4,10 +4,10 @@ import {
   buildRepoSandboxConfig,
   captureRepoFingerprint,
   createFailClosedBashOperations,
-  resetSandboxState,
-  resolveRepoGitPaths,
   type ExecFn,
   type RepoGitPaths,
+  resetSandboxState,
+  resolveRepoGitPaths,
 } from "./protected-bash";
 
 function makeMockExec(

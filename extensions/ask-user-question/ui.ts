@@ -1,16 +1,16 @@
 import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import { accentBorder, printableInput } from "../../lib/tui";
 import {
-  createQuestionnaireState,
-  questionnaireActionLabel,
-  questionnaireSnapshot,
   type AskUiResult,
+  createQuestionnaireState,
   type QuestionnaireAction,
   type QuestionnaireSnapshot,
+  questionnaireActionLabel,
+  questionnaireSnapshot,
   updateQuestionnaireState,
 } from "./state";
-import { CHAT_ABOUT_THIS_LABEL, NEXT_QUESTION_LABEL, TYPE_SOMETHING_LABEL } from "./types";
 import type { AskUserQuestionParams } from "./types";
+import { CHAT_ABOUT_THIS_LABEL, NEXT_QUESTION_LABEL, TYPE_SOMETHING_LABEL } from "./types";
 
 export type { AskUiResult } from "./state";
 
