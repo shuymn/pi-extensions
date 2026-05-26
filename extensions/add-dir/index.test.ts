@@ -3,22 +3,9 @@ import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, realpath, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
-mock.module("typebox", () => {
-  const Type = {
-    Object: (properties: Record<string, unknown>, options = {}) => ({
-      type: "object",
-      properties,
-      ...options,
-    }),
-    String: (options = {}) => ({ type: "string", ...options }),
-    Optional: (schema: Record<string, unknown>) => ({
-      ...schema,
-      optional: true,
-    }),
-  };
-  return { Type };
-});
+installTypeboxMock();
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 type ExecFileImplementation = (
