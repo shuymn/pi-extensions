@@ -19,9 +19,6 @@ Available extensions live under `extensions/`.
 
 - `add-dir` — Register extra workspace directories for the current session.
 - `ask-user-question` — Let the agent ask structured clarification questions.
-- `coderabbit-review` — Run CodeRabbit review and queue verified fixes.
-- `commit` — Run an interactive commit workflow and exit pi.
-- `create-pr` — Run an interactive pull request workflow and exit pi.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
 - `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
 - `plan` — Add `/plan` and `/impl` workflow prompts.
