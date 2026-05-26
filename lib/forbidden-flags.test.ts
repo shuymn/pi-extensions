@@ -15,15 +15,12 @@ describe("checkForbiddenFlags", () => {
     });
 
     test.each([
-      "git status; rm -rf .",
-      "git status | head",
-      "git status > out.txt",
-      "echo `whoami`",
-      "echo $(whoami)",
-    ])("rejects shell metacharacters in %p", (command) => {
-      const result = checkForbiddenFlags("commit", command);
-      expect(result).toMatchObject({ ok: false });
-      if (!result.ok) expect(result.reason).toContain("shell metacharacters");
+      "git diff HEAD | head -20",
+      "cd /path && git show HEAD:file | tail -50",
+      "echo ok; git status",
+      "git add file && git status || echo done",
+    ])("allows read-only inspection with shell operators in %p", (command) => {
+      expect(checkForbiddenFlags("commit", command)).toEqual({ ok: true });
     });
   });
 
@@ -162,12 +159,25 @@ describe("checkForbiddenFlags", () => {
   });
 
   describe("chain operators", () => {
-    test("checks each segment", () => {
+    test("checks each segment in && and || chains", () => {
       expect(checkForbiddenFlags("commit", "git add path && git status")).toEqual({ ok: true });
       expect(checkForbiddenFlags("commit", "git status && git add -A")).toMatchObject({
         ok: false,
       });
       expect(checkForbiddenFlags("commit", "git add path || git status")).toEqual({ ok: true });
+    });
+
+    test("checks each segment in | and ; chains", () => {
+      expect(checkForbiddenFlags("commit", "git diff HEAD | head -20")).toEqual({
+        ok: true,
+      });
+      expect(checkForbiddenFlags("commit", "git diff HEAD | git reset --hard")).toMatchObject({
+        ok: false,
+      });
+      expect(checkForbiddenFlags("commit", "echo ok; git status")).toEqual({ ok: true });
+      expect(checkForbiddenFlags("commit", "echo ok; git clean -fd")).toMatchObject({
+        ok: false,
+      });
     });
   });
 
@@ -197,6 +207,8 @@ describe("checkForbiddenFlags", () => {
       });
       expect(checkForbiddenFlags("commit", "git add 'path/with/&/name'")).toEqual({ ok: true });
       expect(checkForbiddenFlags("commit", "git commit -m 'fix: a > b'")).toEqual({ ok: true });
+      expect(checkForbiddenFlags("commit", "git commit -m 'fix: a | b'")).toEqual({ ok: true });
+      expect(checkForbiddenFlags("commit", "git add 'path/with;semi'")).toEqual({ ok: true });
     });
 
     test("allows metacharacters inside double quotes", () => {
@@ -204,12 +216,30 @@ describe("checkForbiddenFlags", () => {
         ok: true,
       });
       expect(checkForbiddenFlags("commit", 'git commit -m "fix: a > b"')).toEqual({ ok: true });
+      expect(checkForbiddenFlags("commit", 'git commit -m "fix: a; b"')).toEqual({ ok: true });
     });
 
-    test("still blocks metacharacters outside quotes", () => {
-      expect(checkForbiddenFlags("commit", "git status; rm -rf .")).toMatchObject({ ok: false });
-      expect(checkForbiddenFlags("commit", "git status > out.txt")).toMatchObject({ ok: false });
-      expect(checkForbiddenFlags("commit", "git status | head")).toMatchObject({ ok: false });
+    test.each([
+      "echo $(git reset --hard)",
+      "echo `git clean -fd`",
+      "git status & git reset --hard",
+      "git diff <(git reset --hard)",
+      "git status > out.txt",
+      'echo "$(git reset --hard)"',
+    ])("rejects unsupported shell execution syntax in %p", (command) => {
+      expect(checkForbiddenFlags("commit", command)).toMatchObject({ ok: false });
+    });
+
+    test("still blocks destructive git commands chained via shell operators", () => {
+      expect(checkForbiddenFlags("commit", "git status | git reset --hard")).toMatchObject({
+        ok: false,
+      });
+      expect(checkForbiddenFlags("commit", "echo ok; git clean -fd")).toMatchObject({
+        ok: false,
+      });
+      expect(checkForbiddenFlags("commit", "git diff HEAD || git restore .")).toMatchObject({
+        ok: false,
+      });
     });
 
     test("rejects unbalanced quotes", () => {

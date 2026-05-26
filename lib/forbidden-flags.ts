@@ -50,27 +50,6 @@ const WORKFLOW_FORBIDDEN_SUBCOMMANDS: Record<Workflow, readonly SubcommandPrefix
   ],
 };
 
-const SHELL_METACHARS = /[`$<>;|&]/;
-
-function stripQuotedRegions(command: string): string {
-  let result = "";
-  let quote: "'" | '"' | undefined;
-  for (const ch of command) {
-    if (quote) {
-      if (ch === quote) quote = undefined;
-      result += " ";
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      result += " ";
-      continue;
-    }
-    result += ch;
-  }
-  return result;
-}
-
 export function checkForbiddenFlags(workflow: Workflow, command: string): ForbiddenFlagsResult {
   if (typeof command !== "string" || !command.trim()) {
     return deny("shell command input must include a non-empty command string.");
@@ -78,10 +57,9 @@ export function checkForbiddenFlags(workflow: Workflow, command: string): Forbid
   if (/[\r\n]/.test(command)) {
     return deny("shell command newlines are not allowed.");
   }
-  const unquoted = stripQuotedRegions(command);
-  const withoutChain = unquoted.replace(/&&|\|\|/g, " ");
-  if (SHELL_METACHARS.test(withoutChain)) {
-    return deny("shell metacharacters or unsupported operators are not allowed.");
+  const unsupportedSyntax = findUnsupportedShellSyntax(command);
+  if (unsupportedSyntax) {
+    return deny(`unsupported shell syntax is not allowed: ${unsupportedSyntax}.`);
   }
 
   const segments = splitChainSegments(command);
@@ -162,11 +140,72 @@ function matchesSubcommand(argv: string[], prefixes: readonly SubcommandPrefix[]
   return false;
 }
 
+function findUnsupportedShellSyntax(command: string): string | undefined {
+  let quote: "'" | '"' | undefined;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    const next = command[index + 1];
+
+    if (quote) {
+      if (char === quote) quote = undefined;
+      else if (quote === '"' && char === "`") return "command substitution";
+      else if (quote === '"' && char === "$" && next === "(") return "command substitution";
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === "`" || (char === "$" && next === "(")) return "command substitution";
+    if (char === "<" || char === ">") return "redirection or process substitution";
+    if (char === "&") {
+      if (next === "&") {
+        index += 1;
+        continue;
+      }
+      return "background operator";
+    }
+  }
+  return undefined;
+}
+
 function splitChainSegments(command: string): string[] {
-  return command
-    .split(/&&|\|\|/)
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    const next = command[index + 1];
+
+    if (quote) {
+      if (char === quote) quote = undefined;
+      current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+
+    if ((char === "&" && next === "&") || (char === "|" && next === "|")) {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      index += 1;
+      continue;
+    }
+    if (char === ";" || char === "|") {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+  if (current.trim()) segments.push(current.trim());
+  return segments;
 }
 
 function splitCommandWords(command: string): string[] {
