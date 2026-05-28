@@ -19,6 +19,7 @@ export type FakeCommandDefinition = {
   [key: string]: unknown;
 };
 type FlagDefinition = { name?: string; [key: string]: unknown };
+export type FakeProviderConfig = { name?: string; [key: string]: unknown };
 // biome-ignore lint/suspicious/noExplicitAny: extension tests assert arbitrary message payload shapes.
 type MessageRecord = { message: any; options: unknown };
 // biome-ignore lint/suspicious/noExplicitAny: extension tests assert arbitrary entry payload shapes.
@@ -36,6 +37,7 @@ export function createFakePi<
   const commands = new Map<string, TCommand>();
   const flags = new Map<string, unknown>(Object.entries(options.flags ?? {}));
   const flagDefinitions = new Map<string, FlagDefinition>();
+  const providers = new Map<string, FakeProviderConfig>();
   const eventHandlers = new Map<string, EventHandler[]>();
   const extensionEventHandlers = new Map<string, Array<(data: unknown) => unknown>>();
   const emittedEvents: Array<{ name: string; data: unknown }> = [];
@@ -79,6 +81,7 @@ export function createFakePi<
     commands,
     flags,
     flagDefinitions,
+    providers,
     events: eventBus,
     execCalls,
     sentMessages,
@@ -92,6 +95,9 @@ export function createFakePi<
     },
     registerFlag(name: string, definition: FlagDefinition) {
       flagDefinitions.set(name, definition);
+    },
+    registerProvider(name: string, config: FakeProviderConfig) {
+      providers.set(name, config);
     },
     getFlag(name: string) {
       return flags.get(name);
