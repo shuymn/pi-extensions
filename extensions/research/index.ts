@@ -28,7 +28,6 @@ const EMPTY_TASK_MESSAGE =
 const MAX_PHASE_NOTE_CHARS = 20_000;
 
 const workflow = new ResearchWorkflowController();
-let nextPhaseTimer: ReturnType<typeof setTimeout> | undefined;
 
 const TAVILY_RESEARCH_MODELS = ["mini", "pro", "auto"] as const;
 
@@ -109,14 +108,7 @@ function activeRun(): ActiveResearchRun | undefined {
   return workflow.getActiveRun();
 }
 
-function clearQueuedPhaseTimer(): void {
-  if (!nextPhaseTimer) return;
-  clearTimeout(nextPhaseTimer);
-  nextPhaseTimer = undefined;
-}
-
 function clearActiveRun(): void {
-  clearQueuedPhaseTimer();
   workflow.cancel();
 }
 
@@ -165,23 +157,23 @@ function startResearchRun(pi: ExtensionAPI, run: ResearchRunSeed): ActiveResearc
   return queued.run;
 }
 
-function queueNextPhaseAfterCurrentTurn(pi: ExtensionAPI, runId: string): void {
-  clearQueuedPhaseTimer();
-  nextPhaseTimer = setTimeout(() => {
-    nextPhaseTimer = undefined;
-    if (activeRun()?.id !== runId) return;
-    const queued = workflow.startQueuedPhase();
-    if (!queued) return;
-    try {
-      sendQueuedPhase(pi, queued);
-    } catch {
-      clearActiveRun();
-    }
-  }, 0);
+function sendNextPhase(pi: ExtensionAPI, runId: string, ctx: Pick<ExtensionContext, "ui">): void {
+  if (activeRun()?.id !== runId) return;
+  const queued = workflow.startQueuedPhase();
+  if (!queued) return;
+  try {
+    sendQueuedPhase(pi, queued);
+  } catch (error) {
+    clearActiveRun();
+    ctx.ui.notify(
+      `/research: 次の phase をキューに追加できませんでした。${error instanceof Error ? ` ${error.message}` : ""}`,
+      "error",
+    );
+  }
 }
 
 export default function researchExtension(pi: ExtensionAPI) {
-  pi.on("agent_end", async (event) => {
+  pi.on("agent_end", async (event, ctx) => {
     if (!activeRun()?.phaseInProgress) return;
 
     const latestAssistantText = getLatestAssistantMessageText(event.messages);
@@ -192,11 +184,10 @@ export default function researchExtension(pi: ExtensionAPI) {
     if (!decision) return;
 
     if (decision.kind === "completed") {
-      clearQueuedPhaseTimer();
       return;
     }
 
-    queueNextPhaseAfterCurrentTurn(pi, decision.run.id);
+    sendNextPhase(pi, decision.run.id, ctx);
   });
 
   pi.on("session_shutdown", async () => {

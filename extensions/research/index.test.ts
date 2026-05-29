@@ -337,6 +337,7 @@ describe("research extension", () => {
       throw new Error("send failed");
     }) as typeof pi.sendMessage;
 
+    const failure = createCommandContext();
     await pi.getEventHandlers("agent_end")[0](
       {
         messages: [
@@ -346,9 +347,14 @@ describe("research extension", () => {
           },
         ],
       },
-      { ui: { notify() {} } },
+      failure.ctx,
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(failure.notifications).toEqual([
+      {
+        message: "/research: 次の phase をキューに追加できませんでした。 send failed",
+        level: "error",
+      },
+    ]);
 
     pi.sendMessage = originalSendMessage;
     const retry = createCommandContext();
@@ -383,7 +389,6 @@ describe("research extension", () => {
       },
       { ui: { notify() {} } },
     );
-    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(pi.sentMessages).toHaveLength(2);
     expect(pi.sentMessages[1]!.message).toMatchObject({
