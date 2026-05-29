@@ -29,6 +29,7 @@ type ToolDefinition = {
       staged?: boolean;
       noFix?: boolean;
       base?: string;
+      pr?: string;
       instructions?: string;
     } & Record<string, unknown>,
     signal: AbortSignal | undefined,
@@ -81,7 +82,7 @@ function createFakePi(
 ) {
   const pi = createSharedFakePi<ToolDefinition, { description: string; handler: CommandHandler }>({
     exec: (call) => {
-      if (call.command === "git") {
+      if (call.command === "git" || call.command === "gh") {
         expect(call.options).toMatchObject({
           cwd: expect.any(String),
           timeout: 10_000,
@@ -182,6 +183,7 @@ describe("review extension", () => {
         files: { type: "array", optional: true },
         staged: { type: "boolean", optional: true },
         base: { type: "string", optional: true },
+        pr: { type: "string", optional: true },
         noFix: { type: "boolean", optional: true },
         instructions: { type: "string", optional: true },
       },
@@ -201,6 +203,7 @@ describe("review extension", () => {
       targets: [{ path: "src/app.ts", status: "explicit", source: "explicit" }],
       phaseCount: 9,
       noFix: false,
+      scope: { kind: "explicit", files: ["src/app.ts"] },
     } satisfies ReviewWorkflowLifecycleEvent;
 
     expect(module.REVIEW_WORKFLOW_EVENT_NAME).toBe("review");
@@ -308,7 +311,121 @@ describe("review extension", () => {
     expect(prompt).toContain('Review the branch diff from "main...HEAD"');
     expect(prompt).toContain('## Diff against "main"\n\nbranch diff');
     expect(prompt).not.toContain("Combined diff against HEAD");
-    expect(pi.emittedEvents[0].data).toMatchObject({ base: "main" });
+    expect(pi.emittedEvents[0].data).toMatchObject({ scope: { kind: "base", base: "main" } });
+  });
+
+  test("pr mode reviews the selected pull request when local HEAD matches a clean worktree", async () => {
+    const pi = await setupReviewTest((call) => {
+      const args = call.args.join(" ");
+      if (call.command === "gh" && args === "pr view 123 --json files,headRefOid") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ files: [{ path: "src/app.ts" }], headRefOid: "abc123" }),
+          stderr: "",
+        };
+      }
+      if (call.command === "git" && args === "rev-parse HEAD") {
+        return { code: 0, stdout: "abc123\n", stderr: "" };
+      }
+      if (call.command === "gh" && args === "pr diff 123 --patch") {
+        return { code: 0, stdout: "pr diff", stderr: "" };
+      }
+      if (call.command === "git" && args === "status --porcelain") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected ${call.command} ${args}` };
+    });
+
+    const result = await pi.tools
+      .get("review")!
+      .execute("call", { pr: " 123 " }, undefined, undefined, createRunContext());
+
+    expect(pi.execCalls.map((call) => `${call.command} ${call.args.join(" ")}`)).toEqual([
+      "gh pr view 123 --json files,headRefOid",
+      "git rev-parse HEAD",
+      "gh pr diff 123 --patch",
+      "git status --porcelain",
+    ]);
+    expect(result.details).toMatchObject({
+      targets: [{ path: "src/app.ts", status: "pr", source: "pr" }],
+      noFix: false,
+    });
+    expect(result.details).toMatchObject({ scope: { kind: "pr", selector: "123" }, phaseCount: 9 });
+    expect(result.details.noFixReason).toBeUndefined();
+    expect("noFixReason" in pi.sentMessages[0].message.details).toBe(false);
+    const prompt = pi.sentMessages[0].message.content;
+    expect(prompt).toContain('Review pull request "123"');
+    expect(prompt).toContain("The local checkout matches the PR head");
+    expect(prompt).toContain('## Pull request diff for "123"\n\npr diff');
+    expect(pi.sentMessages[0].message.details).toMatchObject({ noFix: false });
+    expect(pi.emittedEvents[0].data).toMatchObject({
+      scope: { kind: "pr", selector: "123" },
+      noFix: false,
+    });
+  });
+
+  test("pr mode downgrades to no-fix when local HEAD does not match", async () => {
+    const pi = await setupReviewTest((call) => {
+      const args = call.args.join(" ");
+      if (call.command === "gh" && args === "pr view 123 --json files,headRefOid") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ files: [{ path: "src/app.ts" }], headRefOid: "pr123" }),
+          stderr: "",
+        };
+      }
+      if (call.command === "git" && args === "rev-parse HEAD") {
+        return { code: 0, stdout: "local456\n", stderr: "" };
+      }
+      if (call.command === "gh" && args === "pr diff 123 --patch") {
+        return { code: 0, stdout: "pr diff", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected ${call.command} ${args}` };
+    });
+
+    const result = await pi.tools
+      .get("review")!
+      .execute("call", { pr: "123" }, undefined, undefined, createRunContext());
+
+    const noFixReason = {
+      kind: "pr_head_mismatch",
+      prHeadOid: "pr123",
+      localHeadOid: "local456",
+    };
+    expect(result.details).toMatchObject({
+      noFix: true,
+      noFixReason,
+      targets: [{ path: "src/app.ts", status: "pr", source: "pr" }],
+    });
+    expect(result.details).toMatchObject({ scope: { kind: "pr", selector: "123" }, phaseCount: 7 });
+    expect(pi.sentMessages[0].message.details).toMatchObject({
+      phaseCount: 7,
+      noFix: true,
+      noFixReason,
+    });
+    const prompt = pi.sentMessages[0].message.content;
+    expect(prompt).toContain("the PR head pr123 does not match the local checkout local456");
+    expect(prompt).toContain("do not inspect local files as if they are the PR head");
+    expect(prompt).toContain("No-fix mode is enabled: do not edit files");
+    expect(prompt).not.toContain("07-fix.md");
+    expect(pi.emittedEvents[0].data).toMatchObject({
+      scope: { kind: "pr", selector: "123" },
+      noFix: true,
+      noFixReason,
+      phaseCount: 7,
+    });
+  });
+
+  test("tool rejects unsafe pr values before running gh", async () => {
+    const pi = await setupReviewTest();
+
+    await expect(
+      pi.tools
+        .get("review")!
+        .execute("call", { pr: "123\n--json body" }, undefined, undefined, createRunContext()),
+    ).rejects.toThrow("Invalid pull request selector");
+    expect(pi.execCalls).toEqual([]);
+    expect(pi.sentMessages).toEqual([]);
   });
 
   test("tool rejects unsafe base values before running git", async () => {
@@ -364,14 +481,14 @@ describe("review extension", () => {
     ]);
   });
 
-  test("explicit files take precedence over base and staged", async () => {
+  test("explicit files take precedence over pr, base, and staged", async () => {
     const pi = await setupReviewTest();
 
     await pi.tools
       .get("review")!
       .execute(
         "call",
-        { files: ["src/app.ts"], base: "main", staged: true },
+        { files: ["src/app.ts"], pr: "123", base: "main", staged: true },
         undefined,
         undefined,
         createRunContext(),
@@ -379,6 +496,48 @@ describe("review extension", () => {
 
     expect(pi.execCalls).toEqual([]);
     expect(pi.sentMessages[0].message.content).toContain("Explicit file mode");
+    expect(pi.emittedEvents[0].data).toMatchObject({ scope: { kind: "explicit" } });
+  });
+
+  test("pr takes precedence over base and staged when files are omitted", async () => {
+    const pi = await setupReviewTest((call) => {
+      const args = call.args.join(" ");
+      if (call.command === "gh" && args === "pr view 123 --json files,headRefOid") {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ files: [{ path: "src/app.ts" }], headRefOid: "abc123" }),
+          stderr: "",
+        };
+      }
+      if (call.command === "git" && args === "rev-parse HEAD") {
+        return { code: 0, stdout: "abc123\n", stderr: "" };
+      }
+      if (call.command === "gh" && args === "pr diff 123 --patch") {
+        return { code: 0, stdout: "pr diff", stderr: "" };
+      }
+      if (call.command === "git" && args === "status --porcelain") {
+        return { code: 0, stdout: "", stderr: "" };
+      }
+      return { code: 1, stdout: "", stderr: `unexpected ${call.command} ${args}` };
+    });
+
+    await pi.tools
+      .get("review")!
+      .execute(
+        "call",
+        { pr: "123", base: "main", staged: true },
+        undefined,
+        undefined,
+        createRunContext(),
+      );
+
+    expect(pi.execCalls.map((call) => `${call.command} ${call.args.join(" ")}`)).toEqual([
+      "gh pr view 123 --json files,headRefOid",
+      "git rev-parse HEAD",
+      "gh pr diff 123 --patch",
+      "git status --porcelain",
+    ]);
+    expect(pi.emittedEvents[0].data).toMatchObject({ scope: { kind: "pr", selector: "123" } });
   });
 
   test("keeps non-ASCII paths readable in review diff context", async () => {

@@ -18,6 +18,7 @@ function run(overrides: Partial<ActiveReviewRun> = {}): ActiveReviewRun {
     diff: "diff text",
     phases: phases(false),
     noFix: false,
+    scope: { kind: "explicit", files: ["src/app.ts"] },
     instructions: "",
     nextPhaseIndex: 1,
     phaseOutputs: [],
@@ -52,6 +53,42 @@ describe("review prompt rendering", () => {
     expect(prompt).toContain("Use read, grep, find, and ls for inspection.");
     expect(prompt).toContain('For quick inspection, target file paths are: "src/app.ts"');
     expect(prompt).not.toContain("target file shell arguments");
+  });
+
+  test("pr mismatch warning is repeated after phase 1", () => {
+    const prompt = buildPhasePrompt(
+      run({
+        targets: [{ path: "src/app.ts", status: "pr", source: "pr" }],
+        scope: { kind: "pr", selector: "123" },
+        noFix: true,
+        noFixReason: { kind: "pr_head_mismatch", prHeadOid: "pr123", localHeadOid: "local456" },
+        phases: phases(true),
+        phaseOutputs: [{ phaseIndex: 0, phaseFile: "01-recon.md", notes: "recon" }],
+      }),
+      1,
+    );
+
+    expect(prompt).toContain("the PR head pr123 does not match the local checkout local456");
+    expect(prompt).toContain("use only the prepared PR diff context and previous phase notes");
+    expect(prompt).toContain("do not inspect local files as if they are the PR head");
+  });
+
+  test("pr worktree-dirty warning explains uncommitted local changes", () => {
+    const prompt = buildPhasePrompt(
+      run({
+        targets: [{ path: "src/app.ts", status: "pr", source: "pr" }],
+        scope: { kind: "pr", selector: "123" },
+        noFix: true,
+        noFixReason: { kind: "pr_worktree_dirty" },
+        phases: phases(true),
+      }),
+      0,
+    );
+
+    expect(prompt).toContain(
+      "the local working tree or index has uncommitted changes that do not match the PR head",
+    );
+    expect(prompt).toContain("do not inspect local files as if they are the PR head");
   });
 
   test("additional user instructions are included after phase 1", () => {

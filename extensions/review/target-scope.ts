@@ -1,33 +1,62 @@
 import { lstat, open, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
+import type { CommandResult, ExecGh, ExecGit } from "../../lib/command";
+import { formatCommandFailure } from "../../lib/command";
 import {
   branchDiffRange,
   collectChangedTargets,
-  type ExecGit,
-  formatGitFailure,
   formatPathForPrompt,
   isExplicitFileMode,
   readablePathGitArgs,
   type Target,
   targetPathsForDiff,
-  truncate,
 } from "../../lib/git";
+import { truncate } from "../../lib/text";
+import { collectPullRequestScope } from "./pull-request-scope";
 
 const REVIEW_MAX_DIFF_CHARS = 80_000;
 const REVIEW_MAX_UNTRACKED_FILE_CHARS = 20_000;
 
+export type ReviewScope =
+  | { kind: "explicit"; files: string[] }
+  | { kind: "pr"; selector: string }
+  | { kind: "base"; base: string }
+  | { kind: "staged" }
+  | { kind: "workingTree" };
+
+export type NoFixReason =
+  | { kind: "pr_head_mismatch"; prHeadOid: string; localHeadOid: string }
+  | { kind: "pr_worktree_dirty" };
+
 export type PrepareTargetScopeOptions = {
   execGit: ExecGit;
+  execGh?: ExecGh;
   cwd: string;
   files: string[];
   staged: boolean;
   base?: string;
+  pr?: string;
 };
 
-export type PreparedTargetScope = {
+export type ScopeCollection = {
   targets: Target[];
   diff: string;
+  noFixReason?: NoFixReason;
 };
+
+export type PreparedTargetScope = ScopeCollection & {
+  scope: ReviewScope;
+};
+
+export function reviewScopeFromOptions(
+  options: Pick<PrepareTargetScopeOptions, "files" | "staged" | "base" | "pr">,
+): ReviewScope {
+  if (options.files.length > 0) return { kind: "explicit", files: options.files };
+  if (options.pr) return { kind: "pr", selector: options.pr };
+  if (options.base) return { kind: "base", base: options.base };
+  if (options.staged) return { kind: "staged" };
+  return { kind: "workingTree" };
+}
 
 async function readTextPrefix(path: string, maxChars: number): Promise<string> {
   const file = await open(path, "r");
@@ -68,16 +97,12 @@ async function collectUntrackedFileChunk(cwd: string, target: Target): Promise<s
   }
 }
 
-function addDiffChunk(chunks: string[], label: string, result: Awaited<ReturnType<ExecGit>>): void {
+function addDiffChunk(chunks: string[], label: string, result: CommandResult): void {
   if (result.code === 0 && result.stdout.trim()) chunks.push(`## ${label}\n\n${result.stdout}`);
 }
 
-function addRequiredDiffChunk(
-  chunks: string[],
-  label: string,
-  result: Awaited<ReturnType<ExecGit>>,
-): void {
-  if (result.code !== 0) throw new Error(formatGitFailure(`Collecting ${label}`, result));
+function addRequiredDiffChunk(chunks: string[], label: string, result: CommandResult): void {
+  if (result.code !== 0) throw new Error(formatCommandFailure(`Collecting ${label}`, result));
   addDiffChunk(chunks, label, result);
 }
 
@@ -128,19 +153,38 @@ async function collectReviewDiff(
 export async function prepareTargetScope(
   options: PrepareTargetScopeOptions,
 ): Promise<PreparedTargetScope> {
-  const targets = await collectChangedTargets(options.execGit, {
-    files: options.files,
-    staged: options.staged,
-    base: options.base,
+  const scope = reviewScopeFromOptions(options);
+
+  if (scope.kind === "pr") {
+    if (!options.execGh) throw new Error("Preparing pull request scope requires a gh executor");
+    const collected = await collectPullRequestScope(
+      options.execGit,
+      options.execGh,
+      scope.selector,
+    );
+    return {
+      scope,
+      targets: collected.targets,
+      diff: collected.diff ? truncate(collected.diff, REVIEW_MAX_DIFF_CHARS) : collected.diff,
+      ...(collected.noFixReason ? { noFixReason: collected.noFixReason } : {}),
+    };
+  }
+
+  const collectOptions = {
+    files: scope.kind === "explicit" ? scope.files : [],
+    staged: scope.kind === "staged",
+    base: scope.kind === "base" ? scope.base : undefined,
     preserveOldPath: true,
-  });
+  };
+  const targets = await collectChangedTargets(options.execGit, collectOptions);
   return {
+    scope,
     targets,
     diff: await collectReviewDiff(
       options.execGit,
       options.cwd,
-      options.staged,
-      options.base,
+      collectOptions.staged,
+      collectOptions.base,
       targets,
     ),
   };

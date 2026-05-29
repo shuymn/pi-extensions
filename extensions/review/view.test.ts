@@ -19,6 +19,7 @@ function run(
     diff: "",
     phases: phases(phaseFiles),
     noFix: false,
+    scope: { kind: "explicit", files: ["src/app.ts"] },
     instructions: "",
     nextPhaseIndex: 1,
     phaseOutputs: [],

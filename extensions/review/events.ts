@@ -1,4 +1,5 @@
 import type { Target } from "../../lib/git";
+import type { NoFixReason, ReviewScope } from "./target-scope";
 
 export const REVIEW_WORKFLOW_EVENT_NAME = "review";
 export const WORKFLOW_STARTED_EVENT = "workflow:started";
@@ -31,7 +32,8 @@ export type ReviewWorkflowLifecycleEvent = ReviewWorkflowLifecycleEventHeader & 
   targets: Target[];
   phaseCount: number;
   noFix: boolean;
-  base?: string;
+  scope: ReviewScope;
+  noFixReason?: NoFixReason;
   reason?: string;
   error?: string;
 };

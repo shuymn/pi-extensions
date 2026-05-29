@@ -8,6 +8,7 @@ import {
   type WorkflowPhase,
   type WorkflowPhaseFile,
 } from "./phases";
+import type { NoFixReason, ReviewScope } from "./target-scope";
 
 export const MAX_GAPFILL_LOOPS = 2;
 
@@ -24,7 +25,8 @@ export type ReviewRunSeed = {
   diff: string;
   phases: WorkflowPhase[];
   noFix: boolean;
-  base?: string;
+  scope: ReviewScope;
+  noFixReason?: NoFixReason;
   instructions: string;
 };
 

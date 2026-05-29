@@ -8,20 +8,17 @@ import {
   createLocalBashOperations,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { ExecGh, ExecGit } from "../../lib/command";
 import { parseCommandArgs } from "../../lib/command-args";
-import {
-  type ExecGit,
-  formatJsonTarget,
-  normalizeBaseBranch,
-  type Target,
-  truncate,
-} from "../../lib/git";
+import { formatJsonTarget, normalizeBaseBranch } from "../../lib/git";
+import { normalizePullRequestSelector } from "../../lib/github";
 import {
   createProtectedBashOperations,
   type ExecFn,
   resetSandboxState,
 } from "../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
+import { truncate } from "../../lib/text";
 import { notifyIfUI } from "../../lib/tui";
 import {
   REVIEW_WORKFLOW_EVENT_NAME,
@@ -31,6 +28,7 @@ import {
 } from "./events";
 import { loadWorkflowPhases } from "./phases";
 import { buildPhasePrompt } from "./prompts";
+import type { NoFixReason, PreparedTargetScope } from "./target-scope";
 import { prepareTargetScope } from "./target-scope";
 import { clearReviewWidget, refreshReviewWidget } from "./widget";
 import {
@@ -79,6 +77,7 @@ type ReviewOptions = {
   staged: boolean;
   noFix: boolean;
   base?: string;
+  pr?: string;
   instructions: string;
 };
 
@@ -86,16 +85,19 @@ function parseArgs(args: string): ReviewOptions {
   const parsed = parseCommandArgs({
     args,
     booleanFlags: ["--staged", "--cached", "--no-fix"] as const,
-    valueFlags: ["--base"] as const,
+    valueFlags: ["--base", "--pr"] as const,
   });
   if (parsed.valueErrors["--base"]) throw new Error(parsed.valueErrors["--base"]);
+  if (parsed.valueErrors["--pr"]) throw new Error(parsed.valueErrors["--pr"]);
   const base = normalizeBaseBranch(parsed.values["--base"]);
+  const pr = normalizePullRequestSelector(parsed.values["--pr"]);
 
   return {
     files: parsed.files,
     staged: parsed.flags["--staged"] || parsed.flags["--cached"],
     noFix: parsed.flags["--no-fix"],
     base,
+    pr,
     instructions: parsed.instructions,
   };
 }
@@ -104,17 +106,23 @@ function makeExecGit(pi: ExtensionAPI, cwd: string): ExecGit {
   return (args) => pi.exec("git", args, { cwd, timeout: 10_000 });
 }
 
+function makeExecGh(pi: ExtensionAPI, cwd: string): ExecGh {
+  return (args) => pi.exec("gh", args, { cwd, timeout: 10_000 });
+}
+
 async function collectScope(
   pi: ExtensionAPI,
   cwd: string,
   options: ReviewOptions,
-): Promise<{ targets: Target[]; diff: string }> {
+): Promise<PreparedTargetScope> {
   return prepareTargetScope({
     execGit: makeExecGit(pi, cwd),
+    execGh: makeExecGh(pi, cwd),
     cwd,
     files: options.files,
     staged: options.staged,
     base: options.base,
+    pr: options.pr,
   });
 }
 
@@ -123,10 +131,11 @@ async function createReviewRun(
   cwd: string,
   options: ReviewOptions,
 ): Promise<ReviewRunSeed | undefined> {
-  const { targets, diff } = await collectScope(pi, cwd, options);
+  const { scope, targets, diff, noFixReason } = await collectScope(pi, cwd, options);
   if (targets.length === 0) return undefined;
 
-  const phases = await loadWorkflowPhases(options.noFix);
+  const effectiveNoFix = options.noFix || Boolean(noFixReason);
+  const phases = await loadWorkflowPhases(effectiveNoFix);
 
   return {
     id: `${Date.now()}`,
@@ -134,8 +143,9 @@ async function createReviewRun(
     targets,
     diff,
     phases,
-    noFix: options.noFix,
-    base: options.base,
+    noFix: effectiveNoFix,
+    scope,
+    ...(noFixReason ? { noFixReason } : {}),
     instructions: options.instructions,
   };
 }
@@ -195,6 +205,24 @@ function setPhaseWidget(
   refreshReviewWidget(ctx, run, state, phaseNumber);
 }
 
+function reviewRunDetails(run: ReviewRunSeed) {
+  return {
+    phaseCount: run.phases.length,
+    noFix: run.noFix,
+    scope: run.scope,
+    ...(run.noFixReason ? { noFixReason: run.noFixReason } : {}),
+  };
+}
+
+function describeNoFixReasonJa(reason: NoFixReason): string {
+  switch (reason.kind) {
+    case "pr_head_mismatch":
+      return "PR head と local HEAD が一致しない";
+    case "pr_worktree_dirty":
+      return "作業ツリーに未コミットの変更がある";
+  }
+}
+
 function emitWorkflowLifecycleEvent(
   pi: ExtensionAPI,
   status: ReviewWorkflowLifecycleStatus,
@@ -207,9 +235,7 @@ function emitWorkflowLifecycleEvent(
     runId: run.id,
     cwd: run.cwd,
     targets: run.targets,
-    phaseCount: run.phases.length,
-    noFix: run.noFix,
-    base: run.base,
+    ...reviewRunDetails(run),
     ...extra,
   };
 
@@ -252,7 +278,7 @@ function sendQueuedPhase(
         runId: queued.run.id,
         phase: queued.phase.file,
         phaseIndex: queued.phaseIndex + 1,
-        phaseCount: queued.run.phases.length,
+        ...reviewRunDetails(queued.run),
       },
     },
     { triggerTurn: true },
@@ -389,6 +415,12 @@ export function createReviewExtension() {
         }
 
         const active = startReviewRun(pi, creation.run, ctx);
+        if (active.noFixReason) {
+          ctx.ui.notify(
+            `/review: ${describeNoFixReasonJa(active.noFixReason)}ため no-fix mode に切り替えました。`,
+            "warning",
+          );
+        }
         ctx.ui.notify(
           `/review: ${active.targets.length} 件のファイルについて phase 1/${active.phases.length} をキューに追加しました。`,
           "info",
@@ -401,12 +433,12 @@ export function createReviewExtension() {
       name: TOOL_NAME,
       label: "Review",
       description:
-        "Queue a multi-stage code review workflow for changed, staged, or explicitly listed files, then apply verified fixes or produce a no-fix report.",
+        "Queue a multi-stage code review workflow for changed, staged, pull request, or explicitly listed files, then apply verified fixes or produce a no-fix report.",
       promptSnippet:
         "Queue a /review pass that runs Recon, Hunt, Validate, Gapfill, Dedupe, Trace, Fix, and Verify stages before applying only validated fixes. Set noFix to produce a consolidated report without fixes.",
       promptGuidelines: [
         "Use review when the user asks for a code review workflow that should identify actionable issues, verify them, fix the valid ones, and run relevant checks.",
-        "Use review with explicit files when the user names file paths; otherwise let review target current git changes. Use staged when the user specifically asks to review staged/cached changes, or base when the user asks to review a branch against a base branch. Precedence is files over base over staged.",
+        "Use review with explicit files when the user names file paths; otherwise let review target current git changes. Use pr when the user asks to review a specific pull request, staged when the user specifically asks to review staged/cached changes, or base when the user asks to review a branch against a base branch. Precedence is files over pr over base over staged.",
         "Use noFix when the user asks to report findings without fixing or editing files.",
       ],
       parameters: Type.Object({
@@ -428,7 +460,13 @@ export function createReviewExtension() {
         base: Type.Optional(
           Type.String({
             description:
-              "Optional base branch. When files is omitted, review the diff from base...HEAD instead of local working tree changes. If staged is also true, base takes precedence.",
+              "Optional base branch. When files and pr are omitted, review the diff from base...HEAD instead of local working tree changes. If staged is also true, base takes precedence.",
+          }),
+        ),
+        pr: Type.Optional(
+          Type.String({
+            description:
+              "Optional pull request selector. When files is omitted, review the specified PR using gh pr view/diff. Accepts a number, owner/repo#number, or GitHub pull request URL.",
           }),
         ),
         noFix: Type.Optional(
@@ -461,6 +499,7 @@ export function createReviewExtension() {
           staged: params.staged ?? false,
           noFix: params.noFix ?? false,
           base: normalizeBaseBranch(params.base),
+          pr: normalizePullRequestSelector(params.pr),
           instructions: params.instructions?.trim() ?? "",
         };
         const creation = await createReviewRunWithStartGuard(pi, ctx.cwd, options);
@@ -494,7 +533,11 @@ export function createReviewExtension() {
                 .join("\n")}`,
             },
           ],
-          details: { runId: active.id, targets: active.targets },
+          details: {
+            runId: active.id,
+            targets: active.targets,
+            ...reviewRunDetails(active),
+          },
         };
       },
     });
