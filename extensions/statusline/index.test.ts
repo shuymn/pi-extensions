@@ -155,6 +155,8 @@ describe("statusline extension", () => {
       "model_select",
       "session_start",
       "thinking_level_select",
+      "turn_end",
+      "turn_start",
     ]);
   });
 
@@ -199,7 +201,7 @@ describe("statusline extension", () => {
         options: { timeout: 1000 },
       },
     ]);
-    expect(rendered).toContain("my-project on  feature/statusline via anthropic/sonnet • high");
+    expect(rendered).toContain("my-project on  feature/statusline via anthropic/sonnet・high");
     expect(rendered).toContain("ctx ● 25%");
   });
 
@@ -216,7 +218,7 @@ describe("statusline extension", () => {
     const footer = instantiateFooter(ctx);
     const rendered = stripAnsi(footer.component.render(300)[0]);
 
-    expect(rendered).toContain("project via Display Model • medium");
+    expect(rendered).toContain("project via Display Model・medium");
     expect(rendered).not.toContain(" on  ");
     expect(rendered).not.toContain("ctx ●");
   });
@@ -232,13 +234,13 @@ describe("statusline extension", () => {
 
     await pi.events.get("session_start")![0]({}, idCtx);
     let footer = instantiateFooter(idCtx);
-    expect(stripAnsi(footer.component.render(300)[0])).toContain("model-id • medium");
+    expect(stripAnsi(footer.component.render(300)[0])).toContain("model-id・medium");
     expect(stripAnsi(footer.component.render(300)[0])).not.toContain("ctx ●");
 
     const fallbackCtx = createContext({ model: null, models: [null] });
     await pi.events.get("session_start")![0]({}, fallbackCtx);
     footer = instantiateFooter(fallbackCtx);
-    expect(stripAnsi(footer.component.render(300)[0])).toContain("no model • medium");
+    expect(stripAnsi(footer.component.render(300)[0])).toContain("no model・medium");
   });
 
   test("truncates the rendered footer to the available width", async () => {
@@ -293,5 +295,43 @@ describe("statusline extension", () => {
 
     await pi.events.get("model_select")![0]({}, ctx);
     expect(footer.renderCount).toBe(1);
+  });
+
+  test("turn_start and turn_end request footer rerender and show duration", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const ctx = createContext();
+
+    await pi.events.get("session_start")![0]({}, ctx);
+    const footer = instantiateFooter(ctx);
+
+    await pi.events.get("turn_start")![0]({}, ctx);
+    expect(footer.renderCount).toBe(1);
+    let rendered = stripAnsi(footer.component.render(500)[0]);
+    expect(rendered).not.toContain(" took ");
+
+    await pi.events.get("turn_end")![0]({}, ctx);
+    expect(footer.renderCount).toBe(2);
+    rendered = stripAnsi(footer.component.render(500)[0]);
+    expect(rendered).toMatch(/ took \d+s/);
+  });
+
+  test("session_start resets stale turn duration", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const ctx = createContext();
+
+    await pi.events.get("session_start")![0]({}, ctx);
+    const footer1 = instantiateFooter(ctx);
+    await pi.events.get("turn_start")![0]({}, ctx);
+    await pi.events.get("turn_end")![0]({}, ctx);
+    expect(stripAnsi(footer1.component.render(500)[0])).toMatch(/ took \d+s/);
+
+    const ctx2 = createContext();
+    await pi.events.get("session_start")![0]({}, ctx2);
+    const footer2 = instantiateFooter(ctx2);
+    expect(stripAnsi(footer2.component.render(500)[0])).not.toContain(" took ");
   });
 });

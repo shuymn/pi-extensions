@@ -72,14 +72,31 @@ function formatTime(date: Date): string {
   return date.toLocaleTimeString("ja-JP", { hour12: false });
 }
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  let result = "";
+  if (hours > 0) result += `${hours}h`;
+  if (hours > 0 || minutes > 0) result += `${minutes}m`;
+  result += `${seconds}s`;
+  return result;
+}
+
 export default function (pi: ExtensionAPI) {
   let projectName = "";
   let lastReadyTime = formatTime(new Date());
   let requestFooterRender: (() => void) | undefined;
   const rerender = () => requestFooterRender?.();
   let ambiguousModelNames = new Set<string>();
+  let turnStartTime: number | undefined;
+  let lastTurnDuration: number | undefined;
 
   pi.on("session_start", async (_event, ctx) => {
+    turnStartTime = undefined;
+    lastTurnDuration = undefined;
     if (!ctx.hasUI) return;
 
     const root = await pi
@@ -115,8 +132,12 @@ export default function (pi: ExtensionAPI) {
           }
 
           const effort = pi.getThinkingLevel();
-          parts[parts.length - 1] +=
-            ` via ${rgb(255, 80, 80, `${modelName(ctx.model, ambiguousModelNames)} • ${effort}`)}`;
+          const effortModel = `${modelName(ctx.model, ambiguousModelNames)}・${effort}`;
+          const durationPart =
+            lastTurnDuration !== undefined
+              ? ` took ${rgb(255, 200, 60, formatDuration(lastTurnDuration))}`
+              : "";
+          parts[parts.length - 1] += ` via ${rgb(255, 80, 80, effortModel)}${durationPart}`;
 
           const usage = ctx.getContextUsage();
           const window = contextWindow(ctx.model);
@@ -132,6 +153,20 @@ export default function (pi: ExtensionAPI) {
         },
       };
     });
+  });
+
+  pi.on("turn_start", async (_event) => {
+    turnStartTime = Date.now();
+    lastTurnDuration = undefined;
+    rerender();
+  });
+
+  pi.on("turn_end", async (_event) => {
+    if (turnStartTime !== undefined) {
+      lastTurnDuration = Date.now() - turnStartTime;
+      turnStartTime = undefined;
+    }
+    rerender();
   });
 
   pi.on("agent_end", async () => {
