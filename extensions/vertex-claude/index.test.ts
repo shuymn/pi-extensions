@@ -45,7 +45,7 @@ describe("vertex-claude extension", () => {
 
     const provider = pi.providers.get("google-vertex-claude");
     expect(provider).toBeDefined();
-    expect(provider?.apiKey).toBe("GOOGLE_CLOUD_PROJECT");
+    expect(provider?.apiKey).toBe("$GOOGLE_CLOUD_PROJECT");
     expect(provider?.api).toBe("vertex-claude-api");
     expect(provider?.models).toEqual(VERTEX_CLAUDE_MODELS);
   });

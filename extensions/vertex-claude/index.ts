@@ -542,7 +542,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerProvider("google-vertex-claude", {
     name: "Google Vertex Claude",
     baseUrl: resolveVertexBaseUrl(location),
-    apiKey: "GOOGLE_CLOUD_PROJECT",
+    apiKey: "$GOOGLE_CLOUD_PROJECT",
     api: "vertex-claude-api",
     models: VERTEX_CLAUDE_MODELS,
     streamSimple: streamVertexClaude,
