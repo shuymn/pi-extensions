@@ -70,7 +70,6 @@ export {
 const workflow = new ReviewWorkflowController();
 let runStarting = false;
 let startupGeneration = 0;
-let nextPhaseTimer: ReturnType<typeof setTimeout> | undefined;
 
 type ReviewOptions = {
   files: string[];
@@ -177,18 +176,11 @@ async function createReviewRunWithStartGuard(
   }
 }
 
-function clearQueuedPhaseTimer(): void {
-  if (!nextPhaseTimer) return;
-  clearTimeout(nextPhaseTimer);
-  nextPhaseTimer = undefined;
-}
-
 function activeRun(): ActiveReviewRun | undefined {
   return workflow.getActiveRun();
 }
 
 function clearActiveRun(ctx?: Pick<ExtensionContext, "ui">): void {
-  clearQueuedPhaseTimer();
   workflow.cancel();
   startupGeneration += 1;
   runStarting = false;
@@ -305,23 +297,15 @@ function startReviewRun(
   return queued.run;
 }
 
-function queueNextPhaseAfterCurrentTurn(
-  pi: ExtensionAPI,
-  runId: string,
-  ctx: Pick<ExtensionContext, "ui">,
-): void {
-  clearQueuedPhaseTimer();
-  nextPhaseTimer = setTimeout(() => {
-    nextPhaseTimer = undefined;
-    if (activeRun()?.id !== runId) return;
-    const queued = workflow.startQueuedPhase();
-    if (!queued) return;
-    try {
-      sendQueuedPhase(pi, queued, ctx);
-    } catch (error) {
-      failActiveRun(pi, ctx, "/review: 次の phase をキューに追加できませんでした。", error);
-    }
-  }, 0);
+function sendNextPhase(pi: ExtensionAPI, runId: string, ctx: Pick<ExtensionContext, "ui">): void {
+  if (activeRun()?.id !== runId) return;
+  const queued = workflow.startQueuedPhase();
+  if (!queued) return;
+  try {
+    sendQueuedPhase(pi, queued, ctx);
+  } catch (error) {
+    failActiveRun(pi, ctx, "/review: 次の phase をキューに追加できませんでした。", error);
+  }
 }
 
 export function createReviewExtension() {
@@ -356,7 +340,6 @@ export function createReviewExtension() {
 
       if (decision.kind === "completed") {
         emitWorkflowLifecycleEvent(pi, "completed", completingRun);
-        clearQueuedPhaseTimer();
         runStarting = false;
         clearReviewWidget(ctx);
         notifyIfUI(ctx, `/review: ワークフロー ${decision.runId} が完了しました。`, "info");
@@ -364,7 +347,7 @@ export function createReviewExtension() {
       }
 
       setPhaseWidget(ctx, "queued", decision.phaseIndex + 1);
-      queueNextPhaseAfterCurrentTurn(pi, decision.run.id, ctx);
+      sendNextPhase(pi, decision.run.id, ctx);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -417,7 +400,12 @@ export function createReviewExtension() {
           return;
         }
 
-        const active = startReviewRun(pi, creation.run, ctx);
+        let active: ActiveReviewRun;
+        try {
+          active = startReviewRun(pi, creation.run, ctx);
+        } catch {
+          return;
+        }
         if (active.noFixReason) {
           ctx.ui.notify(
             `/review: ${describeNoFixReasonJa(active.noFixReason)}ため no-fix mode に切り替えました。`,

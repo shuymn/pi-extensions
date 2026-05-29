@@ -131,11 +131,7 @@ async function setupReviewTest(execHandler?: (call: ExecCall) => ExecResult | Pr
 }
 
 async function advancePhase(pi: FakePi, ctx: FakeRunContext, content: unknown = "done") {
-  // Yield to the timer-based phase dispatch inside the review extension.
-  // The extension's setTimeout is queued during the agent_end handler, so
-  // setTimeout(0) is guaranteed to fire after it (macrotask FIFO ordering).
   await pi.getEventHandlers("agent_end")?.[0]({ messages: [{ role: "assistant", content }] }, ctx);
-  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function deferred<T>() {
@@ -808,7 +804,39 @@ describe("review extension", () => {
     });
   });
 
-  test("sendMessage failure clears active run during timer dispatch and allows retry", async () => {
+  test("command handles initial sendMessage failure without rethrowing", async () => {
+    const pi = await setupReviewTest();
+    const ctx = createCommandContext();
+    pi.sendMessage = () => {
+      throw new Error("send failed");
+    };
+
+    await expect(pi.commands.get("review")?.handler("@src/app.ts", ctx)).resolves.toBeUndefined();
+
+    expect(ctx.ui.notifications).toContainEqual({
+      message: "/review: ワークフローの phase をキューに追加できませんでした。",
+      level: "error",
+    });
+    expect(ctx.ui.notifications).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining("phase 1/"),
+          level: "info",
+        }),
+      ]),
+    );
+    expect(ctx.ui.widgets.at(-1)).toEqual({
+      key: "review-workflow",
+      lines: undefined,
+      options: undefined,
+    });
+    expect(pi.emittedEvents.map((event) => event.name)).toEqual([
+      "workflow:started",
+      "workflow:failed",
+    ]);
+  });
+
+  test("sendMessage failure clears active run during next phase dispatch and allows retry", async () => {
     const pi = await setupReviewTest();
     const ctx = createRunContext();
     await pi.tools
