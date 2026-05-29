@@ -76,6 +76,7 @@ export default function (pi: ExtensionAPI) {
   let projectName = "";
   let lastReadyTime = formatTime(new Date());
   let requestFooterRender: (() => void) | undefined;
+  const rerender = () => requestFooterRender?.();
   let ambiguousModelNames = new Set<string>();
 
   pi.on("session_start", async (_event, ctx) => {
@@ -135,14 +136,14 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", async () => {
     lastReadyTime = formatTime(new Date());
-    requestFooterRender?.();
+    rerender();
   });
 
   pi.on("model_select", async () => {
-    requestFooterRender?.();
+    rerender();
   });
 
   pi.on("thinking_level_select", async () => {
-    requestFooterRender?.();
+    rerender();
   });
 }
