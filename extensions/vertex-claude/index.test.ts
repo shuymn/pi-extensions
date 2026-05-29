@@ -1,12 +1,41 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
+import type { Api, Context, Model } from "@earendil-works/pi-ai";
+import { withTimeout } from "../../tests/support/async";
+import { isolateEnvVars } from "../../tests/support/env";
 import { createFakePi } from "../../tests/support/fake-pi";
 import extension, {
   mapStopReason,
   resolveVertexBaseUrl,
   resolveVertexModelRequest,
   resolveWebSearchConfig,
+  streamVertexClaude,
   VERTEX_CLAUDE_MODELS,
 } from "./index";
+
+function fakeModel(): Model<Api> {
+  return {
+    id: "claude-sonnet-4-6",
+    name: "Claude Sonnet 4.6",
+    api: "vertex-claude-api",
+    provider: "google-vertex-claude",
+    baseUrl: "https://aiplatform.googleapis.com/v1",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 200_000,
+    maxTokens: 64_000,
+  } as Model<Api>;
+}
+
+async function collectStreamTypes(
+  stream: ReturnType<typeof streamVertexClaude>,
+): Promise<string[]> {
+  const types: string[] = [];
+  for await (const event of stream) {
+    types.push(event.type);
+  }
+  return types;
+}
 
 describe("vertex-claude extension", () => {
   test("registers a Vertex Claude provider with latest-generation models", () => {
@@ -61,32 +90,12 @@ describe("vertex-claude extension", () => {
 });
 
 describe("resolveWebSearchConfig", () => {
-  const WEB_SEARCH_VARS = [
+  isolateEnvVars([
     "VERTEX_CLAUDE_WEB_SEARCH",
     "VERTEX_CLAUDE_WEB_SEARCH_MAX_USES",
     "VERTEX_CLAUDE_WEB_SEARCH_ALLOWED_DOMAINS",
     "VERTEX_CLAUDE_WEB_SEARCH_BLOCKED_DOMAINS",
-  ] as const;
-
-  let saved: Partial<Record<(typeof WEB_SEARCH_VARS)[number], string | undefined>>;
-
-  beforeEach(() => {
-    saved = {};
-    for (const key of WEB_SEARCH_VARS) {
-      saved[key] = process.env[key];
-      delete process.env[key];
-    }
-  });
-
-  afterEach(() => {
-    for (const key of WEB_SEARCH_VARS) {
-      if (saved[key] === undefined) {
-        delete process.env[key];
-      } else {
-        process.env[key] = saved[key];
-      }
-    }
-  });
+  ]);
 
   test("is disabled by default when VERTEX_CLAUDE_WEB_SEARCH is unset", () => {
     const config = resolveWebSearchConfig();
@@ -173,5 +182,18 @@ describe("mapStopReason", () => {
 
   test("maps unknown reasons to error", () => {
     expect(mapStopReason("unknown_reason")).toBe("error");
+  });
+});
+
+describe("streamVertexClaude", () => {
+  isolateEnvVars(["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "ANTHROPIC_VERTEX_PROJECT_ID"]);
+
+  test("emits a single error event and closes the stream when no project id is configured", async () => {
+    const types = await withTimeout(
+      collectStreamTypes(streamVertexClaude(fakeModel(), {} as Context)),
+      "stream did not end after a missing-project-id failure",
+      50,
+    );
+    expect(types).toEqual(["error"]);
   });
 });

@@ -272,7 +272,10 @@ export function streamVertexClaude(
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
-  void (async () => {
+  // Not prefixed with `void`: a throw escaping the catch block (e.g. a failing
+  // stream.push) surfaces as an unhandled rejection instead of being silently
+  // swallowed. stream.end() is guaranteed by the finally block below.
+  (async () => {
     const output: AssistantMessage = {
       role: "assistant",
       content: [],
@@ -521,12 +524,12 @@ export function streamVertexClaude(
         reason: output.stopReason as "stop" | "length" | "toolUse",
         message: output,
       });
-      stream.end();
     } catch (error) {
       for (const block of output.content) delete (block as { index?: number }).index;
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = error instanceof Error ? error.message : String(error);
       stream.push({ type: "error", reason: output.stopReason, error: output });
+    } finally {
       stream.end();
     }
   })();
