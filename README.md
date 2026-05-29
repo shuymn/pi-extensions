@@ -15,6 +15,13 @@ Use https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name
 
 Available extensions live under `extensions/`.
 
+To install only the extensions you need, install the package and then run `pi config` to enable or disable individual resources.
+
+```bash
+pi install https://github.com/shuymn/pi-extensions
+pi config
+```
+
 ## Available extensions
 
 - `add-dir` — Register extra workspace directories for the current session.

@@ -13,6 +13,13 @@ https://github.com/shuymn/pi-extensions/tree/main/extensions/<extension-name> �
 
 利用可能な extension は `extensions/` 配下にあります。
 
+必要な extension だけを使いたい場合は、package を install したあとに `pi config` で個別に有効化 / 無効化してください。
+
+```bash
+pi install https://github.com/shuymn/pi-extensions
+pi config
+```
+
 ## 利用可能な extensions
 
 - `add-dir` — 現在のセッションに追加の workspace directory を登録します。
