@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   type Api,
   type AssistantMessage,
@@ -92,6 +95,24 @@ async function waitForCondition(condition: () => boolean, message: string): Prom
 }
 
 describe("sakura-ai-engine extension", () => {
+  let prevAgentDir: string | undefined;
+  let tempAgentDir: string;
+
+  beforeEach(() => {
+    prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+    tempAgentDir = mkdtempSync(join(tmpdir(), "sakura-agent-test-"));
+    process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+  });
+
+  afterEach(() => {
+    rmSync(tempAgentDir, { recursive: true, force: true });
+    if (prevAgentDir === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+    }
+  });
+
   test("registers Sakura AI Engine as a rate-limited OpenAI-compatible API-key provider", () => {
     const pi = createFakePi();
 

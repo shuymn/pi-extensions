@@ -10,6 +10,7 @@ import {
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { readRateLimitConfig } from "./config.js";
 
 export const SAKURA_AI_ENGINE_PROVIDER_ID = "sakura-ai-engine";
 export const SAKURA_AI_ENGINE_AUTH_PROVIDER_ID = SAKURA_AI_ENGINE_PROVIDER_ID;
@@ -18,11 +19,12 @@ export const SAKURA_AI_ENGINE_BASE_URL = "https://api.ai.sakura.ad.jp/v1";
 export const SAKURA_AI_ENGINE_API_KEY_CONFIG_FALLBACK = "$SAKURA_AI_ENGINE_API_KEY";
 export const SAKURA_AI_ENGINE_UPSTREAM_API = "openai-completions";
 export const SAKURA_AI_ENGINE_RATE_LIMITED_API = "sakura-ai-engine-openai-completions";
-export const SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_MS = 3_000;
-export const SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS = 1;
-export const SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_ENV = "SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_MS";
-export const SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS_ENV =
-  "SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS";
+export {
+  SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS,
+  SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS_ENV,
+  SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_ENV,
+  SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_MS,
+} from "./config.js";
 
 export const SAKURA_AI_ENGINE_JPY_PER_USD = 160;
 
@@ -104,27 +106,6 @@ const defaultSleep: Sleep = (ms, signal) => {
   });
 };
 
-function readPositiveIntegerEnv(name: string, fallback: number): number {
-  const rawValue = process.env[name];
-  if (rawValue === undefined || rawValue.trim() === "") return fallback;
-
-  const value = Number.parseInt(rawValue, 10);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-function readRateLimitConfig() {
-  return {
-    windowMs: readPositiveIntegerEnv(
-      SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_ENV,
-      SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_MS,
-    ),
-    maxConcurrentRequests: readPositiveIntegerEnv(
-      SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS_ENV,
-      SAKURA_AI_ENGINE_MAX_CONCURRENT_REQUESTS,
-    ),
-  };
-}
-
 export class SakuraAiEngineRateLimiter {
   private activeRequests = 0;
   private windowStartedAt = 0;
@@ -152,10 +133,10 @@ export class SakuraAiEngineRateLimiter {
     const scheduled = this.scheduleTail
       .catch(() => {})
       .then(async () => {
+        const { maxConcurrentRequests, windowMs } = readRateLimitConfig();
         while (true) {
           if (signal?.aborted) throw signal.reason ?? new Error("Aborted");
 
-          const { maxConcurrentRequests, windowMs } = readRateLimitConfig();
           const currentTime = this.now();
           const windowElapsed = currentTime - this.windowStartedAt;
           if (this.windowStartedAt === 0 || windowElapsed >= windowMs) {
