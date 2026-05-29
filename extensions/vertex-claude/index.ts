@@ -221,7 +221,36 @@ function convertTools(tools: Tool[]): ToolUnion[] {
   });
 }
 
-function mapStopReason(reason: string): StopReason {
+export type WebSearchConfig = {
+  enabled: boolean;
+  maxUses: number;
+  allowedDomains: string[] | null;
+  blockedDomains: string[] | null;
+};
+
+export function resolveWebSearchConfig(): WebSearchConfig {
+  const raw = (process.env.VERTEX_CLAUDE_WEB_SEARCH ?? "").toLowerCase();
+  const enabled = raw === "1" || raw === "true";
+  const parsedMaxUses = Number.parseInt(process.env.VERTEX_CLAUDE_WEB_SEARCH_MAX_USES ?? "5", 10);
+  const maxUses = Number.isNaN(parsedMaxUses) ? 5 : parsedMaxUses;
+  const parseList = (raw: string | undefined): string[] | null =>
+    raw
+      ? raw
+          .split(",")
+          .map((d) => d.trim())
+          .filter(Boolean)
+      : null;
+  const allowedDomains = parseList(process.env.VERTEX_CLAUDE_WEB_SEARCH_ALLOWED_DOMAINS);
+  const blockedDomains = parseList(process.env.VERTEX_CLAUDE_WEB_SEARCH_BLOCKED_DOMAINS);
+  if (allowedDomains && blockedDomains) {
+    throw new Error(
+      "VERTEX_CLAUDE_WEB_SEARCH_ALLOWED_DOMAINS and VERTEX_CLAUDE_WEB_SEARCH_BLOCKED_DOMAINS are mutually exclusive per Vertex API spec. Set only one.",
+    );
+  }
+  return { enabled, maxUses, allowedDomains, blockedDomains };
+}
+
+export function mapStopReason(reason: string): StopReason {
   if (["end_turn", "pause_turn", "stop_sequence"].includes(reason)) return "stop";
   if (reason === "max_tokens") return "length";
   if (reason === "tool_use") return "toolUse";
@@ -230,7 +259,11 @@ function mapStopReason(reason: string): StopReason {
 
 function parseCompleteJson(json: string): Record<string, unknown> {
   if (!json.trim()) return {};
-  return JSON.parse(json);
+  try {
+    return JSON.parse(json);
+  } catch {
+    return {};
+  }
 }
 
 export function streamVertexClaude(
@@ -309,12 +342,38 @@ export function streamVertexClaude(
         params.thinking = { type: "enabled", budget_tokens: thinkingBudget };
       }
 
+      const webSearchConfig = resolveWebSearchConfig();
+      if (webSearchConfig.enabled) {
+        const webSearchTool: Record<string, unknown> = {
+          type: "web_search",
+          name: "web_search",
+          max_uses: webSearchConfig.maxUses,
+        };
+        if (webSearchConfig.allowedDomains) {
+          webSearchTool.allowed_domains = webSearchConfig.allowedDomains;
+        } else if (webSearchConfig.blockedDomains) {
+          webSearchTool.blocked_domains = webSearchConfig.blockedDomains;
+        }
+        params.tools = [webSearchTool as unknown as ToolUnion, ...(params.tools ?? [])];
+      }
+
       const anthropicStream = client.messages.stream(params, { signal: options?.signal });
       stream.push({ type: "start", partial: output });
       type Block = (ThinkingContent | TextContent | (ToolCall & { partialJson: string })) & {
         index: number;
       };
+      type WebSearchTracker = { index: number; partialJson: string };
       const blocks = output.content as Block[];
+      const webSearchTrackers: WebSearchTracker[] = [];
+      const pushSyntheticText = (text: string): void => {
+        const synthBlock: Block = { type: "text", text, index: -1 };
+        output.content.push(synthBlock);
+        const contentIndex = output.content.length - 1;
+        stream.push({ type: "text_start", contentIndex, partial: output });
+        stream.push({ type: "text_delta", contentIndex, delta: text, partial: output });
+        delete (synthBlock as Partial<Block>).index;
+        stream.push({ type: "text_end", contentIndex, content: text, partial: output });
+      };
 
       for await (const event of anthropicStream) {
         if (event.type === "message_start") {
@@ -356,8 +415,28 @@ export function streamVertexClaude(
               contentIndex: output.content.length - 1,
               partial: output,
             });
+          } else if (event.content_block.type === "server_tool_use") {
+            webSearchTrackers.push({ index: event.index, partialJson: "" });
+          } else if (event.content_block.type === "web_search_tool_result") {
+            const resultBlock = event.content_block as unknown as {
+              content: { type: string; uri: string; title: string }[];
+            };
+            const sources = resultBlock.content
+              .filter((item) => item.type === "web_search_result")
+              .map((item) => `• ${item.title} — ${item.uri}`)
+              .join("\n");
+            if (sources) {
+              pushSyntheticText(`Sources:\n${sources}`);
+            }
           }
         } else if (event.type === "content_block_delta") {
+          if (event.delta.type === "input_json_delta") {
+            const tracker = webSearchTrackers.find((t) => t.index === event.index);
+            if (tracker) {
+              tracker.partialJson += event.delta.partial_json;
+              continue;
+            }
+          }
           const contentIndex = blocks.findIndex((block) => block.index === event.index);
           const block = blocks[contentIndex];
           if (!block) continue;
@@ -390,6 +469,16 @@ export function streamVertexClaude(
             block.thinkingSignature = `${block.thinkingSignature || ""}${delta.signature || ""}`;
           }
         } else if (event.type === "content_block_stop") {
+          const trackerIdx = webSearchTrackers.findIndex((t) => t.index === event.index);
+          if (trackerIdx !== -1) {
+            const tracker = webSearchTrackers[trackerIdx];
+            webSearchTrackers.splice(trackerIdx, 1);
+            const parsed = parseCompleteJson(tracker.partialJson);
+            const query = typeof parsed.query === "string" ? parsed.query : "";
+            const text = `🔍 Web Search: "${query}"`;
+            pushSyntheticText(text);
+            continue;
+          }
           const contentIndex = blocks.findIndex((block) => block.index === event.index);
           const block = blocks[contentIndex];
           if (!block) continue;
