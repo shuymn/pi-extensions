@@ -1,4 +1,7 @@
-export type TargetSource = "diff" | "explicit";
+import { type ExecGit, formatCommandFailure } from "./command";
+import { hasWhitespaceOrControl } from "./text";
+
+export type TargetSource = "diff" | "explicit" | "pr";
 
 export type Target = {
   path: string;
@@ -6,9 +9,6 @@ export type Target = {
   status: string;
   source: TargetSource;
 };
-
-export type GitResult = { code: number; stdout: string; stderr: string };
-export type ExecGit = (args: string[]) => Promise<GitResult>;
 
 export type CollectChangedTargetsOptions = {
   files: string[];
@@ -21,20 +21,8 @@ export function normalizeFileArg(file: string): string {
   return file.replace(/^@/, "");
 }
 
-export function truncate(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n\n[diff truncated at ${maxChars} chars; inspect files directly before editing]`;
-}
-
 export function readablePathGitArgs(args: string[]): string[] {
   return ["-c", "core.quotepath=false", ...args];
-}
-
-function hasWhitespaceOrControl(value: string): boolean {
-  return [...value].some((char) => {
-    const code = char.charCodeAt(0);
-    return char.trim() === "" || code < 32 || code === 127;
-  });
 }
 
 export function normalizeBaseBranch(base: string | undefined): string | undefined {
@@ -61,11 +49,6 @@ export function normalizeBaseBranch(base: string | undefined): string | undefine
 
 export function branchDiffRange(base: string): string {
   return `${base}...HEAD`;
-}
-
-export function formatGitFailure(context: string, result: GitResult): string {
-  const output = [result.stderr.trim(), result.stdout.trim()].filter(Boolean).join("\n");
-  return `${context} failed with exit code ${result.code}${output ? `: ${truncate(output, 1000)}` : ""}`;
 }
 
 export function parseNameStatus(
@@ -160,7 +143,7 @@ export async function collectChangedTargets(
     const branch = await execGit(["diff", "--name-status", "-z", branchDiffRange(options.base)]);
     if (branch.code !== 0) {
       throw new Error(
-        formatGitFailure(
+        formatCommandFailure(
           `Collecting branch diff targets for ${branchDiffRange(options.base)}`,
           branch,
         ),

@@ -1,14 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import type { ExecGit } from "./command";
 import {
   collectChangedTargets,
-  type ExecGit,
   formatJsonTarget,
   isExplicitFileMode,
   normalizeBaseBranch,
   normalizeFileArg,
   parseNameStatus,
   targetPathsForDiff,
-  truncate,
   uniqueTargets,
 } from "./git";
 
@@ -57,12 +56,6 @@ describe("git helpers", () => {
         source: "diff",
       }),
     ).toBe('- "old.ts" -> "new.ts" (R100; diff)');
-  });
-
-  test("truncates with existing message", () => {
-    expect(truncate("abcdef", 3)).toBe(
-      "abc\n\n[diff truncated at 3 chars; inspect files directly before editing]",
-    );
   });
 
   test("collects explicit targets without calling git", async () => {
