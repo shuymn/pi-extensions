@@ -1,5 +1,19 @@
 <!-- Keep under 30 instruction lines. Update inline when tooling changes. -->
 
+## Agent skills
+
+### Issue tracker
+
+No issue tracker is configured for these skills. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage labels are currently unused because no issue tracker is configured. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repo uses a single-context domain layout. See `docs/agents/domain.md`.
+
 ## Core Principles
 - Execute only what the user explicitly requested; do not add unrequested features.
 - When requirements are ambiguous, ask one concise question before implementation.
