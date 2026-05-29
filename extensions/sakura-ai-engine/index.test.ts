@@ -6,6 +6,7 @@ import {
   createAssistantMessageEventStream,
   type Model,
 } from "@earendil-works/pi-ai";
+import { withTimeout } from "../../tests/support/async";
 import { createFakePi } from "../../tests/support/fake-pi";
 import extension, {
   createSakuraAiEngineRateLimitedStreamSimple,
@@ -78,15 +79,6 @@ function restoreEnv(name: string, value: string | undefined) {
   process.env[name] = value;
 }
 
-async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
-  return await Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(message)), 50);
-    }),
-  ]);
-}
-
 async function waitForCondition(condition: () => boolean, message: string): Promise<void> {
   await withTimeout(
     (async () => {
@@ -95,6 +87,7 @@ async function waitForCondition(condition: () => boolean, message: string): Prom
       }
     })(),
     message,
+    50,
   );
 }
 
@@ -252,7 +245,7 @@ describe("sakura-ai-engine extension", () => {
         secondStarted = true;
       });
 
-      await withTimeout(second, "second request never acquired a released slot");
+      await withTimeout(second, "second request never acquired a released slot", 50);
       expect(secondStarted).toBe(true);
     } finally {
       restoreEnv(SAKURA_AI_ENGINE_RATE_LIMIT_WINDOW_ENV, previousWindow);
@@ -307,7 +300,7 @@ describe("sakura-ai-engine extension", () => {
     await waitForCondition(() => upstreamStarted, "upstream stream never started");
     controller.abort();
 
-    const types = await withTimeout(typesPromise, "stream did not end after mid-stream abort");
+    const types = await withTimeout(typesPromise, "stream did not end after mid-stream abort", 50);
     expect(types).toEqual(["start", "error"]);
   });
 
@@ -370,7 +363,11 @@ describe("sakura-ai-engine extension", () => {
     await Promise.resolve();
     controller.abort();
 
-    const types = await withTimeout(typesPromise, "stream did not end after acquire-queue abort");
+    const types = await withTimeout(
+      typesPromise,
+      "stream did not end after acquire-queue abort",
+      50,
+    );
     expect(types).toEqual(["error"]);
 
     releaseFirst();

@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import { withTimeout } from "../../tests/support/async";
 
 let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
   content: [{ type: "text", text: "Generated Title" }],
@@ -86,20 +87,6 @@ function deferred<T>() {
     reject = promiseReject;
   });
   return { promise, resolve, reject };
-}
-
-async function withTimeout<T>(promise: Promise<T>, message: string): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(message)), 1_000);
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
 }
 
 async function loadExtension() {
