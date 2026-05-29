@@ -281,7 +281,10 @@ function sendQueuedPhase(
         ...reviewRunDetails(queued.run),
       },
     },
-    { triggerTurn: true },
+    // Trigger a fresh turn when idle, but if the previous turn has not finished
+    // streaming yet (agent_end can fire before isStreaming clears), queue this as
+    // a follow-up instead of steering/erroring with "Agent is already processing".
+    { triggerTurn: true, deliverAs: "followUp" },
   );
 }
 

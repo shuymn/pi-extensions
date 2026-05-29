@@ -136,7 +136,7 @@ describe("research extension", () => {
     });
     expect(pi.sentMessages[0]!.message.content).toContain("Run only phase 1/4: Frame");
     expect(pi.sentMessages[0]!.message.content).toContain("React Server Components risks");
-    expect(pi.sentMessages[0]!.options).toEqual({ triggerTurn: true });
+    expect(pi.sentMessages[0]!.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
     expect(notifications).toEqual([
       {
         message: "/research: phase 1/4 をキューに追加しました。",

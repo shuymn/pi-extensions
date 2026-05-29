@@ -229,6 +229,7 @@ describe("review extension", () => {
       display: false,
       details: { phase: "01-recon.md", phaseIndex: 1, phaseCount: 9 },
     });
+    expect(pi.sentMessages[0].options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
     expect(pi.sentMessages[0].message.content).toContain(
       "Explicit file mode: git diff is intentionally ignored",
     );
