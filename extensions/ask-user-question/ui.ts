@@ -1,4 +1,10 @@
-import { Key, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import {
+  Key,
+  matchesKey,
+  truncateToWidth,
+  visibleWidth,
+  wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { accentBorder, printableInput } from "../../lib/tui";
 import {
   type AskUiResult,
@@ -115,12 +121,32 @@ export function createQuestionnaireComponent(
     checked?: boolean,
   ): string[] {
     const selected = index === snapshot.selectedIndex;
-    const pointer = selected ? theme.fg("accent", "> ") : "  ";
+    const pointerText = selected ? "> " : "  ";
+    const checkboxText = checked === undefined ? "" : checked ? "[✓] " : "[ ] ";
+    const indexPrefix = `${index + 1}. `;
+    const prefixWidth = visibleWidth(pointerText + checkboxText + indexPrefix);
+    const pointer = selected ? theme.fg("accent", pointerText) : pointerText;
     const checkbox =
-      checked === undefined ? "" : checked ? theme.fg("success", "[✓] ") : theme.fg("dim", "[ ] ");
+      checked === undefined
+        ? ""
+        : checked
+          ? theme.fg("success", checkboxText)
+          : theme.fg("dim", checkboxText);
     const title = selected ? theme.fg("accent", theme.bold(label)) : theme.fg("text", label);
-    const lines = [truncateToWidth(`${pointer}${checkbox}${index + 1}. ${title}`, width)];
-    if (description) lines.push(truncateToWidth(`     ${theme.fg("muted", description)}`, width));
+    const titlePrefix = `${pointer}${checkbox}${indexPrefix}`;
+    if (width <= prefixWidth) return [truncateToWidth(`${titlePrefix}${title}`, width)];
+
+    const contentWidth = width - prefixWidth;
+    const padding = " ".repeat(prefixWidth);
+    const titleLines = wrapTextWithAnsi(title, contentWidth);
+    const lines = titleLines.map((line, lineIndex) =>
+      truncateToWidth(`${lineIndex === 0 ? titlePrefix : padding}${line}`, width),
+    );
+    if (description) {
+      for (const line of wrapTextWithAnsi(theme.fg("muted", description), contentWidth)) {
+        lines.push(truncateToWidth(`${padding}${line}`, width));
+      }
+    }
     return lines;
   }
 
@@ -129,6 +155,14 @@ export function createQuestionnaireComponent(
     const q = snapshot.currentQuestion;
     const lines: string[] = [];
     const add = (line = "") => lines.push(truncateToWidth(line, width));
+    const addWrapped = (line = "", prefix = "") => {
+      if (!line) {
+        add("");
+        return;
+      }
+      const wrapped = wrapTextWithAnsi(line, Math.max(1, width - visibleWidth(prefix)));
+      for (const wrappedLine of wrapped) add(`${prefix}${wrappedLine}`);
+    };
 
     add(accentBorder(theme, width));
     add(
@@ -142,7 +176,7 @@ export function createQuestionnaireComponent(
       for (const answer of snapshot.answers) {
         const value =
           answer.kind === "multi" ? answer.selected.join(", ") : (answer.answer ?? "(no response)");
-        add(`Q${answer.questionIndex + 1}: ${value}`);
+        addWrapped(value, `Q${answer.questionIndex + 1}: `);
       }
       add("");
       add(theme.fg("dim", "Enter submit • Esc cancel"));
@@ -156,7 +190,7 @@ export function createQuestionnaireComponent(
     }
 
     add(theme.fg("accent", theme.bold(q.header)));
-    add(theme.fg("text", theme.bold(q.question)));
+    addWrapped(theme.fg("text", theme.bold(q.question)));
     add("");
 
     if (snapshot.mode === "custom" || snapshot.mode === "chat") {
@@ -168,7 +202,7 @@ export function createQuestionnaireComponent(
             : "What would you like to discuss or clarify?",
         ),
       );
-      add(snapshot.inputDraft || theme.fg("dim", "(empty)"));
+      addWrapped(snapshot.inputDraft || theme.fg("dim", "(empty)"));
       add("");
       add(theme.fg("dim", "Enter submit • Esc back"));
       add(accentBorder(theme, width));
@@ -219,7 +253,7 @@ export function createQuestionnaireComponent(
         if (option.preview && index === snapshot.selectedIndex) {
           add(`     ${theme.fg("dim", "Preview:")}`);
           for (const previewLine of option.preview.split("\n").slice(0, 8))
-            add(`     ${theme.fg("muted", previewLine)}`);
+            addWrapped(theme.fg("muted", previewLine), "     ");
         }
       });
       lines.push(
