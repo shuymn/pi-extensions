@@ -5,10 +5,16 @@ import {
   CODEX_FAST_STATUS_ON,
   isOpenAICodexModel,
 } from "../../lib/codex-fast";
+import { readGlobalExtensionSettings, updateGlobalExtensionSettings } from "../../lib/settings";
 import { notifyIfUI } from "../../lib/tui";
 
 const FAST_SERVICE_TIER = "priority";
+const CODEX_FAST_SETTINGS_KEY = "codex-fast";
 const USAGE = "使い方: /codex-fast [on|off|toggle|status]";
+
+interface CodexFastSettings {
+  enabled?: boolean;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -26,15 +32,27 @@ export function applyCodexFastServiceTier(
   return { ...payload, service_tier: FAST_SERVICE_TIER };
 }
 
+function readPersistedEnabled(): boolean {
+  return readGlobalExtensionSettings<CodexFastSettings>(CODEX_FAST_SETTINGS_KEY).enabled === true;
+}
+
+function persistEnabled(enabled: boolean): void {
+  updateGlobalExtensionSettings<CodexFastSettings>(CODEX_FAST_SETTINGS_KEY, (current) => ({
+    ...current,
+    enabled,
+  }));
+}
+
 function setStatus(ctx: Pick<ExtensionContext, "hasUI" | "ui">, enabled: boolean): void {
   if (!ctx.hasUI) return;
   ctx.ui.setStatus(CODEX_FAST_STATUS_KEY, enabled ? CODEX_FAST_STATUS_ON : undefined);
 }
 
 export default function codexFastExtension(pi: ExtensionAPI): void {
-  let enabled = false;
+  let enabled = readPersistedEnabled();
 
   function setEnabled(nextEnabled: boolean, ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
+    persistEnabled(nextEnabled);
     enabled = nextEnabled;
     setStatus(ctx, enabled);
     notifyIfUI(
@@ -45,7 +63,7 @@ export default function codexFastExtension(pi: ExtensionAPI): void {
   }
 
   pi.registerCommand("codex-fast", {
-    description: "Control OpenAI Codex fast service tier for this session",
+    description: "Control OpenAI Codex fast service tier with global settings persistence",
     handler: async (args, ctx) => {
       const command = args.trim() || "on";
 
@@ -79,6 +97,7 @@ export default function codexFastExtension(pi: ExtensionAPI): void {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    enabled = readPersistedEnabled();
     setStatus(ctx, enabled);
   });
 

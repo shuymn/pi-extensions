@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON } from "../../lib/codex-fast";
+import { isolateEnvVars } from "../../tests/support/env";
 import { createFakePi as createSharedFakePi } from "../../tests/support/fake-pi";
 import codexFastExtension, { applyCodexFastServiceTier } from "./index";
 
@@ -44,12 +48,27 @@ function createContext(
 }
 
 describe("codex-fast extension", () => {
+  let tempAgentDir: string;
+
+  isolateEnvVars(["PI_CODING_AGENT_DIR"]);
+
+  beforeEach(() => {
+    tempAgentDir = mkdtempSync(join(tmpdir(), "codex-fast-agent-test-"));
+    process.env.PI_CODING_AGENT_DIR = tempAgentDir;
+  });
+
+  afterEach(() => {
+    rmSync(tempAgentDir, { recursive: true, force: true });
+  });
+
   test("registers /codex-fast and a provider payload hook", () => {
     const pi = createFakePi();
 
     codexFastExtension(pi as never);
 
-    expect(pi.getCommand("codex-fast")?.description).toContain("Codex");
+    expect(pi.getCommand("codex-fast")?.description).toBe(
+      "Control OpenAI Codex fast service tier with global settings persistence",
+    );
     expect(pi.getEventHandlers("before_provider_request")).toHaveLength(1);
   });
 
@@ -86,6 +105,62 @@ describe("codex-fast extension", () => {
 
     expect(result).toBeUndefined();
     expect(statuses.get(CODEX_FAST_STATUS_KEY)).toBeUndefined();
+  });
+
+  test("loads fast mode from global settings.json", () => {
+    writeFileSync(
+      join(tempAgentDir, "settings.json"),
+      JSON.stringify({ "codex-fast": { enabled: true } }),
+    );
+
+    const pi = createFakePi();
+    codexFastExtension(pi as never);
+
+    const { ctx, statuses } = createContext();
+    pi.getEventHandlers("session_start")[0]!({}, ctx);
+    const result = pi.getEventHandlers("before_provider_request")[0]!(
+      { payload: { model: "gpt-5.5" } },
+      ctx,
+    );
+
+    expect(result).toEqual({ model: "gpt-5.5", service_tier: "priority" });
+    expect(statuses.get(CODEX_FAST_STATUS_KEY)).toBe(CODEX_FAST_STATUS_ON);
+  });
+
+  test("persists fast mode changes to global settings.json", async () => {
+    writeFileSync(
+      join(tempAgentDir, "settings.json"),
+      JSON.stringify({ theme: "dark", "codex-fast": { lastChangedBy: "test" } }),
+    );
+    const pi = createFakePi();
+    codexFastExtension(pi as never);
+
+    const { ctx } = createContext();
+    await pi.getCommand("codex-fast")!.handler("on", ctx);
+    expect(JSON.parse(readFileSync(join(tempAgentDir, "settings.json"), "utf8"))).toEqual({
+      theme: "dark",
+      "codex-fast": { lastChangedBy: "test", enabled: true },
+    });
+
+    await pi.getCommand("codex-fast")!.handler("off", ctx);
+    expect(JSON.parse(readFileSync(join(tempAgentDir, "settings.json"), "utf8"))).toEqual({
+      theme: "dark",
+      "codex-fast": { lastChangedBy: "test", enabled: false },
+    });
+  });
+
+  test("creates global settings.json when persisting fast mode", async () => {
+    const pi = createFakePi();
+    codexFastExtension(pi as never);
+
+    const { ctx } = createContext();
+    await pi.getCommand("codex-fast")!.handler("on", ctx);
+
+    const settingsPath = join(tempAgentDir, "settings.json");
+    expect(existsSync(settingsPath)).toBe(true);
+    expect(JSON.parse(readFileSync(settingsPath, "utf8"))).toEqual({
+      "codex-fast": { enabled: true },
+    });
   });
 
   test("status reports the current setting without changing it", async () => {
