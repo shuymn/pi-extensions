@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
+import { CODEX_FAST_ICON, CODEX_FAST_STATUS_KEY, isOpenAICodexModel } from "../../lib/codex-fast";
+
 const ICON_BRANCH = "";
 const SEP = " | ";
 
@@ -60,6 +62,12 @@ function modelName(model: unknown, ambiguousModelNames: ReadonlySet<string>): st
 
   const provider = (model as ModelLike).provider;
   return typeof provider === "string" ? `${provider}/${name}` : name;
+}
+
+function modelPrefix(model: unknown, extensionStatuses: ReadonlyMap<string, string>): string {
+  return extensionStatuses.has(CODEX_FAST_STATUS_KEY) && isOpenAICodexModel(model)
+    ? `${CODEX_FAST_ICON} `
+    : "";
 }
 
 function contextWindow(model: unknown): number | undefined {
@@ -132,7 +140,9 @@ export default function (pi: ExtensionAPI) {
           }
 
           const effort = pi.getThinkingLevel();
-          const effortModel = `${modelName(ctx.model, ambiguousModelNames)}・${effort}`;
+          const modelStatusPrefix = modelPrefix(ctx.model, footerData.getExtensionStatuses());
+          const displayModel = modelName(ctx.model, ambiguousModelNames);
+          const effortModel = `${modelStatusPrefix}${displayModel}・${effort}`;
           const durationPart =
             lastTurnDuration !== undefined
               ? ` took ${rgb(255, 200, 60, formatDuration(lastTurnDuration))}`

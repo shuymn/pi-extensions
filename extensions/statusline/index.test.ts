@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 
+import { CODEX_FAST_ICON, CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON } from "../../lib/codex-fast";
+
 mock.module("@earendil-works/pi-tui", () => ({
   truncateToWidth: (text: string, width: number, suffix = "") =>
     text.length > width ? `${text.slice(0, Math.max(0, width - suffix.length))}${suffix}` : text,
@@ -18,6 +20,7 @@ type FooterComponent = {
 };
 type FooterData = {
   getGitBranch: () => string | undefined;
+  getExtensionStatuses: () => ReadonlyMap<string, string>;
   onBranchChange: (listener: () => void) => () => void;
 };
 type FakeContext = ReturnType<typeof createContext>;
@@ -101,12 +104,17 @@ function createContext(
   };
 }
 
-function instantiateFooter(ctx: FakeContext, branch?: string) {
+function instantiateFooter(
+  ctx: FakeContext,
+  branch?: string,
+  extensionStatuses: ReadonlyMap<string, string> = new Map(),
+) {
   let renderCount = 0;
   const branchListeners: Array<() => void> = [];
   let disposed = false;
   const footerData: FooterData = {
     getGitBranch: () => branch,
+    getExtensionStatuses: () => extensionStatuses,
     onBranchChange: (listener) => {
       branchListeners.push(listener);
       return () => {
@@ -203,6 +211,45 @@ describe("statusline extension", () => {
     ]);
     expect(rendered).toContain("my-project on  feature/statusline via anthropic/sonnet・high");
     expect(rendered).toContain("ctx ● 25%");
+  });
+
+  test("renders codex fast lightning before model when codex-fast status is active", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const ctx = createContext({
+      model: { name: "gpt-5.5", provider: "openai-codex", contextWindow: 100_000 },
+    });
+
+    await pi.events.get("session_start")![0]({}, ctx);
+    const footer = instantiateFooter(
+      ctx,
+      undefined,
+      new Map([[CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON]]),
+    );
+    const rendered = stripAnsi(footer.component.render(500)[0]);
+
+    expect(rendered).toContain(`via ${CODEX_FAST_ICON} gpt-5.5・medium`);
+  });
+
+  test("does not render codex fast lightning for non-Codex models", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const ctx = createContext({
+      model: { name: "claude", provider: "anthropic", contextWindow: 100_000 },
+    });
+
+    await pi.events.get("session_start")![0]({}, ctx);
+    const footer = instantiateFooter(
+      ctx,
+      undefined,
+      new Map([[CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON]]),
+    );
+    const rendered = stripAnsi(footer.component.render(500)[0]);
+
+    expect(rendered).toContain("via claude・medium");
+    expect(rendered).not.toContain(CODEX_FAST_ICON);
   });
 
   test("falls back to cwd basename when git root is unavailable", async () => {
