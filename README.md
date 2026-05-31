@@ -26,7 +26,7 @@ pi config
 
 - `add-dir` — Register extra workspace directories for the current session.
 - `ask-user-question` — Let the agent ask structured clarification questions.
-- `codex-fast` — Control OpenAI Codex fast service tier for the current session.
+- `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
 - `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
 - `plan` — Add `/plan` and `/impl` workflow prompts.
