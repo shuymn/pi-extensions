@@ -41,21 +41,25 @@ import {
 const COMMAND_NAME = "review";
 const TOOL_NAME = "review";
 const MAX_PHASE_NOTE_CHARS = 20_000;
-const INVESTIGATION_ALLOWED_TOOLS = new Set([
+export const INVESTIGATION_ALLOWED_TOOL_NAMES = [
   "read",
   "grep",
   "find",
   "ls",
   "bash",
+  "github_clone_workspace",
+  "ask_user_question",
   "spawn_subagent",
   "get_subagent_result",
+  "stop_subagent",
   "list_subagents",
   "tavily_search",
   "tavily_extract",
   "tavily_map",
   "tavily_crawl",
   "tavily_auth_status",
-]);
+] as const;
+const INVESTIGATION_ALLOWED_TOOLS: ReadonlySet<string> = new Set(INVESTIGATION_ALLOWED_TOOL_NAMES);
 
 export {
   REVIEW_WORKFLOW_EVENT_NAME,

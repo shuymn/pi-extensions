@@ -612,9 +612,15 @@ describe("review extension", () => {
       .get("review")
       ?.execute("call", { files: ["src/app.ts"] }, undefined, undefined, createRunContext());
 
-    await expect(
-      pi.getEventHandlers("tool_call")?.[0]({ toolName: "read", input: {} }),
-    ).resolves.toBeUndefined();
+    const { INVESTIGATION_ALLOWED_TOOL_NAMES } = await loadExtensionModule();
+    for (const toolName of INVESTIGATION_ALLOWED_TOOL_NAMES) {
+      await expect(
+        pi.getEventHandlers("tool_call")?.[0]({
+          toolName,
+          input: {},
+        }),
+      ).resolves.toBeUndefined();
+    }
     await expect(
       pi.getEventHandlers("tool_call")?.[0]({
         toolName: "review_phase_artifact",
