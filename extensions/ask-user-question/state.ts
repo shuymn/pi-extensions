@@ -212,11 +212,7 @@ function submitInput(state: QuestionnaireState): QuestionnaireUpdateResult {
 
 function toggleSelectedMultiOption(state: QuestionnaireState): boolean {
   const question = currentQuestion(state);
-  if (
-    !question ||
-    question.multiSelect !== true ||
-    state.selectedIndex >= question.options.length
-  ) {
+  if (question?.multiSelect !== true || state.selectedIndex >= question.options.length) {
     return false;
   }
   const set = getMultiSet(state);

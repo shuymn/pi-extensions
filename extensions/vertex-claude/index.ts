@@ -1,11 +1,6 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type {
-  ContentBlockParam,
-  MessageCreateParamsStreaming,
-  ToolUnion,
-} from "@anthropic-ai/sdk/resources/messages";
 import { AnthropicVertex } from "@anthropic-ai/vertex-sdk";
 import {
   type Api,
@@ -26,6 +21,13 @@ import {
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+type MessageCreateParamsStreaming = Parameters<AnthropicVertex["messages"]["stream"]>[0];
+type ContentBlockParam = Exclude<
+  MessageCreateParamsStreaming["messages"][number]["content"],
+  string
+>[number];
+type ToolUnion = NonNullable<MessageCreateParamsStreaming["tools"]>[number];
 
 const DEFAULT_LOCATION = "global";
 const DEFAULT_ADC_PATH = join(
