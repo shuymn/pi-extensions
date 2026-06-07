@@ -30,6 +30,7 @@ pi config
 - `commandcode-provider` — Register the Command Code model provider with live model discovery and a fallback catalog.
 - `copy-file` — Add `/copy-file` to write the latest assistant message to `RESULT_<uuid>.md` in cwd.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
+- `fallback-model` — Switch to comma-separated fallback models on retryable model errors.
 - `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
 - `plan` — Add `/plan` and `/impl` workflow prompts.
 - `prompt-stash` — Stash and restore the prompt buffer with `ctrl+s`.
