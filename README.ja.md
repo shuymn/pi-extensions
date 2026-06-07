@@ -25,6 +25,8 @@ pi config
 - `add-dir` — 現在のセッションに追加の workspace directory を登録します。
 - `ask-user-question` — エージェントが構造化された確認質問を行えるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
+- `commandcode-provider` — Command Code の model provider を登録します。live model discovery と fallback catalog を含みます。
+- `copy-file` — `/copy-file` で最新の assistant message を cwd の `RESULT_<uuid>.md` に保存します。
 - `exit` — `/quit` の alias として `/exit` を追加し、resume command を表示します。
 - `message-history` — `ctrl+r` で過去の user messages を fuzzy find します。
 - `plan` — `/plan` と `/impl` の workflow prompts を追加します。
