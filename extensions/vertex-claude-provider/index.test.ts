@@ -37,7 +37,7 @@ async function collectStreamTypes(
   return types;
 }
 
-describe("vertex-claude extension", () => {
+describe("vertex-claude-provider extension", () => {
   test("registers a Vertex Claude provider with latest-generation models", () => {
     const pi = createFakePi();
 

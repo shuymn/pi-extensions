@@ -31,13 +31,13 @@ pi config
 - `prompt-stash` — `ctrl+s` で prompt buffer を stash / restore します。
 - `research` — staged deep-research workflows と Tavily Research escalation を実行します。
 - `review` — multi-phase code review workflow を実行します。
-- `sakura-ai-engine` — Sakura AI Engine の model provider を登録します。
+- `sakura-ai-engine-provider` — Sakura AI Engine の model provider を登録します。
 - `session-title` — 最初の user message から session title を生成します。
 - `statusline` — TUI footer を project、model、context status 表示に置き換えます。
 - `subagents` — delegated work 用に isolated subagent sessions を起動します。
 - `tavily` — Tavily search、extract、map、crawl、auth tools を追加します。
 - `todo` — multi-step work 用の branch-local todos を管理します。
-- `vertex-claude` — Google Vertex AI 経由で提供される Claude models を登録します。
+- `vertex-claude-provider` — Google Vertex AI 経由で提供される Claude models を登録します。
 
 依存関係:
 

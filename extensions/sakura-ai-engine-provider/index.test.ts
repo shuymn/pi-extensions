@@ -94,7 +94,7 @@ async function waitForCondition(condition: () => boolean, message: string): Prom
   );
 }
 
-describe("sakura-ai-engine extension", () => {
+describe("sakura-ai-engine-provider extension", () => {
   let prevAgentDir: string | undefined;
   let tempAgentDir: string;
 

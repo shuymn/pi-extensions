@@ -32,7 +32,10 @@ describe("readSettings", () => {
 
   test("reads from global settings.json", () => {
     const globalPath = join(tempDir, "global.json");
-    writeFileSync(globalPath, JSON.stringify({ "sakura-ai-engine": { rateLimitWindowMs: 5000 } }));
+    writeFileSync(
+      globalPath,
+      JSON.stringify({ "sakura-ai-engine-provider": { rateLimitWindowMs: 5000 } }),
+    );
     expect(readSettings(globalPath, join(tempDir, "no-project.json"))).toEqual({
       rateLimitWindowMs: 5000,
     });
@@ -44,10 +47,13 @@ describe("readSettings", () => {
     writeFileSync(
       globalPath,
       JSON.stringify({
-        "sakura-ai-engine": { rateLimitWindowMs: 5000, maxConcurrentRequests: 1 },
+        "sakura-ai-engine-provider": { rateLimitWindowMs: 5000, maxConcurrentRequests: 1 },
       }),
     );
-    writeFileSync(projectPath, JSON.stringify({ "sakura-ai-engine": { rateLimitWindowMs: 8000 } }));
+    writeFileSync(
+      projectPath,
+      JSON.stringify({ "sakura-ai-engine-provider": { rateLimitWindowMs: 8000 } }),
+    );
     expect(readSettings(globalPath, projectPath)).toEqual({
       rateLimitWindowMs: 8000,
       maxConcurrentRequests: 1,
@@ -58,15 +64,15 @@ describe("readSettings", () => {
     expect(readSettings(join(tempDir, "no.json"), join(tempDir, "no2.json"))).toEqual({});
   });
 
-  test("returns empty object when sakura-ai-engine key is missing", () => {
+  test("returns empty object when sakura-ai-engine-provider key is missing", () => {
     const path = join(tempDir, "settings.json");
     writeFileSync(path, JSON.stringify({ other: {} }));
     expect(readSettings(path, join(tempDir, "no-project.json"))).toEqual({});
   });
 
-  test("returns empty object when sakura-ai-engine is not an object", () => {
+  test("returns empty object when sakura-ai-engine-provider is not an object", () => {
     const path = join(tempDir, "settings.json");
-    writeFileSync(path, JSON.stringify({ "sakura-ai-engine": "invalid" }));
+    writeFileSync(path, JSON.stringify({ "sakura-ai-engine-provider": "invalid" }));
     expect(readSettings(path, join(tempDir, "no-project.json"))).toEqual({});
   });
 

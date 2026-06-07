@@ -33,13 +33,13 @@ pi config
 - `prompt-stash` — Stash and restore the prompt buffer with `ctrl+s`.
 - `research` — Run staged deep-research workflows and Tavily Research escalation.
 - `review` — Run the multi-phase code review workflow.
-- `sakura-ai-engine` — Register the Sakura AI Engine model provider.
+- `sakura-ai-engine-provider` — Register the Sakura AI Engine model provider.
 - `session-title` — Generate a session title from the first user message.
 - `statusline` — Replace the TUI footer with project, model, and context status.
 - `subagents` — Spawn isolated subagent sessions for delegated work.
 - `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.
 - `todo` — Manage branch-local todos for multi-step work.
-- `vertex-claude` — Register Claude models served through Google Vertex AI.
+- `vertex-claude-provider` — Register Claude models served through Google Vertex AI.
 
 Dependencies:
 

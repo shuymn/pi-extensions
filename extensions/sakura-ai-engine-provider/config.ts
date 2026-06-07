@@ -28,7 +28,7 @@ function readPositiveIntegerEnv(name: string, fallback: number): number {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-const SAKURA_AI_ENGINE_SETTINGS_KEY = "sakura-ai-engine";
+const SAKURA_AI_ENGINE_SETTINGS_KEY = "sakura-ai-engine-provider";
 
 export function readSettings(globalPath?: string, projectPath?: string): SakuraAiEngineSettings {
   return readExtensionSettings<SakuraAiEngineSettings>(SAKURA_AI_ENGINE_SETTINGS_KEY, {
