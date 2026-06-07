@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
+import { isTuiMode } from "../../lib/tui";
 import { cancelledResult, completedResult, errorResult, pausedResult } from "./response";
 import {
   type AskUserQuestionParams,
@@ -15,6 +16,7 @@ import { type AskUiResult, createQuestionnaireComponent } from "./ui";
 import { validateAskUserQuestionParams } from "./validation";
 
 const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
+const ERROR_NO_TUI = "Error: TUI custom UI not available in this mode";
 
 export default function askUserQuestion(pi: ExtensionAPI) {
   pi.registerTool({
@@ -47,6 +49,7 @@ Usage notes:
 
       const typed = params as AskUserQuestionParams;
       if (!ctx.hasUI) return errorResult(typed, ERROR_NO_UI, "no_ui", "no_ui");
+      if (!isTuiMode(ctx)) return errorResult(typed, ERROR_NO_TUI, "no_ui", "no_ui");
 
       const result = await ctx.ui.custom<AskUiResult | null>((tui, theme, keybindings, done) =>
         createQuestionnaireComponent(typed, tui, theme, keybindings, done),

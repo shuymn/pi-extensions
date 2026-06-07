@@ -10,7 +10,7 @@ import {
   matchesKey,
   truncateToWidth,
 } from "@earendil-works/pi-tui";
-import { accentBorder, truncateLines } from "../../lib/tui";
+import { accentBorder, isTuiMode, truncateLines } from "../../lib/tui";
 
 const MAX_SESSIONS_TO_SCAN = 200;
 const MAX_MESSAGES_TO_SHOW = 1000;
@@ -334,7 +334,7 @@ class MessageHistoryPicker implements Component, Focusable {
 }
 
 async function openMessageHistory(ctx: ExtensionContext): Promise<void> {
-  if (!ctx.hasUI) return;
+  if (!ctx.hasUI || !isTuiMode(ctx)) return;
 
   ctx.ui.notify("メッセージ履歴を読み込んでいます...", "info");
   const messages = await collectHistoryMessages(ctx);

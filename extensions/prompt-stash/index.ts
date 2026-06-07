@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import { isTuiMode } from "../../lib/tui";
 
 const CUSTOM_TYPE = "prompt-stash-state";
 const MAX_STASHES = 20;
@@ -35,7 +36,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const restoreLatest = (ctx: ExtensionContext) => {
-    if (stack.length === 0) return;
+    if (!isTuiMode(ctx) || stack.length === 0) return;
 
     const text = stack[stack.length - 1];
     if (!text) {
@@ -62,6 +63,8 @@ export default function (pi: ExtensionAPI) {
   pi.registerShortcut("ctrl+s", {
     description: "Stash current prompt buffer and clear the editor",
     handler: (ctx) => {
+      if (!isTuiMode(ctx)) return;
+
       if (stack.length > 0) {
         restoreLatest(ctx);
         return;

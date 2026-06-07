@@ -22,6 +22,14 @@ export type WidgetContext = {
   };
 };
 
+type ModeContext = {
+  mode?: string;
+};
+
+export function isTuiMode(ctx: ModeContext): boolean {
+  return ctx.mode === undefined || ctx.mode === "tui";
+}
+
 /**
  * Notify only when a UI is attached. UI-only extensions can call this without
  * guarding on `ctx.hasUI` themselves; headless runs become a no-op.

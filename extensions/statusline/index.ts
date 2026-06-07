@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
 import { CODEX_FAST_ICON, CODEX_FAST_STATUS_KEY, isOpenAICodexModel } from "../../lib/codex-fast";
+import { isTuiMode } from "../../lib/tui";
 
 const ICON_BRANCH = "";
 const SEP = " | ";
@@ -105,7 +106,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     turnStartTime = undefined;
     lastTurnDuration = undefined;
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI || !isTuiMode(ctx)) return;
 
     const root = await pi
       .exec("git", ["rev-parse", "--show-toplevel"], { timeout: 1000 })
