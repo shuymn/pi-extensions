@@ -72,10 +72,8 @@ function displayModel(spec: FallbackModelSpec): string {
   return `${spec.provider}/${spec.model}${spec.thinkingLevel ? `:${spec.thinkingLevel}` : ""}`;
 }
 
-function retryableErrorMessage(errorMessage: unknown): string {
-  const text =
-    typeof errorMessage === "string" ? errorMessage : String(errorMessage ?? "unknown error");
-  return `provider returned error: fallback model selected after: ${text}`;
+function retryableErrorMessage(_errorMessage: unknown): string {
+  return "provider returned error: fallback model selected for retry";
 }
 
 export default function fallbackModelExtension(pi: ExtensionAPI): void {

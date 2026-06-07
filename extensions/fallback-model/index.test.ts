@@ -139,7 +139,7 @@ describe("fallback-model extension", () => {
       message: {
         role: "assistant",
         stopReason: "error",
-        errorMessage: "provider returned error: fallback model selected after: 429 rate limit",
+        errorMessage: "provider returned error: fallback model selected for retry",
         content: [],
       },
     });
@@ -221,7 +221,7 @@ describe("fallback-model extension", () => {
       message: {
         role: "assistant",
         stopReason: "error",
-        errorMessage: "provider returned error: fallback model selected after: 503",
+        errorMessage: "provider returned error: fallback model selected for retry",
         content: [],
       },
     });
