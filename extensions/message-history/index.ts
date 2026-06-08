@@ -259,13 +259,13 @@ class MessageHistoryPicker implements Component, Focusable {
       return;
     }
 
-    if (this.keybindings.matches(data, "tui.select.up") || matchesKey(data, Key.ctrl("k"))) {
+    if (this.keybindings.matches(data, "tui.select.up")) {
       this.moveSelection(-1);
       this.requestRender();
       return;
     }
 
-    if (this.keybindings.matches(data, "tui.select.down") || matchesKey(data, Key.ctrl("j"))) {
+    if (this.keybindings.matches(data, "tui.select.down")) {
       this.moveSelection(1);
       this.requestRender();
       return;
