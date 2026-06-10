@@ -8,6 +8,7 @@ import { Type } from "typebox";
 const STATE_TYPE = "add-dir-state";
 const GITHUB_CLONE_PREFIX = "pi-github-workspace-";
 const GITHUB_CLONE_TIMEOUT_MS = 30_000;
+const GHQ_PREFIX = "ghq:";
 
 const SAFE_GITHUB_PART = /^[A-Za-z0-9_.-]+$/;
 const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
@@ -135,6 +136,49 @@ function sanitizeDirectoryName(input: string): string {
     throw new Error("Directory name may only contain letters, numbers, '.', '_', and '-'.");
   }
   return name;
+}
+
+function validateGhqQuery(input: string): string {
+  const query = input.trim();
+  if (!query) {
+    throw new Error("ghq: の後にリポジトリ名を指定してください。例: /add-dir ghq:<repo>");
+  }
+
+  const segments = query.split("/");
+  if (segments.length > 2 || segments.some((segment) => segment.length === 0)) {
+    throw new Error(
+      "domain を含む ghq 指定は未対応です。ghq:<repo> または ghq:<org>/<repo> の形式で指定してください。",
+    );
+  }
+
+  if (
+    segments.some(
+      (segment) => segment === "." || segment === ".." || !SAFE_GITHUB_PART.test(segment),
+    )
+  ) {
+    throw new Error("ghq 指定には英数字、'.'、'_'、'-' のみ使用できます。例: /add-dir ghq:<repo>");
+  }
+
+  return query;
+}
+
+function listGhqRepositories(query: string): Promise<string[]> {
+  return new Promise((resolvePromise, reject) => {
+    execFile("ghq", ["list", "-p", "--", query], {}, (error, stdout, stderr) => {
+      if (error) {
+        const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
+        reject(new Error(details || error.message || "ghq list command failed"));
+        return;
+      }
+
+      resolvePromise(
+        stdout
+          .split("\n")
+          .map((line) => line.trim())
+          .filter(Boolean),
+      );
+    });
+  });
 }
 
 function runGit(
@@ -290,6 +334,59 @@ export default function (pi: ExtensionAPI) {
     return { dir, alreadyAdded: false };
   }
 
+  function notifyAddDirectoryResult(
+    ui: { notify: (message: string, level: "info" | "error") => void },
+    dir: AddedDir,
+    alreadyAdded: boolean,
+  ): void {
+    ui.notify(
+      alreadyAdded
+        ? `すでに登録済みです: ${dir.name}: ${dir.path}`
+        : `ディレクトリを追加しました: ${dir.name}: ${dir.path}`,
+      "info",
+    );
+  }
+
+  async function addGhqDirectory(
+    queryInput: string,
+    ctx: { cwd: string; ui: { notify: (message: string, level: "info" | "error") => void } },
+  ): Promise<void> {
+    const query = validateGhqQuery(queryInput);
+    let candidates: string[];
+    try {
+      candidates = await listGhqRepositories(query);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`ghq リポジトリの検索に失敗しました: ${message}`, "error");
+      return;
+    }
+
+    if (candidates.length === 0) {
+      ctx.ui.notify(`既存の ghq リポジトリが見つかりませんでした: ${query}`, "error");
+      return;
+    }
+
+    if (candidates.length > 1) {
+      ctx.ui.notify(
+        [
+          `複数の ghq リポジトリが見つかりました: ${query}`,
+          ...candidates.map((candidate) => `- ${candidate}`),
+          "ghq:<org>/<repo> など、より具体的な指定にしてください。",
+        ].join("\n"),
+        "error",
+      );
+      return;
+    }
+
+    try {
+      const { dir, alreadyAdded } = await addDirectory(candidates[0], ctx.cwd);
+      notifyAddDirectoryResult(ctx.ui, dir, alreadyAdded);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ctx.ui.notify(`ディレクトリの登録に失敗しました (${candidates[0]}): ${message}`, "error");
+    }
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     dirs = [];
     tempRoots = [];
@@ -323,22 +420,23 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("add-dir", {
-    description: "Register an additional directory name for this session",
+    description:
+      "Register an additional directory name for this session, including ghq repositories with ghq:<repo> or ghq:<org>/<repo>",
     handler: async (args, ctx) => {
       const input = args.trim();
       if (!input) {
-        ctx.ui.notify("使い方: /add-dir <path>", "error");
+        ctx.ui.notify("使い方: /add-dir <path> または /add-dir ghq:<repo>", "error");
         return;
       }
 
       try {
+        if (input.toLowerCase().startsWith(GHQ_PREFIX)) {
+          await addGhqDirectory(input.slice(GHQ_PREFIX.length), ctx);
+          return;
+        }
+
         const { dir, alreadyAdded } = await addDirectory(input, ctx.cwd);
-        ctx.ui.notify(
-          alreadyAdded
-            ? `すでに登録済みです: ${dir.name}: ${dir.path}`
-            : `ディレクトリを追加しました: ${dir.name}: ${dir.path}`,
-          "info",
-        );
+        notifyAddDirectoryResult(ctx.ui, dir, alreadyAdded);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(message, "error");

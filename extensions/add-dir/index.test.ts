@@ -30,6 +30,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({}));
 
 type NotifyLevel = "info" | "error";
 type CommandHandler = (args: string, ctx: FakeCommandContext) => Promise<void> | void;
+type CommandDefinition = { description?: string; handler: CommandHandler };
 type EventHandler = (event: any, ctx?: any) => Promise<any> | any;
 type ToolDefinition = {
   name: string;
@@ -48,7 +49,7 @@ type FakeCommandContext = {
 };
 
 function createFakePi() {
-  const commands = new Map<string, { handler: CommandHandler }>();
+  const commands = new Map<string, CommandDefinition>();
   const tools = new Map<string, ToolDefinition>();
   const events = new Map<string, EventHandler[]>();
   const appendedEntries: Array<{ type: string; data: unknown }> = [];
@@ -58,7 +59,7 @@ function createFakePi() {
     tools,
     events,
     appendedEntries,
-    registerCommand(name: string, definition: { handler: CommandHandler }) {
+    registerCommand(name: string, definition: CommandDefinition) {
       commands.set(name, definition);
     },
     registerTool(definition: ToolDefinition) {
@@ -98,6 +99,19 @@ async function createTempDir(prefix = "add-dir-test-") {
   return root;
 }
 
+function mockGhqList(query: string, stdout: string, stderr = "") {
+  execFileImplementation = (file, args, _options, callback) => {
+    const child = new EventEmitter();
+    if (file !== "ghq" || args.join(" ") !== `list -p -- ${query}`) {
+      callback(new Error(`Unexpected command: ${file} ${args.join(" ")}`), "", "");
+      return child;
+    }
+
+    callback(null, stdout, stderr);
+    return child;
+  };
+}
+
 const tempDirs: string[] = [];
 
 afterEach(async () => {
@@ -116,6 +130,7 @@ describe("add-dir extension", () => {
     extension(pi as never);
 
     expect([...pi.commands.keys()].sort()).toEqual(["add-dir", "list-dir", "remove-dir"]);
+    expect(pi.commands.get("add-dir")!.description).toContain("ghq:<repo>");
     expect([...pi.tools.keys()]).toEqual(["github_clone_workspace"]);
     expect([...pi.events.keys()].sort()).toEqual([
       "before_agent_start",
@@ -165,6 +180,266 @@ describe("add-dir extension", () => {
     expect(result.systemPrompt).toContain(
       "Use absolute paths when reading, searching, or editing files",
     );
+  });
+
+  test.each([
+    ["repo name", "ghq", "ghq:ghq"],
+    ["org/repo name", "x-motemen/ghq", "ghq:x-motemen/ghq"],
+  ])("registers a ghq repository by %s", async (_label, query, input) => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const repo = join(cwd, "github.com", "x-motemen", "ghq");
+    await mkdir(repo, { recursive: true });
+    const canonicalRepo = await realpath(repo);
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    mockGhqList(query, `${canonicalRepo}\n`);
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler(input, ctx);
+
+    expect(notifications).toEqual([
+      {
+        message: `ディレクトリを追加しました: ghq: ${canonicalRepo}`,
+        level: "info",
+      },
+    ]);
+    expect(pi.appendedEntries).toEqual([
+      {
+        type: "add-dir-state",
+        data: { dirs: [{ name: "ghq", path: canonicalRepo }] },
+      },
+    ]);
+  });
+
+  test("accepts ghq prefix case-insensitively", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const repo = join(cwd, "github.com", "x-motemen", "ghq");
+    await mkdir(repo, { recursive: true });
+    const canonicalRepo = await realpath(repo);
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    mockGhqList("ghq", `${canonicalRepo}\n`);
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("GHQ:ghq", ctx);
+
+    expect(notifications).toEqual([
+      {
+        message: `ディレクトリを追加しました: ghq: ${canonicalRepo}`,
+        level: "info",
+      },
+    ]);
+  });
+
+  test("rejects invalid ghq queries before lookup", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    execFileImplementation = () => {
+      throw new Error("ghq lookup should not run");
+    };
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("ghq:github.com/org/repo", ctx);
+    await pi.commands.get("add-dir")!.handler("ghq:", ctx);
+    await pi.commands.get("add-dir")!.handler("ghq:one/two/three", ctx);
+    await pi.commands.get("add-dir")!.handler("ghq:bad\tname", ctx);
+    await pi.commands.get("add-dir")!.handler("ghq:.", ctx);
+
+    expect(notifications).toEqual([
+      {
+        message:
+          "domain を含む ghq 指定は未対応です。ghq:<repo> または ghq:<org>/<repo> の形式で指定してください。",
+        level: "error",
+      },
+      {
+        message: "ghq: の後にリポジトリ名を指定してください。例: /add-dir ghq:<repo>",
+        level: "error",
+      },
+      {
+        message:
+          "domain を含む ghq 指定は未対応です。ghq:<repo> または ghq:<org>/<repo> の形式で指定してください。",
+        level: "error",
+      },
+      {
+        message: "ghq 指定には英数字、'.'、'_'、'-' のみ使用できます。例: /add-dir ghq:<repo>",
+        level: "error",
+      },
+      {
+        message: "ghq 指定には英数字、'.'、'_'、'-' のみ使用できます。例: /add-dir ghq:<repo>",
+        level: "error",
+      },
+    ]);
+    expect(pi.appendedEntries).toEqual([]);
+  });
+
+  test("does not register a directory when ghq has no matches", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    mockGhqList("missing", "\n");
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("ghq:missing", ctx);
+
+    expect(notifications).toEqual([
+      {
+        message: "既存の ghq リポジトリが見つかりませんでした: missing",
+        level: "error",
+      },
+    ]);
+    expect(pi.appendedEntries).toEqual([]);
+  });
+
+  test("does not register a directory when ghq has multiple matches", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const left = join(cwd, "github.com", "left", "ghq");
+    const right = join(cwd, "github.com", "right", "ghq");
+    await mkdir(left, { recursive: true });
+    await mkdir(right, { recursive: true });
+    const canonicalLeft = await realpath(left);
+    const canonicalRight = await realpath(right);
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    mockGhqList("ghq", `${canonicalLeft}\n${canonicalRight}\n`);
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("ghq:ghq", ctx);
+
+    expect(notifications).toEqual([
+      {
+        message: [
+          "複数の ghq リポジトリが見つかりました: ghq",
+          `- ${canonicalLeft}`,
+          `- ${canonicalRight}`,
+          "ghq:<org>/<repo> など、より具体的な指定にしてください。",
+        ].join("\n"),
+        level: "error",
+      },
+    ]);
+    expect(pi.appendedEntries).toEqual([]);
+  });
+
+  test("reports ghq command failure without mutating registered directories", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    let calledWith: { file: string; args: string[] } | undefined;
+    execFileImplementation = (file, args, _options, callback) => {
+      const child = new EventEmitter();
+      calledWith = { file, args };
+      callback(new Error("ghq failed"), "", "ghq stderr");
+      return child;
+    };
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("ghq:ghq", ctx);
+
+    expect(calledWith).toEqual({ file: "ghq", args: ["list", "-p", "--", "ghq"] });
+    expect(notifications).toEqual([
+      {
+        message: "ghq リポジトリの検索に失敗しました: ghq stderr",
+        level: "error",
+      },
+    ]);
+    expect(pi.appendedEntries).toEqual([]);
+  });
+
+  test("reports ghq command failure fallback messages", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    execFileImplementation = (_file, _args, _options, callback) => {
+      const child = new EventEmitter();
+      callback(new Error("ghq not found"), "", "");
+      return child;
+    };
+    await pi.commands.get("add-dir")!.handler("ghq:ghq", ctx);
+
+    execFileImplementation = (_file, _args, _options, callback) => {
+      const child = new EventEmitter();
+      callback(new Error(""), "", "");
+      return child;
+    };
+    await pi.commands.get("add-dir")!.handler("ghq:ghq", ctx);
+
+    expect(notifications).toEqual([
+      {
+        message: "ghq リポジトリの検索に失敗しました: ghq not found",
+        level: "error",
+      },
+      {
+        message: "ghq リポジトリの検索に失敗しました: ghq list command failed",
+        level: "error",
+      },
+    ]);
+    expect(pi.appendedEntries).toEqual([]);
+  });
+
+  test("reports ghq registration failure without leaking through the outer handler", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const left = join(cwd, "left", "same-name");
+    const right = join(cwd, "right", "same-name");
+    await mkdir(left, { recursive: true });
+    await mkdir(right, { recursive: true });
+    const canonicalLeft = await realpath(left);
+    const canonicalRight = await realpath(right);
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("left/same-name", ctx);
+    mockGhqList("same-name", `${canonicalRight}\n`);
+    await pi.commands.get("add-dir")!.handler("ghq:same-name", ctx);
+
+    expect(notifications.at(-1)).toEqual({
+      message: `ディレクトリの登録に失敗しました (${canonicalRight}): Cannot add ${canonicalRight}: directory name "same-name" is already registered for ${canonicalLeft}. Remove it first with /remove-dir same-name.`,
+      level: "error",
+    });
+    expect(pi.appendedEntries).toHaveLength(1);
+  });
+
+  test("shows ghq usage when add-dir has no arguments", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("", ctx);
+
+    expect(notifications).toEqual([
+      {
+        message: "使い方: /add-dir <path> または /add-dir ghq:<repo>",
+        level: "error",
+      },
+    ]);
   });
 
   test("does not mutate registered directories when persistence fails", async () => {
