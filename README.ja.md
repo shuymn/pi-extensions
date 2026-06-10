@@ -23,6 +23,7 @@ pi config
 ## 利用可能な extensions
 
 - `add-dir` — 現在のセッションに追加の workspace directory を登録します。
+- `agmsg-pi` — pi セッション同士でローカルメッセージを送受信します。
 - `ask-user-question` — エージェントが構造化された確認質問を行えるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
 - `commandcode-provider` — Command Code の model provider を登録します。live model discovery と fallback catalog を含みます。

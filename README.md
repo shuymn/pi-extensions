@@ -25,6 +25,7 @@ pi config
 ## Available extensions
 
 - `add-dir` — Register extra workspace directories for the current session.
+- `agmsg-pi` — Send and receive local messages between pi sessions.
 - `ask-user-question` — Let the agent ask structured clarification questions.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
 - `commandcode-provider` — Register the Command Code model provider with live model discovery and a fallback catalog.
