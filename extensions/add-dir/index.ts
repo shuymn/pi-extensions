@@ -589,11 +589,11 @@ export default function (pi: ExtensionAPI) {
     if (dirs.length === 0) return;
 
     const context = [
-      "Additional directories registered by the user for this session:",
+      "Additional workspace roots registered by the user for this session:",
       formatDirs(dirs),
       "",
-      "When the user refers to one of these directory names, interpret it as the corresponding absolute path.",
-      "Use absolute paths when reading, searching, or editing files in these directories.",
+      "When the user refers to one of the names above, interpret it as the corresponding absolute path.",
+      "Use absolute paths when accessing these additional roots.",
     ].join("\n");
 
     return {

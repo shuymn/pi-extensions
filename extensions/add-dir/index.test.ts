@@ -175,11 +175,16 @@ describe("add-dir extension", () => {
     const result = await pi.events.get("before_agent_start")![0]({
       systemPrompt: "base prompt",
     });
+    const expectedContext = [
+      "Additional workspace roots registered by the user for this session:",
+      `- project: ${canonicalProject}`,
+      "",
+      "When the user refers to one of the names above, interpret it as the corresponding absolute path.",
+      "Use absolute paths when accessing these additional roots.",
+    ].join("\n");
+
     expect(result.systemPrompt).toContain("base prompt");
-    expect(result.systemPrompt).toContain(`- project: ${canonicalProject}`);
-    expect(result.systemPrompt).toContain(
-      "Use absolute paths when reading, searching, or editing files",
-    );
+    expect(result.systemPrompt).toContain(expectedContext);
   });
 
   test.each([
