@@ -102,7 +102,7 @@ async function createTempDir(prefix = "add-dir-test-") {
 function mockGhqList(query: string, stdout: string, stderr = "") {
   execFileImplementation = (file, args, _options, callback) => {
     const child = new EventEmitter();
-    if (file !== "ghq" || args.join(" ") !== `list -p -- ${query}`) {
+    if (file !== "ghq" || args.join(" ") !== `list -p --exact -- ${query}`) {
       callback(new Error(`Unexpected command: ${file} ${args.join(" ")}`), "", "");
       return child;
     }
@@ -353,7 +353,7 @@ describe("add-dir extension", () => {
     const { ctx, notifications } = createCommandContext(cwd);
     await pi.commands.get("add-dir")!.handler("ghq:ghq", ctx);
 
-    expect(calledWith).toEqual({ file: "ghq", args: ["list", "-p", "--", "ghq"] });
+    expect(calledWith).toEqual({ file: "ghq", args: ["list", "-p", "--exact", "--", "ghq"] });
     expect(notifications).toEqual([
       {
         message: "ghq リポジトリの検索に失敗しました: ghq stderr",

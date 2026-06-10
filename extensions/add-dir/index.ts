@@ -164,7 +164,7 @@ function validateGhqQuery(input: string): string {
 
 function listGhqRepositories(query: string): Promise<string[]> {
   return new Promise((resolvePromise, reject) => {
-    execFile("ghq", ["list", "-p", "--", query], {}, (error, stdout, stderr) => {
+    execFile("ghq", ["list", "-p", "--exact", "--", query], {}, (error, stdout, stderr) => {
       if (error) {
         const details = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
         reject(new Error(details || error.message || "ghq list command failed"));
