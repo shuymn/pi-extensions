@@ -17,7 +17,10 @@ import {
   type ExecFn,
   resetSandboxState,
 } from "../../lib/protected-bash";
-import { getLatestAssistantMessageText } from "../../lib/session-messages";
+import {
+  getLatestAssistantMessageText,
+  latestAssistantWasAborted,
+} from "../../lib/session-messages";
 import { truncate } from "../../lib/text";
 import { notifyIfUI } from "../../lib/tui";
 import {
@@ -242,6 +245,27 @@ function emitWorkflowLifecycleEvent(
   }
 }
 
+function cancelActiveReviewRun(
+  pi: ExtensionAPI,
+  ctx: Pick<ExtensionContext, "ui">,
+  run = activeRun(),
+): void {
+  const runId = run?.id;
+  if (run) {
+    emitWorkflowLifecycleEvent(pi, "cancelled", run, {
+      reason: "user_cancelled",
+    });
+  }
+  clearActiveRun(ctx);
+  notifyIfUI(
+    ctx,
+    runId
+      ? `/review: ワークフロー ${runId} をキャンセルしました。`
+      : "/review: キャンセルできるワークフローがありません。",
+    "info",
+  );
+}
+
 function failActiveRun(
   pi: ExtensionAPI,
   ctx: Pick<ExtensionContext, "ui">,
@@ -314,6 +338,17 @@ function sendNextPhase(pi: ExtensionAPI, runId: string, ctx: Pick<ExtensionConte
 
 export function createReviewExtension() {
   return function reviewExtension(pi: ExtensionAPI): void {
+    pi.on("input", async (_event, ctx) => {
+      if (!activeRun() && !runStarting) return { action: "continue" as const };
+
+      notifyIfUI(
+        ctx,
+        "/review: ワークフロー実行中の追加入力は保留できません。中止する場合は /review cancel を実行してください。",
+        "warning",
+      );
+      return { action: "handled" as const };
+    });
+
     pi.on("tool_call", async (event) => {
       if (!workflow.isReadOnlyPhase()) return;
 
@@ -334,6 +369,11 @@ export function createReviewExtension() {
     pi.on("agent_end", async (event, ctx) => {
       const completingRun = activeRun();
       if (!completingRun?.phaseInProgress) return;
+
+      if (latestAssistantWasAborted(event.messages)) {
+        cancelActiveReviewRun(pi, ctx, completingRun);
+        return;
+      }
 
       const latestAssistantText = getLatestAssistantMessageText(event.messages);
       const decision = workflow.completePhase({
@@ -372,19 +412,7 @@ export function createReviewExtension() {
 
         const trimmedArgs = args.trim();
         if (trimmedArgs === "cancel" || trimmedArgs === "--cancel") {
-          const run = activeRun();
-          const runId = run?.id;
-          if (run)
-            emitWorkflowLifecycleEvent(pi, "cancelled", run, {
-              reason: "user_cancelled",
-            });
-          clearActiveRun(ctx);
-          ctx.ui.notify(
-            runId
-              ? `/review: ワークフロー ${runId} をキャンセルしました。`
-              : "/review: キャンセルできるワークフローがありません。",
-            "info",
-          );
+          cancelActiveReviewRun(pi, ctx);
           return;
         }
 

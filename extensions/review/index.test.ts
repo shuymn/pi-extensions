@@ -130,8 +130,16 @@ async function setupReviewTest(execHandler?: (call: ExecCall) => ExecResult | Pr
   return pi;
 }
 
-async function advancePhase(pi: FakePi, ctx: FakeRunContext, content: unknown = "done") {
-  await pi.getEventHandlers("agent_end")?.[0]({ messages: [{ role: "assistant", content }] }, ctx);
+async function advancePhase(
+  pi: FakePi,
+  ctx: FakeRunContext,
+  content: unknown = "done",
+  stopReason?: string,
+) {
+  await pi.getEventHandlers("agent_end")?.[0](
+    { messages: [{ role: "assistant", content, stopReason }] },
+    ctx,
+  );
 }
 
 function deferred<T>() {
@@ -663,6 +671,55 @@ describe("review extension", () => {
       reason:
         "/review investigation phases are read-only. This tool is allowed only in Fix and Verify phases.",
     });
+  });
+
+  test("input during active workflow is handled with cancellation guidance", async () => {
+    const pi = await setupReviewTest();
+    const ctx = createRunContext();
+
+    await pi.tools
+      .get("review")!
+      .execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
+
+    const inputCtx = createRunContext();
+    const result = await pi.getEventHandlers("input")[0]?.(
+      { text: "add this after review", source: "interactive" },
+      inputCtx,
+    );
+
+    expect(result).toEqual({ action: "handled" });
+    expect(inputCtx.ui.notifications).toEqual([
+      {
+        message:
+          "/review: ワークフロー実行中の追加入力は保留できません。中止する場合は /review cancel を実行してください。",
+        level: "warning",
+      },
+    ]);
+  });
+
+  test("agent abort cancels active workflow instead of advancing phase", async () => {
+    const pi = await setupReviewTest();
+    const ctx = createRunContext();
+
+    await pi.tools
+      .get("review")!
+      .execute("call", { files: ["src/app.ts"] }, undefined, undefined, ctx);
+
+    await advancePhase(pi, ctx, [], "aborted");
+
+    expect(pi.sentMessages).toHaveLength(1);
+    expect(pi.emittedEvents.at(-1)).toMatchObject({
+      name: "workflow:cancelled",
+      data: { name: "review", status: "cancelled", reason: "user_cancelled" },
+    });
+    expect(ctx.ui.notifications.at(-1)?.message).toMatch(
+      /^\/review: ワークフロー \d+ をキャンセルしました。$/,
+    );
+
+    const retry = await pi.tools
+      .get("review")!
+      .execute("call", { files: ["src/app.ts"] }, undefined, undefined, createRunContext());
+    expect(retry.content[0].text).toContain("Queued review workflow");
   });
 
   test("agent_end stores phase notes, advances phases, and completes workflow", async () => {
