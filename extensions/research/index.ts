@@ -7,7 +7,10 @@ import type {
 import { Type } from "typebox";
 
 import { cliResultForTool } from "../../lib/cli";
-import { getLatestAssistantMessageText } from "../../lib/session-messages";
+import {
+  getLatestAssistantMessageText,
+  latestAssistantWasAborted,
+} from "../../lib/session-messages";
 import { tvlyResearchRun } from "./cli";
 import { RESEARCH_PHASES } from "./phases";
 import { buildResearchPhasePrompt } from "./prompts";
@@ -112,6 +115,16 @@ function clearActiveRun(): void {
   workflow.cancel();
 }
 
+function cancelActiveResearchRun(ctx: Pick<ExtensionContext, "ui">, runId?: string): void {
+  clearActiveRun();
+  ctx.ui.notify(
+    runId
+      ? `/research: ワークフロー ${runId} をキャンセルしました。`
+      : "/research: キャンセルできるワークフローがありません。",
+    "info",
+  );
+}
+
 function createResearchRun(
   cwd: string,
   params: DeepResearchParams,
@@ -173,8 +186,24 @@ function sendNextPhase(pi: ExtensionAPI, runId: string, ctx: Pick<ExtensionConte
 }
 
 export default function researchExtension(pi: ExtensionAPI) {
+  pi.on("input", async (_event, ctx) => {
+    if (!activeRun()) return { action: "continue" as const };
+
+    ctx.ui.notify(
+      "/research: ワークフロー実行中の追加入力は保留できません。中止する場合は /research cancel を実行してください。",
+      "warning",
+    );
+    return { action: "handled" as const };
+  });
+
   pi.on("agent_end", async (event, ctx) => {
-    if (!activeRun()?.phaseInProgress) return;
+    const completingRun = activeRun();
+    if (!completingRun?.phaseInProgress) return;
+
+    if (latestAssistantWasAborted(event.messages)) {
+      cancelActiveResearchRun(ctx, completingRun.id);
+      return;
+    }
 
     const latestAssistantText = getLatestAssistantMessageText(event.messages);
     const decision = workflow.completePhase({
@@ -201,14 +230,7 @@ export default function researchExtension(pi: ExtensionAPI) {
 
       const trimmedArgs = args.trim();
       if (trimmedArgs === "cancel" || trimmedArgs === "--cancel") {
-        const runId = activeRun()?.id;
-        clearActiveRun();
-        ctx.ui.notify(
-          runId
-            ? `/research: ワークフロー ${runId} をキャンセルしました。`
-            : "/research: キャンセルできるワークフローがありません。",
-          "info",
-        );
+        cancelActiveResearchRun(ctx, activeRun()?.id);
         return;
       }
 

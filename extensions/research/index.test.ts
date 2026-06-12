@@ -369,6 +369,72 @@ describe("research extension", () => {
     await shutdown(pi);
   });
 
+  test("input during active workflow is handled with cancellation guidance", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const { ctx } = createCommandContext();
+    await pi.commands.get("research")!.handler("task", ctx);
+
+    const input = createCommandContext();
+    const result = await pi.getEventHandlers("input")[0]?.(
+      { text: "add this after research", source: "interactive" },
+      input.ctx,
+    );
+
+    expect(result).toEqual({ action: "handled" });
+    expect(input.notifications).toEqual([
+      {
+        message:
+          "/research: ワークフロー実行中の追加入力は保留できません。中止する場合は /research cancel を実行してください。",
+        level: "warning",
+      },
+    ]);
+
+    await shutdown(pi);
+  });
+
+  test("agent abort cancels active workflow instead of advancing phase", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const { ctx } = createCommandContext();
+    await pi.commands.get("research")!.handler("task", ctx);
+    expect(pi.sentMessages).toHaveLength(1);
+
+    const aborted = createCommandContext();
+    await pi.getEventHandlers("agent_end")[0](
+      {
+        messages: [
+          {
+            role: "assistant",
+            content: [],
+            stopReason: "aborted",
+          },
+        ],
+      },
+      aborted.ctx,
+    );
+
+    expect(pi.sentMessages).toHaveLength(1);
+    expect(aborted.notifications[0]?.message).toMatch(
+      /^\/research: ワークフロー \d+ をキャンセルしました。$/,
+    );
+
+    const retry = createCommandContext();
+    await pi.commands.get("research")!.handler("retry", retry.ctx);
+    expect(retry.notifications).toEqual([
+      {
+        message: "/research: phase 1/4 をキューに追加しました。",
+        level: "info",
+      },
+    ]);
+
+    await shutdown(pi);
+  });
+
   test("agent_end advances the queued workflow to the next phase", async () => {
     const extension = await loadExtension();
     const pi = createFakePi();
