@@ -2,6 +2,18 @@
   "extends": ["github>shuymn/github-actions#main"],
   "packageRules": [
     {
+      "description": "Automerge current pre-1.0 update targets",
+      "matchPackageNames": [
+        "@anthropic-ai/sdk",
+        "@anthropic-ai/vertex-sdk",
+        "@earendil-works/pi-ai",
+        "@earendil-works/pi-coding-agent",
+        "@earendil-works/pi-tui"
+      ],
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true
+    },
+    {
       "matchPackageNames": ["@earendil-works/pi-*"],
       "groupName": "earendil-works pi packages"
     }
