@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
-import { mkdir, mkdtemp, realpath, rm, stat, symlink } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
 installTypeboxMock();
@@ -30,7 +31,13 @@ mock.module("@earendil-works/pi-coding-agent", () => ({}));
 
 type NotifyLevel = "info" | "error";
 type CommandHandler = (args: string, ctx: FakeCommandContext) => Promise<void> | void;
-type CommandDefinition = { description?: string; handler: CommandHandler };
+type CommandDefinition = {
+  description?: string;
+  getArgumentCompletions?: (
+    argumentPrefix: string,
+  ) => Promise<AutocompleteItem[] | null> | AutocompleteItem[] | null;
+  handler: CommandHandler;
+};
 type EventHandler = (event: any, ctx?: any) => Promise<any> | any;
 type ToolDefinition = {
   name: string;
@@ -89,8 +96,24 @@ function createCommandContext(cwd: string) {
   };
 }
 
+async function getAddDirCompletions(pi: ReturnType<typeof createFakePi>, prefix: string) {
+  return (await pi.commands.get("add-dir")?.getArgumentCompletions?.(prefix)) ?? null;
+}
+
 async function loadExtension() {
   return (await import("./index")).default;
+}
+
+async function startSession(pi: ReturnType<typeof createFakePi>, cwd: string) {
+  await pi.events.get("session_start")![0]({}, { cwd, sessionManager: { getEntries: () => [] } });
+}
+
+async function createStartedPi(cwd: string) {
+  const extension = await loadExtension();
+  const pi = createFakePi();
+  extension(pi as never);
+  await startSession(pi, cwd);
+  return pi;
 }
 
 async function createTempDir(prefix = "add-dir-test-") {
@@ -131,11 +154,220 @@ describe("add-dir extension", () => {
 
     expect([...pi.commands.keys()].sort()).toEqual(["add-dir", "list-dir", "remove-dir"]);
     expect(pi.commands.get("add-dir")!.description).toContain("ghq:<repo>");
+    expect(pi.commands.get("add-dir")!.getArgumentCompletions).toBeFunction();
     expect([...pi.tools.keys()]).toEqual(["github_clone_workspace"]);
     expect([...pi.events.keys()].sort()).toEqual([
       "before_agent_start",
       "session_shutdown",
       "session_start",
+    ]);
+  });
+
+  test("completes sibling directories for ../ prefixes", async () => {
+    const root = await createTempDir();
+    const cwd = join(root, "current");
+    await mkdir(cwd);
+    await mkdir(join(root, "bar"));
+    await mkdir(join(root, "foo"));
+    await writeFile(join(root, "notes.txt"), "not a directory");
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, "../")).resolves.toEqual([
+      { value: "../bar/", label: "../bar/" },
+      { value: "../current/", label: "../current/" },
+      { value: "../foo/", label: "../foo/" },
+    ]);
+  });
+
+  test("completes multi-parent prefixes with or without the trailing slash", async () => {
+    const root = await createTempDir();
+    const parent = join(root, "parent");
+    const cwd = join(parent, "current");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(join(root, "alpha"));
+    await mkdir(join(root, "beta"));
+    await writeFile(join(root, "root-file.txt"), "not a directory");
+
+    const pi = await createStartedPi(cwd);
+
+    const expected = [
+      { value: "../../alpha/", label: "../../alpha/" },
+      { value: "../../beta/", label: "../../beta/" },
+      { value: "../../parent/", label: "../../parent/" },
+    ];
+
+    await expect(getAddDirCompletions(pi, "../..")).resolves.toEqual(expected);
+    await expect(getAddDirCompletions(pi, "../../")).resolves.toEqual(expected);
+  });
+
+  test("filters completion candidates by the typed leaf prefix", async () => {
+    const root = await createTempDir();
+    const cwd = join(root, "current");
+    await mkdir(cwd);
+    await mkdir(join(root, "foo"));
+    await mkdir(join(root, "format"));
+    await mkdir(join(root, "bar"));
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, "../fo")).resolves.toEqual([
+      { value: "../foo/", label: "../foo/" },
+      { value: "../format/", label: "../format/" },
+    ]);
+  });
+
+  test("does not include non-directory entries in completions", async () => {
+    const cwd = await createTempDir();
+    await mkdir(join(cwd, "alpha"));
+    await writeFile(join(cwd, "beta.txt"), "not a directory");
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, "")).resolves.toEqual([
+      { value: "alpha/", label: "alpha/" },
+    ]);
+  });
+
+  test("trims leading whitespace from completion prefixes", async () => {
+    const root = await createTempDir();
+    const cwd = join(root, "current");
+    await mkdir(cwd);
+    await mkdir(join(root, "foo"));
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, " ../fo")).resolves.toEqual([
+      { value: "../foo/", label: "../foo/" },
+    ]);
+  });
+
+  test("prefixes unsafe bare directory names and supports literal ~foo paths", async () => {
+    const cwd = await createTempDir();
+    await mkdir(join(cwd, "~"));
+    await mkdir(join(cwd, "ghq:repo"));
+    await mkdir(join(cwd, " leading"));
+    await mkdir(join(cwd, "~foo"));
+
+    const pi = await createStartedPi(cwd);
+    const completions = await getAddDirCompletions(pi, "");
+
+    expect(completions).toContainEqual({ value: "./~/", label: "./~/" });
+    expect(completions).toContainEqual({ value: "./ghq:repo/", label: "./ghq:repo/" });
+    expect(completions).toContainEqual({ value: "./ leading/", label: "./ leading/" });
+    expect(completions).toContainEqual({ value: "~foo/", label: "~foo/" });
+    await expect(getAddDirCompletions(pi, "~f")).resolves.toEqual([
+      { value: "~foo/", label: "~foo/" },
+    ]);
+  });
+
+  test("completes absolute directory prefixes", async () => {
+    const cwd = await createTempDir();
+    const root = await createTempDir();
+    await mkdir(join(root, "foo"));
+    await mkdir(join(root, "format"));
+    await mkdir(join(root, "bar"));
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, `${root}${sep}fo`)).resolves.toEqual([
+      { value: `${root}${sep}foo${sep}`, label: `${root}${sep}foo${sep}` },
+      { value: `${root}${sep}format${sep}`, label: `${root}${sep}format${sep}` },
+    ]);
+  });
+
+  test("returns no filesystem completions for ghq prefixes", async () => {
+    const cwd = await createTempDir();
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, "ghq:repo")).resolves.toBeNull();
+  });
+
+  test("returns no completions when the base directory is missing or unreadable", async () => {
+    const cwd = await createTempDir();
+    const locked = join(cwd, "locked");
+    await mkdir(locked);
+
+    const pi = await createStartedPi(cwd);
+    const missing = await getAddDirCompletions(pi, "missing/");
+    let unreadable: AutocompleteItem[] | null;
+
+    if (process.platform === "win32") {
+      await writeFile(join(cwd, "not-a-dir"), "plain file");
+      unreadable = await getAddDirCompletions(pi, "not-a-dir/");
+    } else {
+      await chmod(locked, 0);
+      try {
+        unreadable = await getAddDirCompletions(pi, "locked/");
+      } finally {
+        await chmod(locked, 0o700);
+      }
+    }
+
+    expect(missing).toBeNull();
+    expect(unreadable).toBeNull();
+  });
+
+  test("includes symlinked directories in completions", async () => {
+    const root = await createTempDir();
+    const cwd = join(root, "current");
+    const target = join(root, "target");
+    await mkdir(cwd);
+    await mkdir(target);
+    await symlink(target, join(cwd, "link"), "dir");
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, "")).resolves.toContainEqual({
+      value: "link/",
+      label: "link/",
+    });
+  });
+
+  test("clears filesystem completions after shutdown until the next session starts", async () => {
+    const firstRoot = await createTempDir();
+    const firstCwd = join(firstRoot, "current");
+    await mkdir(firstCwd);
+    await mkdir(join(firstRoot, "foo"));
+
+    const pi = await createStartedPi(firstCwd);
+
+    await expect(getAddDirCompletions(pi, "../fo")).resolves.toEqual([
+      { value: "../foo/", label: "../foo/" },
+    ]);
+
+    await pi.events.get("session_shutdown")![0]({ reason: "exit" });
+    await expect(getAddDirCompletions(pi, "../fo")).resolves.toBeNull();
+
+    const secondRoot = await createTempDir();
+    const secondCwd = join(secondRoot, "current");
+    await mkdir(secondCwd);
+    await mkdir(join(secondRoot, "bar"));
+    await startSession(pi, secondCwd);
+
+    await expect(getAddDirCompletions(pi, "../ba")).resolves.toEqual([
+      { value: "../bar/", label: "../bar/" },
+    ]);
+  });
+
+  test("completes Windows-native prefixes on Windows", async () => {
+    if (process.platform !== "win32") return;
+
+    const root = await createTempDir();
+    const cwd = join(root, "current");
+    await mkdir(cwd);
+    await mkdir(join(root, "foo"));
+    await mkdir(join(root, "format"));
+
+    const pi = await createStartedPi(cwd);
+
+    await expect(getAddDirCompletions(pi, "..\\fo")).resolves.toEqual([
+      { value: "..\\foo\\", label: "..\\foo\\" },
+      { value: "..\\format\\", label: "..\\format\\" },
+    ]);
+    await expect(getAddDirCompletions(pi, `${root}\\fo`)).resolves.toEqual([
+      { value: `${root}\\foo\\`, label: `${root}\\foo\\` },
+      { value: `${root}\\format\\`, label: `${root}\\format\\` },
     ]);
   });
 

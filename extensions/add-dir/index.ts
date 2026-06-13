@@ -1,8 +1,10 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { mkdtemp, readdir, realpath, rm, stat } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const STATE_TYPE = "add-dir-state";
@@ -32,10 +34,116 @@ type ResolvedGitHubTarget = {
   subPathSegments: string[];
 };
 
+type PathSeparator = "/" | "\\";
+
+type PathCompletionQuery = {
+  baseDirInput: string;
+  entryPrefix: string;
+  separator: PathSeparator;
+};
+
 function expandHome(path: string): string {
   if (path === "~") return homedir();
   if (path.startsWith("~/")) return resolve(homedir(), path.slice(2));
   return path;
+}
+
+function getPathSeparator(argumentPrefix: string): PathSeparator {
+  if (
+    process.platform === "win32" &&
+    argumentPrefix.lastIndexOf("\\") > argumentPrefix.lastIndexOf("/")
+  ) {
+    return "\\";
+  }
+  return "/";
+}
+
+function getLastPathSeparatorIndex(argumentPrefix: string): number {
+  const lastSlashIndex = argumentPrefix.lastIndexOf("/");
+  if (process.platform !== "win32") return lastSlashIndex;
+  return Math.max(lastSlashIndex, argumentPrefix.lastIndexOf("\\"));
+}
+
+function parsePathCompletionPrefix(argumentPrefix: string): PathCompletionQuery {
+  if (argumentPrefix === "~") return { baseDirInput: "~/", entryPrefix: "", separator: "/" };
+
+  const separator = getPathSeparator(argumentPrefix);
+  if (argumentPrefix.endsWith(separator)) {
+    return { baseDirInput: argumentPrefix, entryPrefix: "", separator };
+  }
+
+  const lastSeparatorIndex = getLastPathSeparatorIndex(argumentPrefix);
+  const baseDirInput =
+    lastSeparatorIndex === -1 ? "" : argumentPrefix.slice(0, lastSeparatorIndex + 1);
+  const entryPrefix =
+    lastSeparatorIndex === -1 ? argumentPrefix : argumentPrefix.slice(lastSeparatorIndex + 1);
+  if (entryPrefix === "." || entryPrefix === "..") {
+    return {
+      baseDirInput: `${baseDirInput}${entryPrefix}${separator}`,
+      entryPrefix: "",
+      separator,
+    };
+  }
+
+  return {
+    baseDirInput,
+    entryPrefix,
+    separator: lastSeparatorIndex === -1 ? "/" : separator,
+  };
+}
+
+function isUnsafeBareCompletionName(name: string): boolean {
+  return name === "~" || name.toLowerCase().startsWith(GHQ_PREFIX) || name.trimStart() !== name;
+}
+
+function formatDirectoryCompletionValue(
+  baseDirInput: string,
+  name: string,
+  separator: PathSeparator,
+): string {
+  if (!baseDirInput) {
+    if (isUnsafeBareCompletionName(name)) return `.${separator}${name}${separator}`;
+    return `${name}${separator}`;
+  }
+  return `${baseDirInput}${name}${separator}`;
+}
+
+async function getDirectoryCompletions(
+  argumentPrefix: string,
+  cwd: string,
+): Promise<AutocompleteItem[] | null> {
+  const query = parsePathCompletionPrefix(argumentPrefix);
+  const baseDirPath = resolve(cwd, expandHome(query.baseDirInput || "."));
+  let entries: Dirent[];
+
+  try {
+    entries = await readdir(baseDirPath, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  const suggestions: AutocompleteItem[] = [];
+  for (const entry of entries) {
+    if (!entry.name.startsWith(query.entryPrefix)) continue;
+
+    let isDirectory = entry.isDirectory();
+    if (!isDirectory) {
+      if (!entry.isSymbolicLink()) continue;
+
+      try {
+        isDirectory = (await stat(resolve(baseDirPath, entry.name))).isDirectory();
+      } catch {
+        continue;
+      }
+      if (!isDirectory) continue;
+    }
+
+    const value = formatDirectoryCompletionValue(query.baseDirInput, entry.name, query.separator);
+    suggestions.push({ value, label: value });
+  }
+
+  suggestions.sort((left, right) => left.value.localeCompare(right.value));
+  return suggestions.length > 0 ? suggestions : null;
 }
 
 async function resolveExistingDirectory(input: string, cwd: string): Promise<AddedDir> {
@@ -273,6 +381,7 @@ function resolveSafeSubPath(root: string, subPathSegments: string[]): string {
 export default function (pi: ExtensionAPI) {
   let dirs: AddedDir[] = [];
   let tempRoots: string[] = [];
+  let sessionCwd: string | undefined;
 
   function persist(nextDirs: AddedDir[]) {
     pi.appendEntry(STATE_TYPE, { dirs: nextDirs });
@@ -390,6 +499,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     dirs = [];
     tempRoots = [];
+    sessionCwd = ctx.cwd;
 
     for (const entry of ctx.sessionManager.getEntries()) {
       if (entry.type !== "custom" || entry.customType !== STATE_TYPE) continue;
@@ -422,6 +532,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("add-dir", {
     description:
       "Register an additional directory name for this session, including ghq repositories with ghq:<repo> or ghq:<org>/<repo>",
+    getArgumentCompletions: async (argumentPrefix) => {
+      if (!sessionCwd) return null;
+
+      const normalizedPrefix = argumentPrefix.trimStart();
+      if (normalizedPrefix.toLowerCase().startsWith(GHQ_PREFIX)) return null;
+      return getDirectoryCompletions(normalizedPrefix, sessionCwd);
+    },
     handler: async (args, ctx) => {
       const input = args.trim();
       if (!input) {
@@ -576,6 +693,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event) => {
+    sessionCwd = undefined;
     if (event.reason === "reload") return;
 
     const roots = [...new Set(tempRoots)];
