@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.54",
-    "@anthropic-ai/sdk": "^0.102.0",
+    "@anthropic-ai/sdk": "^0.103.0",
     "@anthropic-ai/vertex-sdk": "^0.16.1"
   }
 }
