@@ -1,6 +1,8 @@
 import { complete } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { parseModelSpec } from "../../lib/model-spec";
+import { projectSettingsPath, readExtensionSettings } from "../../lib/settings";
 import {
   extractTextBlocks,
   extractUserText,
@@ -9,9 +11,15 @@ import {
   shouldArmSessionTitle,
 } from "./title";
 
-const TITLE_MODEL_PROVIDER = "openai-codex";
-const TITLE_MODEL_ID = "gpt-5.3-codex-spark";
-const TITLE_REASONING_EFFORT = "low";
+const SESSION_TITLE_SETTINGS_KEY = "session-title";
+const DEFAULT_TITLE_MODEL = {
+  provider: "openai-codex",
+  model: "gpt-5.3-codex-spark",
+  thinkingLevel: "low",
+} as const;
+type SessionTitleSettings = {
+  model?: unknown;
+};
 const TITLE_TIMEOUT_MS = 15_000;
 const TITLE_TOOL_NAME = "set_session_title";
 const NO_SESSION_TITLE_FLAG = "no-session-title";
@@ -118,7 +126,11 @@ async function generateSessionName(
   ctx: ExtensionContext,
   abortController: AbortController,
 ): Promise<string | undefined> {
-  const model = ctx.modelRegistry.find(TITLE_MODEL_PROVIDER, TITLE_MODEL_ID);
+  const settings = readExtensionSettings<SessionTitleSettings>(SESSION_TITLE_SETTINGS_KEY, {
+    projectPath: projectSettingsPath(ctx.cwd),
+  });
+  const configuredModel = parseModelSpec(settings.model) ?? DEFAULT_TITLE_MODEL;
+  const model = ctx.modelRegistry.find(configuredModel.provider, configuredModel.model);
   if (!model) return undefined;
 
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
@@ -144,7 +156,7 @@ async function generateSessionName(
       {
         apiKey: auth.apiKey,
         headers: auth.headers,
-        reasoningEffort: TITLE_REASONING_EFFORT,
+        reasoningEffort: configuredModel.thinkingLevel,
         signal: abortController.signal,
         timeoutMs: TITLE_TIMEOUT_MS,
       },

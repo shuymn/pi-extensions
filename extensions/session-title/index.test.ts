@@ -1,4 +1,7 @@
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { withTimeout } from "../../tests/support/async";
 
 let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
@@ -7,6 +10,10 @@ let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
 
 mock.module("@earendil-works/pi-ai", () => ({
   complete: (...args: unknown[]) => completeImpl(...args),
+}));
+
+mock.module("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: () => tempAgentDir,
 }));
 
 type EventHandler = (event: any, ctx: any) => Promise<void> | void;
@@ -67,8 +74,10 @@ function createCtx(
     apiKey: "test-key",
     headers: { "x-test": "1" },
   }),
+  cwd = tempCwd,
 ) {
   return {
+    cwd,
     sessionManager: {
       getBranch: () => entries,
     },
@@ -97,7 +106,26 @@ async function loadTitleHelpers() {
   return await import("./title");
 }
 
+let tempAgentDir: string;
+let tempCwd: string;
+
+function writeProjectSettings(settings: unknown) {
+  const settingsDir = join(tempCwd, ".pi");
+  mkdirSync(settingsDir, { recursive: true });
+  writeFileSync(join(settingsDir, "settings.json"), `${JSON.stringify(settings)}\n`, "utf8");
+}
+
 describe("session-title extension", () => {
+  beforeEach(() => {
+    tempAgentDir = mkdtempSync(join(tmpdir(), "pi-session-title-agent-test-"));
+    tempCwd = mkdtempSync(join(tmpdir(), "pi-session-title-test-"));
+  });
+
+  afterEach(() => {
+    rmSync(tempAgentDir, { recursive: true, force: true });
+    rmSync(tempCwd, { recursive: true, force: true });
+  });
+
   test("arms only fresh unnamed startup or new sessions", async () => {
     const { shouldArmSessionTitle } = await loadTitleHelpers();
 
@@ -233,6 +261,8 @@ describe("session-title extension", () => {
     );
     expect(pi.setNames).toEqual(["Implement Auto Naming"]);
     expect(completeCalls).toHaveLength(1);
+    const model = completeCalls[0]![0] as Record<string, unknown>;
+    expect(model).toMatchObject({ provider: "openai-codex", id: "gpt-5.3-codex-spark" });
     const options = completeCalls[0]![2] as Record<string, unknown>;
     expect(options).toMatchObject({
       reasoningEffort: "low",
@@ -244,6 +274,36 @@ describe("session-title extension", () => {
       tools?: Array<{ name: string }>;
     };
     expect(context.tools?.map((tool) => tool.name)).toEqual(["set_session_title"]);
+  });
+
+  test("uses model settings from project settings", async () => {
+    const { default: extension } = await loadExtension();
+    writeProjectSettings({
+      "session-title": {
+        model: "test-provider/test-model:medium",
+      },
+    });
+    const pi = createFakePi();
+    const ctx = createCtx();
+    const completeCalls: unknown[][] = [];
+    completeImpl = async (...args: unknown[]) => {
+      completeCalls.push(args);
+      return { content: [{ type: "text", text: "Configured Model Title" }] };
+    };
+
+    extension(pi as never);
+
+    await pi.events.get("session_start")![0]({ reason: "startup" }, ctx);
+    await pi.events.get("message_end")![0](
+      { message: { role: "user", content: "pi session title please" } },
+      ctx,
+    );
+
+    await expect(withTimeout(pi.waitForSetName(), "session name was not set")).resolves.toBe(
+      "Configured Model Title",
+    );
+    expect(completeCalls[0]![0]).toMatchObject({ provider: "test-provider", id: "test-model" });
+    expect(completeCalls[0]![2]).toMatchObject({ reasoningEffort: "medium" });
   });
 
   test("uses the first valid structured title", async () => {
