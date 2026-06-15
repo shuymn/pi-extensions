@@ -9,6 +9,16 @@ import { getCompanionSocketPath } from "./socket-path";
 const SOCK = getCompanionSocketPath();
 const GLIMPSEUI_COMMAND = process.env.PI_COMPANION_GLIMPSEUI_COMMAND ?? "glimpseui";
 const IDLE_EXIT_MS = 5000;
+// Clients may be persistent (pi extension holds one socket) or one-shot (Claude
+// Code hooks connect, send a single line, then close per event). A closed socket
+// therefore no longer means "agent gone"; rows are reaped by staleness instead.
+// One-shot clients cannot heartbeat during a single long-running tool call, so the
+// active TTL must outlast the longest expected operation; it only exists to clear
+// rows from a client that crashed without sending "done"/remove.
+const ACTIVE_TTL_MS = Number(process.env.PI_COMPANION_ACTIVE_TTL_MS) || 900000;
+const TERMINAL_TTL_MS = 5000;
+const REAP_INTERVAL_MS = 1000;
+const TERMINAL_STATUSES = new Set(["done", "error"]);
 
 const STATUS_COLOR: Record<string, string> = {
   starting: "#22C55E",
@@ -198,9 +208,11 @@ function truncate(value: unknown, max = 60): string {
 }
 
 const agents = new Map<string, CompanionAgent>();
+const lastSeen = new Map<string, number>();
 const sockets = new Set<Socket>();
 const eventClients = new Set<ServerResponse>();
 let idleTimer: ReturnType<typeof setTimeout> | undefined;
+let reapTimer: ReturnType<typeof setInterval> | undefined;
 let child: ChildProcess | undefined;
 
 function writeEvent(client: ServerResponse, event: string, data: unknown): void {
@@ -219,6 +231,22 @@ function resetIdleTimer() {
       process.exit(0);
     }
   }, IDLE_EXIT_MS);
+}
+
+function removeAgent(id: string): void {
+  agents.delete(id);
+  lastSeen.delete(id);
+  broadcast("remove", { id });
+  resetIdleTimer();
+}
+
+function reapStaleAgents(): void {
+  const now = Date.now();
+  for (const [id, agent] of agents) {
+    const seenAt = lastSeen.get(id);
+    const ttl = TERMINAL_STATUSES.has(agent.status) ? TERMINAL_TTL_MS : ACTIVE_TTL_MS;
+    if (seenAt === undefined || now - seenAt >= ttl) removeAgent(id);
+  }
 }
 
 const httpServer = createHttpServer((req, res) => {
@@ -249,18 +277,15 @@ safeUnlinkSocket();
 const socketServer = createServer((socket) => {
   sockets.add(socket);
   const rl = createInterface({ input: socket, crlfDelay: Infinity });
-  let clientId: string | undefined;
 
   rl.on("line", (line) => {
     try {
       const msg = JSON.parse(line) as Record<string, unknown>;
       if (typeof msg.id !== "string") return;
-      clientId = msg.id;
+      const clientId = msg.id;
 
       if (msg.type === "remove") {
-        agents.delete(clientId);
-        broadcast("remove", { id: clientId });
-        resetIdleTimer();
+        removeAgent(clientId);
         return;
       }
 
@@ -274,6 +299,7 @@ const socketServer = createServer((socket) => {
         detail: truncate(msg.detail),
       };
       agents.set(clientId, agent);
+      lastSeen.set(clientId, Date.now());
       broadcast("status", agent);
       resetIdleTimer();
     } catch {}
@@ -281,10 +307,6 @@ const socketServer = createServer((socket) => {
 
   socket.on("close", () => {
     sockets.delete(socket);
-    if (clientId) {
-      agents.delete(clientId);
-      broadcast("remove", { id: clientId });
-    }
     resetIdleTimer();
   });
   socket.on("error", () => {});
@@ -335,11 +357,15 @@ httpServer.listen(0, "127.0.0.1", () => {
 
 socketServer.listen(SOCK);
 
+reapTimer = setInterval(reapStaleAgents, REAP_INTERVAL_MS);
+reapTimer.unref?.();
+
 let cleanedUp = false;
 function cleanup() {
   if (cleanedUp) return;
   cleanedUp = true;
   if (idleTimer) clearTimeout(idleTimer);
+  if (reapTimer) clearInterval(reapTimer);
   try {
     socketServer.close();
   } catch {}
