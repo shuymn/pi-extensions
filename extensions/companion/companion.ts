@@ -73,8 +73,6 @@ body {
 #pill {
   width: fit-content;
   background: rgba(0,0,0,0.45);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
   border-radius: 8px;
   padding: 2px 0;
   transition: opacity 0.3s ease-out;
