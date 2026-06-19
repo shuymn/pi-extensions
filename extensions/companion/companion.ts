@@ -8,6 +8,7 @@ import { getCompanionSocketPath } from "./socket-path";
 
 const SOCK = getCompanionSocketPath();
 const GLIMPSEUI_COMMAND = process.env.PI_COMPANION_GLIMPSEUI_COMMAND ?? "glimpseui";
+const GLIMPSEUI_WINDOW_HEIGHT = "10000";
 const IDLE_EXIT_MS = 5000;
 // Clients may be persistent (pi extension holds one socket) or one-shot (Claude
 // Code hooks connect, send a single line, then close per event). A closed socket
@@ -64,11 +65,7 @@ body {
   font-weight: 600;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-end;
-  height: 100vh;
+  overflow: visible;
 }
 #pill {
   width: fit-content;
@@ -329,7 +326,7 @@ httpServer.listen(0, "127.0.0.1", () => {
       "--width",
       "630",
       "--height",
-      "100",
+      GLIMPSEUI_WINDOW_HEIGHT,
       "--frameless",
       "--floating",
       "--transparent",
