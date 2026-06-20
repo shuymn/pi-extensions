@@ -95,8 +95,6 @@ async function runWorkflowSubagent(
       status: options.signal?.aborted ? "cancelled" : "failed",
       error,
     };
-  } finally {
-    // Cleanup is handled after transcript persistence so the transcript can include final messages.
   }
 
   try {
@@ -121,7 +119,11 @@ async function runWorkflowSubagent(
   }
 
   if (outcome.status !== "completed") throw outcome.error;
-  if (transcriptError !== undefined) throw transcriptError;
+  if (transcriptError !== undefined) {
+    console.warn(
+      `workflow subagent transcript persistence failed: ${errorMessage(transcriptError)}`,
+    );
+  }
   return outcome.result;
 }
 
@@ -219,6 +221,10 @@ function selectedModelId(model: WorkflowRunnerContext["model"]): string | undefi
   }
   if (typeof candidate.id === "string") return candidate.id;
   return undefined;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function buildWorkflowSubagentSystemPrompt(parentSystemPrompt: string, cwd: string): string {

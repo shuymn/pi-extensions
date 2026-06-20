@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -217,6 +217,36 @@ describe("workflow subagent runner", () => {
     expect(transcript.metadata.sessionPrompt).toContain("Workflow agent label: inspect src");
     expect(transcript.metadata.startedAt).toEqual(expect.any(String));
     expect(transcript.metadata.completedAt).toEqual(expect.any(String));
+  });
+
+  test("returns successful results when transcript persistence fails", async () => {
+    const { createWorkflowAgentRunner } = await loadRunnerModule();
+    const transcriptsDir = tempTranscriptsDir();
+    writeFileSync(transcriptsDir, "not a directory");
+    nextResultText = "final answer";
+    const warn = mock(() => {});
+    const originalWarn = console.warn;
+    console.warn = warn as never;
+
+    try {
+      const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+      const result = await runner("Inspect src", {
+        label: "inspect src",
+        transcript: {
+          transcriptId: "0001-inspect-src",
+          runId: "wf_transcript_12345678",
+          taskId: "task_transcript_12345678",
+          transcriptsDir,
+        },
+      });
+
+      expect(result).toBe("final answer");
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("workflow subagent transcript persistence failed"),
+      );
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 
   test("persists failed subagent transcripts before rethrowing", async () => {
