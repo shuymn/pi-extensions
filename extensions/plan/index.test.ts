@@ -93,7 +93,7 @@ describe("plan extension", () => {
     expect(pi.commands.get("impl")?.description).toContain("PLAN.md");
   });
 
-  test("/plan asks the agent to create PLAN.md without implementation or checkbox tasks", async () => {
+  test("/plan asks the agent to create agent-executable PLAN.md tasks without implementation or checkboxes", async () => {
     const extension = await loadExtension();
     const pi = createFakePi();
     extension(pi as never);
@@ -103,12 +103,28 @@ describe("plan extension", () => {
 
     expect(pi.sentMessages).toHaveLength(1);
     const prompt = pi.sentMessages[0]!;
-    expect(prompt).toContain("PLAN.md");
-    expect(prompt).toContain("まだ実装は開始しない");
-    expect(prompt).toContain("implementation task section");
-    expect(prompt).toContain("Markdown checkbox");
+    expect(prompt).toContain("Create PLAN.md");
+    expect(prompt).toContain("Do not start implementation");
+    expect(prompt).toContain("Implementation Tasks section");
+    expect(prompt).toContain("Select what should be implemented, excluded, or deferred");
+    expect(prompt).toContain("agent-executable work units");
+    expect(prompt).toContain("dependencies/handoff");
+    expect(prompt).toContain("parallelization or async notes");
+    expect(prompt).toContain("observable outcome");
+    expect(prompt).toContain("validation evidence");
+    expect(prompt).toContain(
+      "Split work only at real dependency, parallelization, or validation boundaries",
+    );
+    expect(prompt).toContain("Avoid mechanical decomposition");
+    expect(prompt).toContain("later progress belongs in the pi todo tool during /impl");
+    expect(prompt).toContain(
+      "Ask clarifying questions when ambiguity affects implementation decisions",
+    );
+    expect(prompt).toContain("Markdown checkboxes");
     expect(prompt).toContain("- [ ]");
-    expect(prompt).toContain("PLAN.md itself is not the progress tracker");
+    expect(prompt).toContain("PLAN.md is not the progress tracker");
+    expect(prompt).not.toContain("まだ実装");
+    expect(prompt).not.toContain("直列/並列");
   });
 
   test("/plan appends additional instructions from arguments or -- separator", async () => {
@@ -128,7 +144,7 @@ describe("plan extension", () => {
     ]);
   });
 
-  test("/impl asks the agent to convert PLAN.md tasks into the pi todo tool and keep Japanese notes", async () => {
+  test("/impl asks the agent to convert PLAN.md into dependency-aware todo items and keep Japanese notes", async () => {
     const extension = await loadExtension();
     const pi = createFakePi();
     extension(pi as never);
@@ -139,11 +155,20 @@ describe("plan extension", () => {
     expect(pi.sentMessages).toHaveLength(1);
     const prompt = pi.sentMessages[0]!;
     expect(prompt).toContain("Read PLAN.md and implement it");
+    expect(prompt).toContain("agent execution graph");
+    expect(prompt).toContain("Create pi todo items from the selected work units");
+    expect(prompt).toContain("preserving each unit's fields in the todo descriptions");
+    expect(prompt).toContain("Do not create one todo per PLAN.md bullet mechanically");
+    expect(prompt).toContain("Use concurrency or subagents");
     expect(prompt).toContain("pi todo tool");
     expect(prompt).toContain("implementation-notes.md");
     expect(prompt).toContain("Japanese");
     expect(prompt).toContain("not by checking off items in PLAN.md");
-    expect(prompt).toContain("Update PLAN.md only when the actual plan/design/assumptions change");
+    expect(prompt).toContain("Treat PLAN.md as a working plan");
+    expect(prompt).toContain("Choose concrete checks based on actual changes");
+    expect(prompt).toContain(
+      "Update PLAN.md only when the actual plan, design, or assumptions change",
+    );
   });
 
   test("/impl appends additional instructions from arguments or -- separator", async () => {

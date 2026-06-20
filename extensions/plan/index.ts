@@ -3,32 +3,34 @@ import { formatAdditionalUserInstructionsBlock } from "../../lib/prompt";
 
 const BUSY_MESSAGE = "エージェントが処理中です。完了後に再実行してください。";
 
-const PLAN_PROMPT = `そのセッションで行った調査・確認結果をベースに PLAN.md を作成してください。
+const PLAN_PROMPT = `Create PLAN.md from the investigation and selection work in this session.
 
-要件:
-- まだ実装は開始しない。
-- PLAN.md には必ず implementation task section を含める。
-- task section は /impl が pi todo tool に変換して作業開始できる粒度にする。
-- task section は Markdown checkbox 形式にしない。\`- [ ] task\` ではなく、番号付きリストや通常の箇条書きを使う。
-- PLAN.md itself is not the progress tracker; progress must be tracked later with the pi todo tool during /impl.
-- 不明点が実装判断に影響する場合は質問する。`;
+Requirements:
+- Do not start implementation.
+- Before writing PLAN.md, inspect relevant files, existing design, constraints, dependencies, and candidate work. Select what should be implemented, excluded, or deferred.
+- Include an Implementation Tasks section designed for Coding Agent execution through /impl, not for human time management.
+- Write agent-executable work units. Each selected work unit must carry these fields: objective, inputs/constraints, expected change scope, dependencies/handoff, parallelization or async notes, observable outcome, and validation evidence.
+- Split work only at real dependency, parallelization, or validation boundaries. Avoid mechanical decomposition by file, function, individual test, or command.
+- If useful, add a brief separate note for excluded or deferred candidates and why they were not selected.
+- Use numbered lists or normal bullets for tasks, not Markdown checkboxes such as \`- [ ] task\`.
+- PLAN.md is not the progress tracker; later progress belongs in the pi todo tool during /impl.
+- Ask clarifying questions when ambiguity affects implementation decisions.`;
 
 const IMPL_PROMPT = `Read PLAN.md and implement it.
 
 Before implementation:
-- Convert PLAN.md's implementation task section into pi todo tool items.
+- Treat PLAN.md's Implementation Tasks section as an agent execution graph, not a human checklist.
+- Create pi todo items from the selected work units, preserving each unit's fields in the todo descriptions.
+- Do not create one todo per PLAN.md bullet mechanically; merge or split only when needed for agent-executable implementation loops, and record the reason in implementation-notes.md.
+- Order the active todo sequence by dependency. Use concurrency or subagents for independent work only when safe, supported, and useful.
 - Use the pi todo tool as the execution progress tracker.
 
 During implementation:
 - Track progress in the pi todo tool, not by checking off items in PLAN.md.
-- Keep a running Japanese implementation-notes.md with:
-  - decisions you had to make that were not in the spec
-  - things you had to change
-  - tradeoffs you made
-  - anything else the user should know
-- Treat PLAN.md as a working plan, not an immutable waterfall contract.
-- If new findings require course correction, update the pi todo list before continuing.
-- Update PLAN.md only when the actual plan/design/assumptions change, not merely to mark progress.`;
+- Keep a running Japanese implementation-notes.md with decisions not covered by the spec, changes made, tradeoffs, and user-relevant notes.
+- Treat PLAN.md as a working plan. If new findings require course correction, update the pi todo list before continuing.
+- Validate each todo against its preserved outcome and evidence. Choose concrete checks based on actual changes instead of treating PLAN.md as a fixed command checklist.
+- Update PLAN.md only when the actual plan, design, or assumptions change.`;
 
 function stripInstructionSeparator(args: string): string {
   return args
