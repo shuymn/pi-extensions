@@ -1,0 +1,4 @@
+*
+!.gitignore
+!repo-inspection.js
+!adversarial-review.js
