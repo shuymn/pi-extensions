@@ -6,7 +6,7 @@
       "name": "pi-extensions",
       "dependencies": {
         "@anthropic-ai/sandbox-runtime": "^0.0.54",
-        "@anthropic-ai/sdk": "^0.104.0",
+        "@anthropic-ai/sdk": "^0.105.0",
         "@anthropic-ai/vertex-sdk": "^0.17.0",
       },
       "devDependencies": {
@@ -31,7 +31,7 @@
   "packages": {
     "@anthropic-ai/sandbox-runtime": ["@anthropic-ai/sandbox-runtime@0.0.54", "https://npm.flatt.tech/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-0.0.54.tgz", { "dependencies": { "@pondwader/socks5-server": "^1.0.10", "commander": "^12.1.0", "node-forge": "^1.4.0", "shell-quote": "^1.8.4", "zod": "^3.24.1" }, "bin": { "srt": "dist/cli.js" } }, "sha512-zszEoq/z02SgJLlPFcoegqz2UonYbn3Gi//Hwza6KdUolg9HeGw/mPuO7Ybp4EzgLxG6ifA4KOrozErYKJuFag=="],
 
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.104.1", "https://npm.flatt.tech/@anthropic-ai/sdk/-/sdk-0.104.1.tgz", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-gGACa/+IaiXzRRmF96aOhamoBgapKRBiFWbmmTFP8aMkpaEcuStF+Q61bjo4vPxBM7gqWJNZqsngslRdnLHv0Q=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.105.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-sDyu+aM9cE6uZE+HgRjjHRb+qqb87GHZOx+8bE0YlWetdL1YcVLxn8h9ltxGOflyChTe6PMEo50kMQV4cw0hfg=="],
 
     "@anthropic-ai/vertex-sdk": ["@anthropic-ai/vertex-sdk@0.17.1", "https://npm.flatt.tech/@anthropic-ai/vertex-sdk/-/vertex-sdk-0.17.1.tgz", { "dependencies": { "@anthropic-ai/sdk": ">=0.50.3 <1", "google-auth-library": "^9.4.2" } }, "sha512-+am1LjqEpb7Qq/fKDdu0PTE2U9+XSPXSSr9Fa5dvJ8FtJ5L9XOroNBnr7iecT+6iGlbiV6BYgMIGkAwPuly/jA=="],
 
@@ -107,11 +107,11 @@
 
     "@earendil-works/pi-agent-core": ["@earendil-works/pi-agent-core@0.79.8", "https://npm.flatt.tech/@earendil-works/pi-agent-core/-/pi-agent-core-0.79.8.tgz", { "dependencies": { "@earendil-works/pi-ai": "^0.79.8", "ignore": "7.0.5", "typebox": "1.1.38", "yaml": "2.9.0" } }, "sha512-8m5fcqRpoGpq3QY0I/tFXROSTmPwBb1dAuzYZO3XYgjsdCokkRMAGRjA9P8s/UD6Jy9yy69lyE4H6sz/5A1TmQ=="],
 
-    "@earendil-works/pi-ai": ["@earendil-works/pi-ai@0.79.7", "", { "dependencies": { "@anthropic-ai/sdk": "0.91.1", "@aws-sdk/client-bedrock-runtime": "3.1048.0", "@google/genai": "1.52.0", "@mistralai/mistralai": "2.2.1", "@smithy/node-http-handler": "4.7.3", "http-proxy-agent": "7.0.2", "https-proxy-agent": "7.0.6", "openai": "6.26.0", "partial-json": "0.1.7", "typebox": "1.1.38" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-KTe2euBoBEmFb0W+KR05Im8Qq4coU+eo46++UgNAfT3L8OIBv3QU+/pif9EqaFQ1QUmirv8kgy4TQltvrCu7iQ=="],
+    "@earendil-works/pi-ai": ["@earendil-works/pi-ai@0.79.7", "https://npm.flatt.tech/@earendil-works/pi-ai/-/pi-ai-0.79.7.tgz", { "dependencies": { "@anthropic-ai/sdk": "0.91.1", "@aws-sdk/client-bedrock-runtime": "3.1048.0", "@google/genai": "1.52.0", "@mistralai/mistralai": "2.2.1", "@smithy/node-http-handler": "4.7.3", "http-proxy-agent": "7.0.2", "https-proxy-agent": "7.0.6", "openai": "6.26.0", "partial-json": "0.1.7", "typebox": "1.1.38" }, "bin": { "pi-ai": "dist/cli.js" } }, "sha512-KTe2euBoBEmFb0W+KR05Im8Qq4coU+eo46++UgNAfT3L8OIBv3QU+/pif9EqaFQ1QUmirv8kgy4TQltvrCu7iQ=="],
 
-    "@earendil-works/pi-coding-agent": ["@earendil-works/pi-coding-agent@0.79.7", "", { "dependencies": { "@earendil-works/pi-agent-core": "^0.79.7", "@earendil-works/pi-ai": "^0.79.7", "@earendil-works/pi-tui": "^0.79.7", "@silvia-odwyer/photon-node": "0.3.4", "chalk": "5.6.2", "cross-spawn": "7.0.6", "diff": "8.0.4", "glob": "13.0.6", "highlight.js": "10.7.3", "hosted-git-info": "9.0.3", "ignore": "7.0.5", "jiti": "2.7.0", "minimatch": "10.2.5", "proper-lockfile": "4.1.2", "semver": "7.8.0", "typebox": "1.1.38", "undici": "8.3.0", "yaml": "2.9.0" }, "optionalDependencies": { "@mariozechner/clipboard": "0.3.9" }, "bin": { "pi": "dist/cli.js" } }, "sha512-oEV3+jL4nD6taBiBZxiZifBaMx3FEcyYDlVlcKfPtrv6r3x4FUu4EOR6ISB+MA8IRLYp6NsGs3d5q8BHmVhE+g=="],
+    "@earendil-works/pi-coding-agent": ["@earendil-works/pi-coding-agent@0.79.7", "https://npm.flatt.tech/@earendil-works/pi-coding-agent/-/pi-coding-agent-0.79.7.tgz", { "dependencies": { "@earendil-works/pi-agent-core": "^0.79.7", "@earendil-works/pi-ai": "^0.79.7", "@earendil-works/pi-tui": "^0.79.7", "@silvia-odwyer/photon-node": "0.3.4", "chalk": "5.6.2", "cross-spawn": "7.0.6", "diff": "8.0.4", "glob": "13.0.6", "highlight.js": "10.7.3", "hosted-git-info": "9.0.3", "ignore": "7.0.5", "jiti": "2.7.0", "minimatch": "10.2.5", "proper-lockfile": "4.1.2", "semver": "7.8.0", "typebox": "1.1.38", "undici": "8.3.0", "yaml": "2.9.0" }, "optionalDependencies": { "@mariozechner/clipboard": "0.3.9" }, "bin": { "pi": "dist/cli.js" } }, "sha512-oEV3+jL4nD6taBiBZxiZifBaMx3FEcyYDlVlcKfPtrv6r3x4FUu4EOR6ISB+MA8IRLYp6NsGs3d5q8BHmVhE+g=="],
 
-    "@earendil-works/pi-tui": ["@earendil-works/pi-tui@0.79.7", "", { "dependencies": { "get-east-asian-width": "1.6.0", "marked": "18.0.5" } }, "sha512-FtPN6H8gBvaVJWmPAmtB2dviecoCyrxB6SJUBuZ62p8zdiDgDlfAiYxNqTA2/R2iklqBZA83YcLLFWeMAyFuHw=="],
+    "@earendil-works/pi-tui": ["@earendil-works/pi-tui@0.79.7", "https://npm.flatt.tech/@earendil-works/pi-tui/-/pi-tui-0.79.7.tgz", { "dependencies": { "get-east-asian-width": "1.6.0", "marked": "18.0.5" } }, "sha512-FtPN6H8gBvaVJWmPAmtB2dviecoCyrxB6SJUBuZ62p8zdiDgDlfAiYxNqTA2/R2iklqBZA83YcLLFWeMAyFuHw=="],
 
     "@google/genai": ["@google/genai@1.52.0", "https://npm.flatt.tech/@google/genai/-/genai-1.52.0.tgz", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.5.4", "ws": "^8.18.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-gwSvbpiN/17O9TbsqSsE/OzZcpv5Fo4RQjdngGgogtuB9RsyJ8ZHhX5KjHj1bp5N9snN2eK8LDGXSaWW2hof8Q=="],
 
@@ -384,6 +384,8 @@
     "zod": ["zod@3.25.76", "https://npm.flatt.tech/zod/-/zod-3.25.76.tgz", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "https://npm.flatt.tech/zod-to-json-schema/-/zod-to-json-schema-3.25.2.tgz", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
+
+    "@anthropic-ai/vertex-sdk/@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.104.1", "https://npm.flatt.tech/@anthropic-ai/sdk/-/sdk-0.104.1.tgz", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-gGACa/+IaiXzRRmF96aOhamoBgapKRBiFWbmmTFP8aMkpaEcuStF+Q61bjo4vPxBM7gqWJNZqsngslRdnLHv0Q=="],
 
     "@aws-sdk/credential-provider-http/@smithy/node-http-handler": ["@smithy/node-http-handler@4.7.7", "https://npm.flatt.tech/@smithy/node-http-handler/-/node-http-handler-4.7.7.tgz", { "dependencies": { "@smithy/core": "^3.24.6", "@smithy/types": "^4.14.3", "tslib": "^2.6.2" } }, "sha512-ZAFvHXrEk6K180EVhmZVg8GU5pUH5BSFqRs27JW3j1qEFx9YyYwWFx17x/MHcjALYimGAji7qEOlF1++be+G5A=="],
 
