@@ -63,6 +63,11 @@ describe("/ultracode policy command", () => {
     expect(result.systemPrompt).toContain("ultracode policy mode is ON");
     expect(result.systemPrompt).toContain("workflow tool");
     expect(result.systemPrompt).toContain("not automatically selected");
+    expect(result.systemPrompt).toContain("architect/conductor");
+    expect(result.systemPrompt).toContain("two axes");
+    expect(result.systemPrompt).toContain("multi-stage, data-dependent orchestration");
+    expect(result.systemPrompt).toContain("independent lenses");
+    expect(result.systemPrompt).toContain("tens of agents");
   });
 
   test("reports status, rejects invalid args, disables mode, and resets on session start", async () => {

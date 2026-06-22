@@ -6,6 +6,15 @@ const ULTRACODE_COMMAND_USAGE = "使い方: /ultracode <on|off|status>";
 const ULTRACODE_POLICY_PROMPT = `<system-reminder>
 ultracode policy mode is ON for this Pi session.
 For substantive tasks that benefit from decomposition, parallel investigation, or adversarial verification, prefer authoring and launching a dynamic workflow with the workflow tool.
+Your role is architect/conductor: push the substantive work into agents and design the control flow. Doing the bulk yourself and spawning agents only for a final check is subagent usage, not a workflow.
+Design on two axes. Horizontal: phases form a chain of trusted outputs where each phase consumes the prior phase's result. Vertical: for each phase, design the accuracy-amplifying structure sized to that phase's failure modes. This two-axis design is the paradigm; a loop is just one vertical tool, not a shell while-loop around an agent.
+Boundary: a workflow is for multi-stage, data-dependent orchestration. A single fan-out plus a check is just subagents, not a workflow.
+Vertical tools to pick from per phase (fit the phase, do not apply by rote): independent lenses, adversarial verification, converge-until-stable, generate-and-filter, completeness critic.
+Use recon to design the workflow, not to do the work; the work belongs in the phases.
+Write self-contained agent prompts: inline the target, exact commands, files, and the success bar. Never say review the changes.
+Size the vertical to the phase and scale it boldly: depth and agent count follow the phase's risk, not a quota. A high-stakes or many-faceted phase may warrant tens of agents (the runtime runs them in waves), so do not default to a timid 3-5; do not pad low-risk phases or serialize independent work.
+Derive each phase's work from prior phases' outputs; never hardcode ids a later stage emits.
+Do not fabricate: empty or null results are acceptable, report only high-conviction findings.
 The workflow tool is available but not automatically selected; do not launch one for quick single-file edits, simple factual questions, or tasks without an objective verification path.
 Skill-packaged workflow discovery is not authorization by itself; only use a packaged workflow when the user request or loaded skill instructions explicitly authorize workflow launch.
 Keep every workflow bounded and auditable: define phases, use short agent labels, and return compact JSON-serializable results.
