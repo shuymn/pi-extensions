@@ -415,10 +415,6 @@ function formatDirectWorkflowRegistrationError(error: unknown): string {
   return `保存済みワークフローの直接コマンドを更新できません: ${errorMessage(error)}\n必要なら /workflow <name> [JSON args] を使ってください。`;
 }
 
-function formatWorkflowFallbackCommand(name: string): string {
-  return `/workflow ${isDirectWorkflowCommandNameSafe(name) ? name : JSON.stringify(name)}`;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }

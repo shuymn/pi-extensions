@@ -97,18 +97,15 @@ describe("dynamic workflow parser", () => {
     },
     {
       name: "Date.now inside template interpolation",
-      script:
-        'export const meta = { name: "bad", phases: [{ title: "Run" }] }; const stamp = `${Date.now()}`; return await agent(stamp);',
+      script: `export const meta = { name: "bad", phases: [{ title: "Run" }] }; const stamp = \`\${Date.now()}\`; return await agent(stamp);`,
     },
     {
       name: "Math.random inside nested template interpolation",
-      script:
-        'export const meta = { name: "bad", phases: [{ title: "Run" }] }; const id = `${`${Math.random()}`}`; return await agent(id);',
+      script: `export const meta = { name: "bad", phases: [{ title: "Run" }] }; const id = \`\${\`\${Math.random()}\`}\`; return await agent(id);`,
     },
     {
       name: "argument-less new Date inside template interpolation",
-      script:
-        'export const meta = { name: "bad", phases: [{ title: "Run" }] }; return await agent(`${new Date()}`);',
+      script: `export const meta = { name: "bad", phases: [{ title: "Run" }] }; return await agent(\`\${new Date()}\`);`,
     },
   ])("rejects nondeterministic workflow code: $name", ({ script }) => {
     expect(() => parseWorkflowScript(script)).toThrow(WorkflowParseError);

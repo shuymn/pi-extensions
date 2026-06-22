@@ -76,7 +76,7 @@ async function readWorkflowJournalEvents(journalPath: string): Promise<WorkflowJ
   }
 
   const events: WorkflowJournalEvent[] = [];
-  for (const [index, line] of text.split("\n").entries()) {
+  for (const line of text.split("\n")) {
     const trimmedLine = line.trim();
     if (!trimmedLine) continue;
     try {
@@ -199,8 +199,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFileNotFoundError(error: unknown): boolean {
   return isRecord(error) && error.code === "ENOENT";
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

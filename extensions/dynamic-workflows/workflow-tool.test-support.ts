@@ -42,7 +42,7 @@ export function writeWorkflowFile(root: string, fileName: string, script: string
   return path;
 }
 
-export function readJournalLines(path: string): Array<Record<string, any>> {
+export function readJournalLines(path: string): Array<Record<string, unknown>> {
   return readFileSync(path, "utf8")
     .trim()
     .split("\n")
