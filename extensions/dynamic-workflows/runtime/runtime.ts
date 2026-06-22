@@ -101,8 +101,8 @@ type RuntimeState = {
 
 const MAX_PARALLEL_ITEMS = 4096;
 const WORKFLOW_LIMIT_ERROR_NAME = "WorkflowLimitError";
-const DEFAULT_MAX_CONCURRENT_AGENTS = 4;
-const DEFAULT_MAX_TOTAL_AGENTS = 64;
+const DEFAULT_MAX_CONCURRENT_AGENTS = 16;
+const DEFAULT_MAX_TOTAL_AGENTS = 1000;
 
 type RuntimeLimits = {
   maxConcurrentAgents: number;
