@@ -24,7 +24,7 @@ describe("example saved workflows", () => {
         name: "repo_inspection",
         description: "Inspect a repository with a few read-only specialist agents",
         fileName: "repo-inspection.js",
-        phases: [{ title: "Inspect" }, { title: "Synthesize" }],
+        phases: [{ title: "Inspect" }, { title: "Verify" }, { title: "Synthesize" }],
       }),
     ]);
   });
@@ -43,18 +43,20 @@ describe("example saved workflows", () => {
     });
 
     expect(result.meta.name).toBe("repo_inspection");
-    expect(result.agentCount).toBe(4);
-    expect(result.phases).toEqual(["Inspect", "Synthesize"]);
+    expect(result.agentCount).toBe(5);
+    expect(result.phases).toEqual(["Inspect", "Verify", "Synthesize"]);
     expect(calls.map((call) => call.label)).toEqual([
       "structure map",
       "test surface",
       "risk scan",
+      "evidence verifier",
       "inspection synthesis",
     ]);
     expect(calls.map((call) => call.phase)).toEqual([
       "Inspect",
       "Inspect",
       "Inspect",
+      "Verify",
       "Synthesize",
     ]);
     expect(calls[0]!.prompt).toContain("extensions/dynamic-workflows");
@@ -75,15 +77,24 @@ describe("example saved workflows", () => {
     });
 
     expect(result.meta.name).toBe("adversarial_review");
-    expect(result.agentCount).toBe(4);
+    expect(result.agentCount).toBe(6);
     expect(result.phases).toEqual(["Attack", "Verify", "Synthesize"]);
     expect(calls.map((call) => call.label)).toEqual([
       "edge attack",
-      "test attack",
+      "error path attack",
+      "test gap attack",
       "finding verifier",
+      "verification cross-check",
       "adversarial synthesis",
     ]);
-    expect(calls.map((call) => call.phase)).toEqual(["Attack", "Attack", "Verify", "Synthesize"]);
+    expect(calls.map((call) => call.phase)).toEqual([
+      "Attack",
+      "Attack",
+      "Attack",
+      "Verify",
+      "Verify",
+      "Synthesize",
+    ]);
     expect(calls[0]!.prompt).toContain("workflow examples are safe");
     expect(result.result).toMatchObject({ label: "adversarial synthesis" });
   });

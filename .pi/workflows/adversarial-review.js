@@ -8,42 +8,103 @@ export const meta = {
   ],
 };
 
-const target = args && typeof args.target === "string" && args.target.trim() ? args.target : "the current change";
-const claim = args && typeof args.claim === "string" && args.claim.trim() ? args.claim : "the implementation is correct and safe";
+const target =
+  args && typeof args.target === "string" && args.target.trim()
+    ? args.target
+    : "the current change";
+const claim =
+  args && typeof args.claim === "string" && args.claim.trim()
+    ? args.claim
+    : "the implementation is correct and safe";
 
+const findingsSchema = {
+  type: "object",
+  properties: {
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          issue: { type: "string" },
+          evidence: { type: "string" },
+          severity: { type: "string" },
+        },
+      },
+    },
+  },
+};
+
+const verdictSchema = {
+  type: "object",
+  properties: {
+    validated: { type: "array", items: { type: "object" } },
+    falsePositives: { type: "array", items: { type: "object" } },
+  },
+};
+
+// Horizontal axis: Attack -> Verify -> Synthesize, each phase trusting the prior output.
+// Vertical axis (Attack): independent adversarial lenses; (Verify): adversarial cross-check.
 phase("Attack");
 log("Adversarially reviewing " + target);
+const attackTarget =
+  "Read-only adversarial review of " +
+  target +
+  '. Falsify this claim: "' +
+  claim +
+  '". Report only concrete findings with file-path evidence; an empty findings array is acceptable.';
 const attacks = await parallel([
   () =>
     agent(
-      "Read-only adversarial review. Try to falsify this claim: " +
-        claim +
-        ". Target: " +
-        target +
-        ". Look for edge cases, error paths, permission mistakes, race/cancellation issues, and missing tests. Return only findings with evidence.",
-      { label: "edge attack" },
+      attackTarget +
+        " Lens: edge cases and boundary inputs (empty, null, large, malformed).",
+      { label: "edge attack", schema: findingsSchema },
     ),
   () =>
     agent(
-      "Read-only adversarial review. Inspect test coverage and verification gaps for " +
-        target +
-        ". Assume the implementation may be subtly wrong. Return concrete missing checks and commands.",
-      { label: "test attack" },
+      attackTarget +
+        " Lens: error paths, permission mistakes, and race/cancellation issues.",
+      { label: "error path attack", schema: findingsSchema },
+    ),
+  () =>
+    agent(
+      attackTarget + " Lens: missing or weak tests and verification gaps; list exact commands.",
+      { label: "test gap attack", schema: findingsSchema },
     ),
 ]);
 
 phase("Verify");
-const verification = await agent(
-  "Verify whether these adversarial findings are real, duplicates, or false positives. Prefer concrete file-path evidence and commands. Findings JSON:\n" +
-    JSON.stringify(attacks),
-  { label: "finding verifier" },
-);
+const verifyTarget =
+  "Read-only verification for " +
+  target +
+  ". Decide whether each adversarial finding is real, a duplicate, or a false positive, using concrete file-path evidence and commands. Adversarial findings:\n" +
+  JSON.stringify(attacks);
+const verifications = await parallel([
+  () => agent(verifyTarget + " Pass: confirm reproducibility.", {
+    label: "finding verifier",
+    schema: verdictSchema,
+  }),
+  () =>
+    agent(verifyTarget + " Pass: independent cross-check; flag anything not independently reproducible.", {
+      label: "verification cross-check",
+      schema: verdictSchema,
+    }),
+]);
 
 phase("Synthesize");
 return await agent(
-  "Produce a concise adversarial review summary. Separate validated issues, likely false positives, and recommended verification. Target: " +
+  "Produce a concise adversarial review summary for " +
     target +
-    "\nVerified findings JSON:\n" +
-    JSON.stringify(verification),
-  { label: "adversarial synthesis" },
+    ". Separate validated issues, likely false positives, and recommended verification. Verified findings (objects, no parsing needed):\n" +
+    JSON.stringify(verifications),
+  {
+    label: "adversarial synthesis",
+    schema: {
+      type: "object",
+      properties: {
+        validatedIssues: { type: "array" },
+        falsePositives: { type: "array" },
+        recommendedVerification: { type: "array" },
+      },
+    },
+  },
 );
