@@ -100,6 +100,7 @@ type RuntimeState = {
 };
 
 const MAX_PARALLEL_ITEMS = 4096;
+const WORKFLOW_LIMIT_ERROR_NAME = "WorkflowLimitError";
 const DEFAULT_MAX_CONCURRENT_AGENTS = 4;
 const DEFAULT_MAX_TOTAL_AGENTS = 64;
 
@@ -119,7 +120,7 @@ export class WorkflowRuntimeError extends Error {
 class WorkflowLimitError extends WorkflowRuntimeError {
   constructor(message: string) {
     super(message);
-    this.name = "WorkflowLimitError";
+    this.name = WORKFLOW_LIMIT_ERROR_NAME;
   }
 }
 
@@ -375,8 +376,18 @@ function installWorkflowGlobals(context: vm.Context): void {
           return String(error);
         }
 
+        function hostErrorName(error) {
+          if (error && typeof error === "object" && error.name === ${JSON.stringify(WORKFLOW_LIMIT_ERROR_NAME)}) {
+            return error.name;
+          }
+          return undefined;
+        }
+
         function throwContextError(error) {
-          throw new Error(hostErrorMessage(error));
+          const contextError = new Error(hostErrorMessage(error));
+          const name = hostErrorName(error);
+          if (name !== undefined) contextError.name = name;
+          throw contextError;
         }
 
         function callHost(callback) {
@@ -713,5 +724,5 @@ function errorMessage(error: unknown): string {
 
 function isHardStopError(error: unknown): boolean {
   if (error instanceof WorkflowLimitError) return true;
-  return isPlainObject(error) && error.name === "WorkflowLimitError";
+  return isPlainObject(error) && error.name === WORKFLOW_LIMIT_ERROR_NAME;
 }
