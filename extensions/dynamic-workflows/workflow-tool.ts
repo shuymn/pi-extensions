@@ -35,6 +35,11 @@ import { workflowCatalogForRoot } from "./saved/catalog";
 import { createWorkflowCallComponent, createWorkflowResultComponent } from "./ui/render-tool";
 import { refreshWorkflowWidget } from "./ui/workflow-widget";
 
+const PHASE_TITLE_EXAMPLE = 'phases: [{ title: "Inspect" }]';
+const PHASE_DESCRIPTION_EXAMPLE = 'phases: [{ title: "Inspect", description: "..." }]';
+const PHASE_STRING_REJECTED_EXAMPLE = 'phases: ["Inspect"]';
+const PHASE_NAME_REJECTED_EXAMPLE = 'phases: [{ name: "Inspect" }]';
+
 const workflowToolSchema = Type.Object({
   scriptPath: Type.Optional(
     Type.String({
@@ -44,8 +49,7 @@ const workflowToolSchema = Type.Object({
   ),
   script: Type.Optional(
     Type.String({
-      description:
-        "Raw JavaScript workflow script. It must start with `export const meta = { name, description, phases }` and call agent() at least once. Used when scriptPath is omitted, before name.",
+      description: `Raw JavaScript workflow script. It must start with \`export const meta = { name, description, phases }\`; \`meta.phases\` entries must follow \`${PHASE_TITLE_EXAMPLE}\` or \`${PHASE_DESCRIPTION_EXAMPLE}\` (write actual JavaScript with \`title\`, not strings or \`name\`). It must call agent() at least once. Used when scriptPath is omitted, before name.`,
     }),
   ),
   name: Type.Optional(
@@ -202,6 +206,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, select the script source with precedence scriptPath > script > name. Pass raw JavaScript in script, a cwd-relative or absolute file in scriptPath, or a project saved / skill-packaged workflow meta.name in name.",
       "For workflow, do not wrap raw script in Markdown fences, although the tool will defensively strip one surrounding fence.",
       "For workflow, the first statement after comments/whitespace must be `export const meta = { name, description, phases }`; keep meta a plain literal object.",
+      `For workflow, \`meta.phases\` entries must use the accepted contract \`${PHASE_TITLE_EXAMPLE}\`, or provide a description as \`${PHASE_DESCRIPTION_EXAMPLE}\`; never use \`${PHASE_STRING_REJECTED_EXAMPLE}\` or \`${PHASE_NAME_REJECTED_EXAMPLE}\`.`,
       "For workflow, do not use TypeScript syntax, imports, require(), fs, shell, network, Date.now(), Math.random(), or argument-less new Date().",
       "For workflow, available globals are args, cwd, process.cwd(), phase(title), log(message), agent(prompt, options), parallel(thunks), pipeline(items, ...stages), and budget.",
       "For workflow, every script must call agent() at least once. Do not use workflow only to return a static object or declare phases.",
