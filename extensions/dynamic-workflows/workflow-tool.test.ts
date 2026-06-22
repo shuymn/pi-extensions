@@ -20,17 +20,33 @@ describe("dynamic workflow tool contract", () => {
       },
     });
     const guidelines = tool.promptGuidelines!.join("\n");
+    const acceptedPhaseExamples = [
+      'phases: [{ title: "Inspect" }]',
+      'phases: [{ title: "Inspect", description: "..." }]',
+    ];
+    const rejectedPhaseExamples = ['phases: ["Inspect"]', 'phases: [{ name: "Inspect" }]'];
+
     expect(tool.description).toContain("deterministic JavaScript workflow");
     expect(tool.promptSnippet).toContain("Use workflow");
     expect(guidelines).toContain("explicitly asks");
     expect(guidelines).toContain("not authorization by itself");
     expect(guidelines).toContain("parallel() takes functions");
     expect(guidelines).toContain("do not use TypeScript");
+    for (const example of [...acceptedPhaseExamples, ...rejectedPhaseExamples]) {
+      expect(guidelines).toContain(example);
+    }
+    expect(guidelines).not.toContain("description?:");
     expect(guidelines).toContain("agent(prompt, { schema, label }) returns the parsed object");
     expect(guidelines).toContain("model and thinkingLevel are request hints/metadata");
-    expect((tool.parameters as any).properties).toMatchObject({
+    const properties = (tool.parameters as any).properties;
+    expect(properties).toMatchObject({
       resumeFromRunId: { type: "string", optional: true },
     });
+    for (const example of acceptedPhaseExamples) {
+      expect(properties.script.description).toContain(example);
+    }
+    expect(properties.script.description).toContain("with `title`, not strings or `name`");
+    expect(properties.script.description).not.toContain("description?:");
   });
 
   test("normalizes raw arguments and strips a single surrounding Markdown fence", async () => {

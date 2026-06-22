@@ -84,6 +84,46 @@ describe("dynamic workflow parser", () => {
 
   test.each([
     {
+      name: "string phase entry",
+      script: `export const meta = { name: "bad", phases: ["Run"] };`,
+      repair: '{ title: "Run" }',
+      rejectedShape: 'phases: ["Run"]',
+    },
+    {
+      name: "name phase field",
+      script: `export const meta = { name: "bad", phases: [{ name: "Run" }] };`,
+      repair: '{ title: "Run" }',
+      rejectedShape: '{ name: "Run" }',
+    },
+  ])("rejects invalid phase shapes with repair guidance: $name", ({
+    script,
+    repair,
+    rejectedShape,
+  }) => {
+    const message = captureParseErrorMessage(script);
+    expect(message).toContain(repair);
+    expect(message).toContain(rejectedShape);
+  });
+
+  test.each([
+    {
+      name: "long string phase entry",
+      script: `export const meta = { name: "bad", phases: [${JSON.stringify("x".repeat(500))}] };`,
+    },
+    {
+      name: "long name phase field",
+      script: `export const meta = { name: "bad", phases: [{ name: ${JSON.stringify("x".repeat(500))} }] };`,
+    },
+  ])("keeps invalid phase diagnostics concise: $name", ({ script }) => {
+    const message = captureParseErrorMessage(script);
+    expect(message.length).toBeLessThan(260);
+    expect(message).toContain("…");
+    expect(message).toContain('{ title: "Run" }');
+    expect(message).not.toContain("x".repeat(120));
+  });
+
+  test.each([
+    {
       name: "Date.now",
       script: `export const meta = { name: "bad", phases: [{ title: "Run" }] }; const stamp = Date.now(); return await agent(String(stamp));`,
     },
@@ -111,3 +151,14 @@ describe("dynamic workflow parser", () => {
     expect(() => parseWorkflowScript(script)).toThrow(WorkflowParseError);
   });
 });
+
+function captureParseErrorMessage(script: string): string {
+  try {
+    parseWorkflowScript(script);
+  } catch (error) {
+    if (!(error instanceof WorkflowParseError)) throw error;
+    return error.message;
+  }
+
+  throw new Error("expected WorkflowParseError");
+}
