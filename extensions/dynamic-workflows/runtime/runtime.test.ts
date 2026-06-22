@@ -660,6 +660,40 @@ describe("dynamic workflow runtime", () => {
     expect(result.result).toEqual(["one done", "two done", "three done"]);
   });
 
+  test("default concurrency allows more than four agents to run at once", async () => {
+    let active = 0;
+    let maxObserved = 0;
+
+    const result = await runWorkflow(
+      `
+        export const meta = {
+          name: "default_concurrency",
+          description: "Exercise default max concurrent agents",
+          phases: [{ title: "Fan out" }],
+        };
+
+        return await parallel(
+          Array.from({ length: 6 }, (_unused, index) => () =>
+            agent(String(index), { label: "a" + index }),
+          ),
+        );
+      `,
+      {
+        cwd: "/repo",
+        agent: async (prompt) => {
+          active += 1;
+          maxObserved = Math.max(maxObserved, active);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          active -= 1;
+          return `${prompt} done`;
+        },
+      },
+    );
+
+    expect(maxObserved).toBe(6);
+    expect(result.agentCount).toBe(6);
+  });
+
   test("runtime limits enforce max total agents and token budget hard stops", async () => {
     await expect(
       runWorkflow(
@@ -703,6 +737,71 @@ describe("dynamic workflow runtime", () => {
       ),
     ).rejects.toThrow("token budget");
     expect(prompts).toEqual(["first"]);
+  });
+
+  test.each([
+    {
+      name: "parallel total-agent limit",
+      script: `
+        export const meta = {
+          name: "parallel_total_agent_limit",
+          description: "Exercise parallel total agent limit",
+          phases: [{ title: "Run" }],
+        };
+
+        return await parallel([
+          () => agent("one"),
+          () => agent("two"),
+          () => agent("three"),
+        ]);
+      `,
+      options: { cwd: "/repo", maxTotalAgents: 2, agent: (prompt: string) => prompt },
+      expectedMessage: "max total agents",
+    },
+    {
+      name: "pipeline total-agent limit",
+      script: `
+        export const meta = {
+          name: "pipeline_total_agent_limit",
+          description: "Exercise pipeline total agent limit",
+          phases: [{ title: "Run" }],
+        };
+
+        return await pipeline(["one", "two", "three"], (item) => agent(item));
+      `,
+      options: { cwd: "/repo", maxTotalAgents: 2, agent: (prompt: string) => prompt },
+      expectedMessage: "max total agents",
+    },
+    {
+      name: "parallel token budget",
+      script: `
+        export const meta = {
+          name: "parallel_token_budget",
+          description: "Exercise parallel token budget",
+          phases: [{ title: "Run" }],
+        };
+
+        return await parallel([() => agent("one"), () => agent("two")]);
+      `,
+      options: { cwd: "/repo", tokenBudget: 1, agent: () => "abcd" },
+      expectedMessage: "token budget",
+    },
+    {
+      name: "pipeline token budget",
+      script: `
+        export const meta = {
+          name: "pipeline_token_budget",
+          description: "Exercise pipeline token budget",
+          phases: [{ title: "Run" }],
+        };
+
+        return await pipeline(["one", "two"], (item) => agent(item));
+      `,
+      options: { cwd: "/repo", tokenBudget: 1, agent: () => "abcd" },
+      expectedMessage: "token budget",
+    },
+  ])("runtime limits hard-stop $name failures", async ({ script, options, expectedMessage }) => {
+    await expect(runWorkflow(script, options)).rejects.toThrow(expectedMessage);
   });
 });
 
