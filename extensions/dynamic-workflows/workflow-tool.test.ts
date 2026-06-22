@@ -19,12 +19,15 @@ describe("dynamic workflow tool contract", () => {
         },
       },
     });
+    const guidelines = tool.promptGuidelines!.join("\n");
     expect(tool.description).toContain("deterministic JavaScript workflow");
     expect(tool.promptSnippet).toContain("Use workflow");
-    expect(tool.promptGuidelines!.join("\n")).toContain("explicitly asks");
-    expect(tool.promptGuidelines!.join("\n")).toContain("not authorization by itself");
-    expect(tool.promptGuidelines!.join("\n")).toContain("parallel() takes functions");
-    expect(tool.promptGuidelines!.join("\n")).toContain("do not use TypeScript");
+    expect(guidelines).toContain("explicitly asks");
+    expect(guidelines).toContain("not authorization by itself");
+    expect(guidelines).toContain("parallel() takes functions");
+    expect(guidelines).toContain("do not use TypeScript");
+    expect(guidelines).toContain("agent(prompt, { schema, label }) returns the parsed object");
+    expect(guidelines).toContain("model and thinkingLevel are request hints/metadata");
     expect((tool.parameters as any).properties).toMatchObject({
       resumeFromRunId: { type: "string", optional: true },
     });
