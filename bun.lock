@@ -7,7 +7,7 @@
       "dependencies": {
         "@anthropic-ai/sandbox-runtime": "^0.0.54",
         "@anthropic-ai/sdk": "^0.105.0",
-        "@anthropic-ai/vertex-sdk": "^0.17.0",
+        "@anthropic-ai/vertex-sdk": "^0.18.0",
       },
       "devDependencies": {
         "@biomejs/biome": "2.5.0",
@@ -31,9 +31,9 @@
   "packages": {
     "@anthropic-ai/sandbox-runtime": ["@anthropic-ai/sandbox-runtime@0.0.54", "https://npm.flatt.tech/@anthropic-ai/sandbox-runtime/-/sandbox-runtime-0.0.54.tgz", { "dependencies": { "@pondwader/socks5-server": "^1.0.10", "commander": "^12.1.0", "node-forge": "^1.4.0", "shell-quote": "^1.8.4", "zod": "^3.24.1" }, "bin": { "srt": "dist/cli.js" } }, "sha512-zszEoq/z02SgJLlPFcoegqz2UonYbn3Gi//Hwza6KdUolg9HeGw/mPuO7Ybp4EzgLxG6ifA4KOrozErYKJuFag=="],
 
-    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.105.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-sDyu+aM9cE6uZE+HgRjjHRb+qqb87GHZOx+8bE0YlWetdL1YcVLxn8h9ltxGOflyChTe6PMEo50kMQV4cw0hfg=="],
+    "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.105.0", "https://npm.flatt.tech/@anthropic-ai/sdk/-/sdk-0.105.0.tgz", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-sDyu+aM9cE6uZE+HgRjjHRb+qqb87GHZOx+8bE0YlWetdL1YcVLxn8h9ltxGOflyChTe6PMEo50kMQV4cw0hfg=="],
 
-    "@anthropic-ai/vertex-sdk": ["@anthropic-ai/vertex-sdk@0.17.1", "https://npm.flatt.tech/@anthropic-ai/vertex-sdk/-/vertex-sdk-0.17.1.tgz", { "dependencies": { "@anthropic-ai/sdk": ">=0.50.3 <1", "google-auth-library": "^9.4.2" } }, "sha512-+am1LjqEpb7Qq/fKDdu0PTE2U9+XSPXSSr9Fa5dvJ8FtJ5L9XOroNBnr7iecT+6iGlbiV6BYgMIGkAwPuly/jA=="],
+    "@anthropic-ai/vertex-sdk": ["@anthropic-ai/vertex-sdk@0.18.0", "", { "dependencies": { "@anthropic-ai/sdk": ">=0.50.3 <1", "google-auth-library": "^9.4.2" } }, "sha512-o79bEmNwfRyq8Pv1X4P7zXfvOPmNBnzzg3TtchyWqy0mpxtTYQoEMJUHCJXQYEYdHyZKnt3bIGxbPCNiBcDY7Q=="],
 
     "@aws-crypto/crc32": ["@aws-crypto/crc32@5.2.0", "https://npm.flatt.tech/@aws-crypto/crc32/-/crc32-5.2.0.tgz", { "dependencies": { "@aws-crypto/util": "^5.2.0", "@aws-sdk/types": "^3.222.0", "tslib": "^2.6.2" } }, "sha512-nLbCWqQNgUiwwtFsen1AdzAtvuLRsQS8rYgMuxCrdKf9kOssamGLuPwyTY9wyYblNr9+1XM8v6zoDTPPSIeANg=="],
 
@@ -384,8 +384,6 @@
     "zod": ["zod@3.25.76", "https://npm.flatt.tech/zod/-/zod-3.25.76.tgz", {}, "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "https://npm.flatt.tech/zod-to-json-schema/-/zod-to-json-schema-3.25.2.tgz", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
-
-    "@anthropic-ai/vertex-sdk/@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.104.1", "https://npm.flatt.tech/@anthropic-ai/sdk/-/sdk-0.104.1.tgz", { "dependencies": { "json-schema-to-ts": "^3.1.1", "standardwebhooks": "^1.0.0" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-gGACa/+IaiXzRRmF96aOhamoBgapKRBiFWbmmTFP8aMkpaEcuStF+Q61bjo4vPxBM7gqWJNZqsngslRdnLHv0Q=="],
 
     "@aws-sdk/credential-provider-http/@smithy/node-http-handler": ["@smithy/node-http-handler@4.7.7", "https://npm.flatt.tech/@smithy/node-http-handler/-/node-http-handler-4.7.7.tgz", { "dependencies": { "@smithy/core": "^3.24.6", "@smithy/types": "^4.14.3", "tslib": "^2.6.2" } }, "sha512-ZAFvHXrEk6K180EVhmZVg8GU5pUH5BSFqRs27JW3j1qEFx9YyYwWFx17x/MHcjALYimGAji7qEOlF1++be+G5A=="],
 
