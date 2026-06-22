@@ -11,11 +11,15 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
+import {
+  type InvestigationToolset,
+  isolatedAgentToolNames,
+} from "../../../lib/investigation-tools";
 import { getLatestAssistantMessageText } from "../../../lib/session-messages";
 import type { JsonSchema, WorkflowAgent, WorkflowAgentOptions } from "../runtime/runtime";
 import { createWorkflowAgentTranscript, writeWorkflowAgentTranscript } from "./transcript";
 
-const WORKFLOW_SUBAGENT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+type WorkflowInvestigationToolset = Pick<InvestigationToolset, "tools" | "toolNames">;
 
 type WorkflowRunnerPi = Pick<ExtensionAPI, "getThinkingLevel">;
 type WorkflowRunnerContext = Pick<
@@ -30,14 +34,22 @@ export type WorkflowAgentRunnerOptions = WorkflowAgentOptions & {
 export function createWorkflowAgentRunner(
   pi: WorkflowRunnerPi,
   ctx: WorkflowRunnerContext,
+  investigationToolset: WorkflowInvestigationToolset,
 ): WorkflowAgent {
   return (prompt, options) =>
-    runWorkflowSubagent(pi, ctx, prompt, options as WorkflowAgentRunnerOptions);
+    runWorkflowSubagent(
+      pi,
+      ctx,
+      investigationToolset,
+      prompt,
+      options as WorkflowAgentRunnerOptions,
+    );
 }
 
 async function runWorkflowSubagent(
   pi: WorkflowRunnerPi,
   ctx: WorkflowRunnerContext,
+  investigationToolset: WorkflowInvestigationToolset,
   prompt: string,
   options: WorkflowAgentRunnerOptions,
 ): Promise<unknown> {
@@ -59,9 +71,13 @@ async function runWorkflowSubagent(
   const structuredOutputTool = options.schema
     ? createStructuredOutputTool(options.schema)
     : undefined;
-  const tools = structuredOutputTool
-    ? [...WORKFLOW_SUBAGENT_TOOLS, structuredOutputTool.name]
-    : WORKFLOW_SUBAGENT_TOOLS;
+  const tools = isolatedAgentToolNames(investigationToolset, {
+    extraTools: structuredOutputTool ? [structuredOutputTool.name] : [],
+  });
+  const customTools = [
+    ...investigationToolset.tools,
+    ...(structuredOutputTool ? [structuredOutputTool] : []),
+  ];
 
   const thinkingLevel = pi.getThinkingLevel();
   const { session } = await createAgentSession({
@@ -73,7 +89,7 @@ async function runWorkflowSubagent(
     model: ctx.model,
     thinkingLevel,
     tools,
-    customTools: structuredOutputTool ? [structuredOutputTool] : undefined,
+    customTools,
     resourceLoader: loader,
   });
 

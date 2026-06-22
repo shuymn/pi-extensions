@@ -29,6 +29,70 @@ mock.module("@earendil-works/pi-tui", () => ({
 }));
 installTypeboxMock();
 
+type WorkflowToolOptions = {
+  controllerRegistry: {
+    register: (runId: string) => {
+      signal: AbortSignal;
+      stopReason?: string;
+      trackCompletion: (completion: Promise<void>) => void;
+      unregister: () => void;
+    };
+    get: (runId: string) => { signal: AbortSignal; stopReason?: string } | undefined;
+    activeRunIds: () => string[];
+  };
+};
+const workflowToolOptions: WorkflowToolOptions[] = [];
+mock.module("./workflow-tool", () => ({
+  createWorkflowCompletionNotifier: () => () => undefined,
+  createWorkflowTool: (options: WorkflowToolOptions) => {
+    workflowToolOptions.push(options);
+    return {
+      name: "workflow",
+      label: "Workflow",
+      description: "Execute a deterministic JavaScript workflow.",
+      parameters: {},
+      async execute() {
+        return { content: [{ type: "text", text: "mock workflow launched" }], details: {} };
+      },
+    };
+  },
+}));
+
+type ToolsetConfig = {
+  exec: (command: string, args: string[], options?: { timeout?: number }) => Promise<unknown>;
+};
+const createInvestigationToolsetCalls: ToolsetConfig[] = [];
+const cleanupCalls: boolean[] = [];
+mock.module("../../lib/investigation-tools", () => ({
+  createInvestigationToolset: (config: ToolsetConfig) => {
+    createInvestigationToolsetCalls.push(config);
+    return {
+      toolNames: [
+        "tavily_search",
+        "tavily_extract",
+        "tavily_map",
+        "tavily_crawl",
+        "tavily_auth_status",
+        "github_clone_workspace",
+      ],
+      tools: [],
+      cleanup: async () => {
+        cleanupCalls.push(true);
+      },
+    };
+  },
+  isolatedAgentToolNames: (
+    toolset: { toolNames: string[] },
+    options: { readOnly?: boolean; extraTools?: readonly string[] } = {},
+  ) => [
+    ...(options.readOnly
+      ? ["read", "grep", "find", "ls", "bash"]
+      : ["read", "grep", "find", "ls", "bash", "edit", "write"]),
+    ...toolset.toolNames,
+    ...(options.extraTools ?? []),
+  ],
+}));
+
 type ToolDefinition = { name: string; label: string; description: string };
 type CommandDefinition = {
   description?: string;
@@ -47,10 +111,12 @@ function createExtensionPi() {
   const tools = new Map<string, ToolDefinition>();
   const commands = new Map<string, CommandDefinition>();
   const events = new Map<string, EventHandler[]>();
+  const execCalls: Array<{ command: string; args: string[]; options: unknown }> = [];
   return {
     tools,
     commands,
     events,
+    execCalls,
     registerTool(tool: ToolDefinition) {
       tools.set(tool.name, tool);
     },
@@ -59,6 +125,10 @@ function createExtensionPi() {
     },
     on(name: string, handler: EventHandler) {
       events.set(name, [...(events.get(name) ?? []), handler]);
+    },
+    async exec(command: string, args: string[], options: unknown = {}) {
+      execCalls.push({ command, args, options });
+      return { code: 0, stdout: "", stderr: "" };
     },
     sendMessage() {},
     getThinkingLevel: () => "medium",
@@ -75,6 +145,9 @@ function writeWorkflowFile(root: string, fileName: string, script: string): stri
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  createInvestigationToolsetCalls.splice(0);
+  cleanupCalls.splice(0);
+  workflowToolOptions.splice(0);
 });
 
 describe("dynamic workflows extension", () => {
@@ -94,6 +167,48 @@ describe("dynamic workflows extension", () => {
     expect(pi.commands.get("workflow")?.description).toContain("saved dynamic workflow");
     expect(pi.events.get("session_start")).toHaveLength(3);
     expect(pi.events.get("before_agent_start")).toHaveLength(2);
+
+    expect(createInvestigationToolsetCalls).toHaveLength(1);
+    await createInvestigationToolsetCalls[0].exec("tvly", ["auth", "--json"], { timeout: 1 });
+    expect(pi.execCalls).toEqual([
+      { command: "tvly", args: ["auth", "--json"], options: { timeout: 1 } },
+    ]);
+
+    expect(pi.events.get("session_shutdown")).toHaveLength(1);
+    await pi.events.get("session_shutdown")![0]({ type: "session_shutdown" }, { cwd: "/repo" });
+    expect(cleanupCalls).toHaveLength(1);
+  });
+
+  test("session shutdown stops active workflow runs and waits before investigation cleanup", async () => {
+    const extension = await loadExtension();
+    const pi = createExtensionPi();
+    extension(pi as never);
+
+    const registry = workflowToolOptions.at(-1)!.controllerRegistry;
+    const activeRun = registry.register("wf_active_12345678");
+    let resolveCompletion!: () => void;
+    activeRun.trackCompletion(
+      new Promise<void>((resolve) => {
+        resolveCompletion = resolve;
+      }),
+    );
+
+    const shutdown = pi.events.get("session_shutdown")![0](
+      { type: "session_shutdown" },
+      { cwd: "/repo" },
+    ) as Promise<void>;
+    await Promise.resolve();
+
+    expect(registry.get("wf_active_12345678")?.signal.aborted).toBe(true);
+    expect(registry.get("wf_active_12345678")?.stopReason).toBe(
+      "session shutdown stopped workflow run: wf_active_12345678",
+    );
+    expect(cleanupCalls).toEqual([]);
+
+    resolveCompletion();
+    await shutdown;
+
+    expect(cleanupCalls).toEqual([true]);
   });
 
   test("injects optional ultracode policy only after /ultracode enables it", async () => {

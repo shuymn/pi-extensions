@@ -1,4 +1,6 @@
 import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { toCliExec } from "../../lib/cli";
+import { createInvestigationToolset } from "../../lib/investigation-tools";
 import { createWorkflowAgentRunner } from "./agent/runner";
 import { WorkflowRunControllerRegistry } from "./run/controllers";
 import { skillPackagedWorkflowRootsFromSystemPromptOptions } from "./saved/skill-packaged";
@@ -14,6 +16,7 @@ import { createWorkflowCompletionNotifier, createWorkflowTool } from "./workflow
 
 export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   const controllerRegistry = new WorkflowRunControllerRegistry();
+  const investigationToolset = createInvestigationToolset({ exec: toCliExec(pi) });
   let loadedSkillWorkflowRoots: string[] = [];
   const skillWorkflowRoots = (ctx?: unknown) => {
     const rootsFromContext = skillPackagedWorkflowRootsFromSystemPromptOptions(
@@ -29,7 +32,7 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   });
 
   const workflowTool = createWorkflowTool({
-    agentFactory: (ctx) => createWorkflowAgentRunner(pi, ctx),
+    agentFactory: (ctx) => createWorkflowAgentRunner(pi, ctx, investigationToolset),
     controllerRegistry,
     completionNotifier: createWorkflowCompletionNotifier(pi),
     selectedThinkingLevelFactory: () => pi.getThinkingLevel(),
@@ -45,6 +48,15 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   registerUltracodePolicyCommand(pi);
   registerDirectSavedWorkflowCommands(pi, { launchWorkflow });
   pi.registerTool(workflowTool);
+
+  pi.on("session_shutdown", async () => {
+    const activeRunIds = controllerRegistry.activeRunIds();
+    for (const runId of activeRunIds) {
+      controllerRegistry.stop(runId, `session shutdown stopped workflow run: ${runId}`);
+    }
+    await controllerRegistry.waitForRunCompletions(activeRunIds);
+    await investigationToolset.cleanup();
+  });
 }
 
 function systemPromptOptionsFromContext(ctx: unknown): BuildSystemPromptOptions | undefined {

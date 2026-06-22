@@ -386,9 +386,27 @@ function scheduleBackgroundWorkflow(input: ScheduleBackgroundWorkflowInput): voi
   };
 
   const scheduler = input.options.backgroundScheduler ?? defaultBackgroundScheduler;
+  let resolveCompletion!: () => void;
+  let rejectCompletion!: (error: unknown) => void;
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  input.controller.trackCompletion(completion);
+
+  const trackedTask = async () => {
+    try {
+      await task();
+      resolveCompletion();
+    } catch (error) {
+      rejectCompletion(error);
+    }
+  };
+
   try {
-    scheduler(task);
+    scheduler(trackedTask);
   } catch (error) {
+    rejectCompletion(error);
     input.controller.unregister();
     throw error;
   }

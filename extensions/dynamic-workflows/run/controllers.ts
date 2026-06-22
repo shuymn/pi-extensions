@@ -13,6 +13,7 @@ export type WorkflowRunControllerRegistration = {
   get stopReason(): string | undefined;
   stop(reason?: string): void;
   registerAgent(agentId: string): WorkflowAgentControllerRegistration;
+  trackCompletion(completion: Promise<void>): void;
   unregister(): void;
 };
 
@@ -25,6 +26,7 @@ type ControllerRecord = {
   controller: AbortController;
   stopReason?: string;
   agents: Map<string, AgentControllerRecord>;
+  completion?: Promise<void>;
 };
 
 export class WorkflowRunControllerRegistry {
@@ -86,6 +88,26 @@ export class WorkflowRunControllerRegistry {
     return true;
   }
 
+  trackCompletion(runId: string, completion: Promise<void>): boolean {
+    const record = this.#controllers.get(runId);
+    if (!record) return false;
+
+    const tracked = completion
+      .catch(() => undefined)
+      .finally(() => {
+        if (record.completion === tracked) record.completion = undefined;
+      });
+    record.completion = tracked;
+    return true;
+  }
+
+  async waitForRunCompletions(runIds: string[]): Promise<void> {
+    const completions = runIds
+      .map((runId) => this.#controllers.get(runId)?.completion)
+      .filter((completion): completion is Promise<void> => completion !== undefined);
+    await Promise.allSettled(completions);
+  }
+
   unregister(runId: string): boolean {
     return this.#controllers.delete(runId);
   }
@@ -111,6 +133,9 @@ export class WorkflowRunControllerRegistry {
       },
       stop: (reason?: string) => this.stop(runId, reason),
       registerAgent: (agentId: string) => this.registerAgent(runId, agentId),
+      trackCompletion: (completion: Promise<void>) => {
+        this.trackCompletion(runId, completion);
+      },
       unregister: () => {
         this.#controllers.delete(runId);
       },

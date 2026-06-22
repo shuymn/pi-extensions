@@ -13,6 +13,12 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { toCliExec } from "../../lib/cli";
+import {
+  createInvestigationToolset,
+  type InvestigationToolset,
+  isolatedAgentToolNames,
+} from "../../lib/investigation-tools";
 import {
   createProtectedBashOperations,
   type ExecFn,
@@ -20,10 +26,6 @@ import {
 } from "../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../lib/session-messages";
 
-const DEFAULT_SUBAGENT_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
-const READ_ONLY_SUBAGENT_TOOLS = ["read", "grep", "find", "ls", "bash"];
-const DEFAULT_SUBAGENT_TOOL_LIST = formatToolList(DEFAULT_SUBAGENT_TOOLS);
-const READ_ONLY_SUBAGENT_TOOL_LIST = formatToolList(READ_ONLY_SUBAGENT_TOOLS);
 type SubagentStatus = "running" | "stopping" | "completed" | "error" | "stopped";
 
 type SubagentRecord = {
@@ -87,7 +89,14 @@ function collectAssistantText(session: AgentSession, onUpdate?: (text: string) =
   };
 }
 
-function buildSystemPrompt(parentSystemPrompt: string, cwd: string, readOnly: boolean): string {
+function buildSystemPrompt(
+  parentSystemPrompt: string,
+  cwd: string,
+  readOnly: boolean,
+  toolset: InvestigationToolset,
+): string {
+  const defaultToolList = formatToolList(isolatedAgentToolNames(toolset));
+  const readOnlyToolList = formatToolList(isolatedAgentToolNames(toolset, { readOnly: true }));
   return `${parentSystemPrompt}
 
 <subagent_context>
@@ -96,8 +105,8 @@ Your job is to complete the delegated task autonomously, then return a concise f
 
 Operational rules:
 - Use only the tools available in this subagent session.
-- Default subagents have ${DEFAULT_SUBAGENT_TOOL_LIST}.
-- Read-only subagents have ${READ_ONLY_SUBAGENT_TOOL_LIST} only.
+- Default subagents have ${defaultToolList}.
+- Read-only subagents have ${readOnlyToolList} only.
 - Use absolute file paths in file references when practical.
 - Be concise but complete in your final answer.
 - Do not ask the parent agent to do work you can do yourself.
@@ -123,6 +132,7 @@ async function runSubagent(
   prompt: string,
   abortSignal: AbortSignal,
   readOnly: boolean,
+  investigationToolset: InvestigationToolset,
   onTextUpdate?: (text: string) => void,
   onSessionCreated?: (session: AgentSession) => void,
 ): Promise<{ session: AgentSession; result: string }> {
@@ -136,7 +146,8 @@ async function runSubagent(
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [],
-    systemPromptOverride: () => buildSystemPrompt(ctx.getSystemPrompt(), ctx.cwd, readOnly),
+    systemPromptOverride: () =>
+      buildSystemPrompt(ctx.getSystemPrompt(), ctx.cwd, readOnly, investigationToolset),
     appendSystemPromptOverride: () => [],
   });
   await loader.reload();
@@ -148,8 +159,8 @@ async function runSubagent(
     });
 
   const customTools: ToolDefinition[] = readOnly
-    ? [createProtectedBashToolDef(ctx.cwd, execFn)]
-    : [];
+    ? [...investigationToolset.tools, createProtectedBashToolDef(ctx.cwd, execFn)]
+    : [...investigationToolset.tools];
 
   const { session } = await createAgentSession({
     cwd: ctx.cwd,
@@ -159,7 +170,7 @@ async function runSubagent(
     modelRegistry: ctx.modelRegistry,
     model: ctx.model,
     thinkingLevel: pi.getThinkingLevel(),
-    tools: readOnly ? READ_ONLY_SUBAGENT_TOOLS : DEFAULT_SUBAGENT_TOOLS,
+    tools: isolatedAgentToolNames(investigationToolset, { readOnly }),
     customTools,
     resourceLoader: loader,
   });
@@ -187,13 +198,19 @@ async function runSubagent(
 }
 
 export default function (pi: ExtensionAPI) {
+  const investigationToolset = createInvestigationToolset({ exec: toCliExec(pi) });
+  const defaultSubagentToolList = formatToolList(isolatedAgentToolNames(investigationToolset));
+  const readOnlySubagentToolList = formatToolList(
+    isolatedAgentToolNames(investigationToolset, { readOnly: true }),
+  );
+
   pi.registerTool({
     name: "spawn_subagent",
     label: "Spawn Subagent",
     description:
       "Run a delegated task in a separate general-purpose agent session. " +
       "Use this for self-contained investigation or implementation work that benefits from an isolated context. " +
-      `Default subagents receive ${DEFAULT_SUBAGENT_TOOL_LIST}; read-only subagents receive ${READ_ONLY_SUBAGENT_TOOL_LIST}. ` +
+      `Default subagents receive ${defaultSubagentToolList}; read-only subagents receive ${readOnlySubagentToolList}. ` +
       "Foreground mode returns the result inline; background mode returns an id and notifies when complete.",
     parameters: Type.Object({
       prompt: Type.String({
@@ -243,6 +260,7 @@ export default function (pi: ExtensionAPI) {
             params.prompt,
             abortController.signal,
             params.readOnly ?? false,
+            investigationToolset,
             params.background
               ? undefined
               : (text) =>
@@ -393,6 +411,6 @@ export default function (pi: ExtensionAPI) {
     await Promise.allSettled(activeRecords.map((record) => record.promise));
     for (const record of activeRecords) record.session?.dispose?.();
     records.clear();
-    await resetSandboxState();
+    await Promise.all([investigationToolset.cleanup(), resetSandboxState()]);
   });
 }
