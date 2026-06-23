@@ -26,8 +26,13 @@ export type QuestionnaireAction =
   | { type: "appendInput"; text: string }
   | { type: "backspace" };
 
+export type QuestionnaireOptions = {
+  allowChatAboutThis?: boolean;
+};
+
 export type QuestionnaireState = {
   readonly params: AskUserQuestionParams;
+  readonly allowChatAboutThis: boolean;
   questionIndex: number;
   selectedIndex: number;
   mode: QuestionnaireMode;
@@ -44,6 +49,7 @@ export type QuestionnaireSnapshot = {
   selectedIndex: number;
   mode: QuestionnaireMode;
   inputDraft: string;
+  allowChatAboutThis: boolean;
   notice?: string;
   answers: QuestionAnswer[];
   currentQuestion: AskUserQuestionParams["questions"][number] | undefined;
@@ -55,9 +61,13 @@ export type QuestionnaireUpdateResult = {
   terminal?: AskUiResult;
 };
 
-export function createQuestionnaireState(params: AskUserQuestionParams): QuestionnaireState {
+export function createQuestionnaireState(
+  params: AskUserQuestionParams,
+  options: QuestionnaireOptions = {},
+): QuestionnaireState {
   return {
     params,
+    allowChatAboutThis: options.allowChatAboutThis !== false,
     questionIndex: 0,
     selectedIndex: 0,
     mode: "select",
@@ -76,6 +86,7 @@ export function questionnaireSnapshot(state: QuestionnaireState): QuestionnaireS
     selectedIndex: state.selectedIndex,
     mode: state.mode,
     inputDraft: state.inputDraft,
+    allowChatAboutThis: state.allowChatAboutThis,
     notice: state.notice,
     answers: [...state.answers],
     currentQuestion: currentQuestion(state),
@@ -85,7 +96,7 @@ export function questionnaireSnapshot(state: QuestionnaireState): QuestionnaireS
 
 export function questionnaireItemCount(state: QuestionnaireState): number {
   const question = currentQuestion(state);
-  return question ? question.options.length + 2 : 0;
+  return question ? question.options.length + 1 + (state.allowChatAboutThis ? 1 : 0) : 0;
 }
 
 export function questionnaireActionLabel(
@@ -95,13 +106,12 @@ export function questionnaireActionLabel(
   const question = snapshot.currentQuestion;
   if (!question) return undefined;
   if (index < question.options.length) return question.options[index]?.label;
-  if (question.multiSelect === true) {
-    if (index === question.options.length) return NEXT_QUESTION_LABEL;
-    if (index === question.options.length + 1) return CHAT_ABOUT_THIS_LABEL;
-    return undefined;
+
+  const actionIndex = question.options.length;
+  if (index === actionIndex) {
+    return question.multiSelect === true ? NEXT_QUESTION_LABEL : TYPE_SOMETHING_LABEL;
   }
-  if (index === question.options.length) return TYPE_SOMETHING_LABEL;
-  if (index === question.options.length + 1) return CHAT_ABOUT_THIS_LABEL;
+  if (snapshot.allowChatAboutThis && index === actionIndex + 1) return CHAT_ABOUT_THIS_LABEL;
   return undefined;
 }
 
@@ -231,7 +241,7 @@ function handleSelectConfirm(state: QuestionnaireState): boolean {
     const chatIndex = question.options.length + 1;
     if (state.selectedIndex < question.options.length) return toggleSelectedMultiOption(state);
     if (state.selectedIndex === submitIndex) return saveMulti(state);
-    if (state.selectedIndex === chatIndex) {
+    if (state.allowChatAboutThis && state.selectedIndex === chatIndex) {
       enterInputMode(state, "chat");
       return true;
     }
@@ -245,7 +255,7 @@ function handleSelectConfirm(state: QuestionnaireState): boolean {
     enterInputMode(state, "custom");
     return true;
   }
-  if (state.selectedIndex === chatIndex) {
+  if (state.allowChatAboutThis && state.selectedIndex === chatIndex) {
     enterInputMode(state, "chat");
     return true;
   }

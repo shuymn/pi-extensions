@@ -10,6 +10,7 @@ import {
   type AskUiResult,
   createQuestionnaireState,
   type QuestionnaireAction,
+  type QuestionnaireOptions,
   type QuestionnaireSnapshot,
   questionnaireActionLabel,
   questionnaireSnapshot,
@@ -39,6 +40,7 @@ export function createQuestionnaireComponent(
   theme: ThemeLike,
   keybindings: KeybindingsLike,
   done: Done,
+  options: QuestionnaireOptions = {},
 ) {
   // Honor the user's tui.select.* keybindings for navigation, falling back to
   // the default arrow/enter/escape keys when no custom binding matches.
@@ -47,8 +49,7 @@ export function createQuestionnaireComponent(
     id: string,
     fallback: Parameters<typeof matchesKey>[1],
   ): boolean => (keybindings.matches?.(data, id) ?? false) || matchesKey(data, fallback);
-  const state = createQuestionnaireState(params);
-
+  const state = createQuestionnaireState(params, options);
   function refresh() {
     tui.requestRender();
   }
@@ -150,6 +151,21 @@ export function createQuestionnaireComponent(
     return lines;
   }
 
+  function renderChatOptionLine(
+    snapshot: QuestionnaireSnapshot,
+    width: number,
+    index: number,
+  ): string[] {
+    if (!snapshot.allowChatAboutThis) return [];
+    return renderOptionLine(
+      snapshot,
+      width,
+      index,
+      questionnaireActionLabel(snapshot, index) ?? CHAT_ABOUT_THIS_LABEL,
+      "Pause and discuss this question.",
+    );
+  }
+
   function render(width: number): string[] {
     const snapshot = questionnaireSnapshot(state);
     const q = snapshot.currentQuestion;
@@ -236,15 +252,7 @@ export function createQuestionnaireComponent(
           "Submit selected options.",
         ),
       );
-      lines.push(
-        ...renderOptionLine(
-          snapshot,
-          width,
-          q.options.length + 1,
-          questionnaireActionLabel(snapshot, q.options.length + 1) ?? CHAT_ABOUT_THIS_LABEL,
-          "Pause and discuss this question.",
-        ),
-      );
+      lines.push(...renderChatOptionLine(snapshot, width, q.options.length + 1));
       add("");
       add(theme.fg("dim", "↑↓ navigate • Space toggle • Enter confirm • Esc cancel"));
     } else {
@@ -265,15 +273,7 @@ export function createQuestionnaireComponent(
           "Enter a custom answer.",
         ),
       );
-      lines.push(
-        ...renderOptionLine(
-          snapshot,
-          width,
-          q.options.length + 1,
-          questionnaireActionLabel(snapshot, q.options.length + 1) ?? CHAT_ABOUT_THIS_LABEL,
-          "Pause and discuss this question.",
-        ),
-      );
+      lines.push(...renderChatOptionLine(snapshot, width, q.options.length + 1));
       add("");
       add(theme.fg("dim", "↑↓ navigate • Enter select • Esc cancel"));
     }

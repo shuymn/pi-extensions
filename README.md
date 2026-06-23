@@ -28,6 +28,7 @@ pi config
 - `agmsg-pi` — Send and receive local messages between pi sessions.
 - `ask-user-question` — Let the agent ask structured clarification questions.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
+- `commit` — Launch the existing `/skill:commit` as a bounded one-shot flow with `--commit`.
 - `commandcode-provider` — Register the Command Code model provider with live model discovery and a fallback catalog.
 - `copy-file` — Add `/copy-file` to write the latest assistant message to `RESULT_<uuid>.md` in cwd.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
@@ -45,6 +46,22 @@ pi config
 - `todo` — Manage branch-local todos for multi-step work.
 - `vertex-claude-provider` — Register Claude models served through Google Vertex AI.
 
+## Commit one-shot flow
+
+Use caller-provided session and model flags, then add `--commit` to launch the commit skill and exit after the agent run:
+
+```bash
+pi \
+  --no-session \
+  --no-session-title \
+  --model 'opencode-go/deepseek-v4-flash:high' \
+  --fallback-model 'commandcode/deepseek/deepseek-v4-flash,deepseek/deepseek-v4-flash' \
+  --commit
+```
+
+Optional commit flags: `--commit-language english|japanese`, `--commit-branch`, and `--commit-base <branch>` with `--commit-branch`.
+
 Dependencies:
 
+- `commit` requires `ask-user-question` because `--commit` launches only when the `ask_user_question` LLM Tool is available.
 - `todo` imports `review` workflow events to suppress the todo widget while review runs.
