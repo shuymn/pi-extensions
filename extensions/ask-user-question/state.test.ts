@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createQuestionnaireState,
   questionnaireActionLabel,
+  questionnaireItemCount,
   questionnaireSnapshot,
   updateQuestionnaireState,
 } from "./state";
@@ -128,6 +129,57 @@ describe("questionnaire state", () => {
         activeQuestionIndex: 0,
         chatMessage: "Need trade-offs",
       },
+    });
+  });
+
+  test("bounded no-chat mode removes chat actions and clamps single-select navigation", () => {
+    const state = createQuestionnaireState(params({ questions: [params().questions[0]] }), {
+      allowChatAboutThis: false,
+    });
+
+    expect(questionnaireItemCount(state)).toBe(3);
+    expect(questionnaireActionLabel(questionnaireSnapshot(state), 2)).toBe("Type something.");
+    expect(questionnaireActionLabel(questionnaireSnapshot(state), 3)).toBeUndefined();
+
+    updateQuestionnaireState(state, { type: "move", delta: 1 });
+    updateQuestionnaireState(state, { type: "move", delta: 1 });
+    expect(updateQuestionnaireState(state, { type: "move", delta: 1 })).toEqual({
+      changed: false,
+    });
+    expect(questionnaireSnapshot(state).selectedIndex).toBe(2);
+
+    expect(updateQuestionnaireState(state, { type: "confirm" })).toEqual({ changed: true });
+    expect(questionnaireSnapshot(state)).toMatchObject({ mode: "custom" });
+    expect(updateQuestionnaireState(state, { type: "confirm" })).toEqual({ changed: true });
+    expect(questionnaireSnapshot(state).answers).toEqual([
+      {
+        questionIndex: 0,
+        question: "Which database should we use?",
+        kind: "custom",
+        answer: null,
+      },
+    ]);
+  });
+
+  test("bounded no-chat mode removes multi-select chat action", () => {
+    const state = createQuestionnaireState(params(), { allowChatAboutThis: false });
+    updateQuestionnaireState(state, { type: "confirm" });
+
+    expect(questionnaireItemCount(state)).toBe(3);
+    expect(questionnaireActionLabel(questionnaireSnapshot(state), 2)).toBe("Next question");
+    expect(questionnaireActionLabel(questionnaireSnapshot(state), 3)).toBeUndefined();
+
+    updateQuestionnaireState(state, { type: "move", delta: 1 });
+    updateQuestionnaireState(state, { type: "move", delta: 1 });
+    expect(updateQuestionnaireState(state, { type: "move", delta: 1 })).toEqual({
+      changed: false,
+    });
+    expect(questionnaireSnapshot(state).selectedIndex).toBe(2);
+
+    expect(updateQuestionnaireState(state, { type: "confirm" })).toEqual({ changed: true });
+    expect(questionnaireSnapshot(state)).toMatchObject({
+      mode: "select",
+      notice: "Select at least one option before continuing.",
     });
   });
 

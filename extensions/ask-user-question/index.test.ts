@@ -1,5 +1,7 @@
 import { describe, expect, mock, test } from "bun:test";
 import { createFakePi } from "../../tests/support/fake-pi";
+import { ASK_USER_QUESTION_POLICY_EVENT } from "./policy";
+import type { QuestionnaireOptions } from "./state";
 import type { AskUserQuestionParams, QuestionAnswer, QuestionnaireResult } from "./types";
 import { type AskUiResult, createQuestionnaireComponent } from "./ui";
 
@@ -66,11 +68,15 @@ type Theme = {
   bold: (text: string) => string;
 };
 
-async function loadTool() {
+async function loadToolWithPi() {
   const extension = (await import("./index")).default;
   const pi = createFakePi<ToolDefinition>();
   extension(pi as never);
-  return pi.tools.get("ask_user_question")!;
+  return { pi, tool: pi.tools.get("ask_user_question")! };
+}
+
+async function loadTool() {
+  return (await loadToolWithPi()).tool;
 }
 
 function validParams(overrides: Partial<AskUserQuestionParams> = {}): AskUserQuestionParams {
@@ -110,7 +116,7 @@ const theme: Theme = {
   bold: (text) => `**${text}**`,
 };
 
-function createQuestionnaireHarness(params = validParams()) {
+function createQuestionnaireHarness(params = validParams(), options: QuestionnaireOptions = {}) {
   let result: AskUiResult | null | undefined;
   let renderCount = 0;
   const component = createQuestionnaireComponent(
@@ -124,6 +130,7 @@ function createQuestionnaireHarness(params = validParams()) {
     (value) => {
       result = value;
     },
+    options,
   );
 
   return {
@@ -344,6 +351,38 @@ describe("ask-user-question extension", () => {
     expect(renderedLines).toContain("ask_user_question 1/1");
     expect(renderedLines).toContain("Database");
     expect(renderedLines).toContain("Which database should we use?");
+    expect(renderedLines?.join("\n")).toContain("Chat about this");
+  });
+
+  test("honors bounded no-chat policy from the extension event bus", async () => {
+    const { pi, tool } = await loadToolWithPi();
+    const params = validParams({ questions: [validParams().questions[0]] });
+    let renderedLines: string[] | undefined;
+
+    pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: false });
+
+    await tool.execute("call-1", params, undefined, undefined, {
+      hasUI: true,
+      ui: {
+        custom: (factory) => {
+          const component = factory(
+            { requestRender() {} },
+            {
+              fg: (_name: string, text: string) => text,
+              bold: (text: string) => text,
+            },
+            {},
+            () => undefined,
+          ) as { render: (width: number) => string[] };
+          renderedLines = component.render(80);
+          return { status: "cancelled", answers: [] };
+        },
+      },
+    });
+
+    const renderedText = renderedLines?.join("\n") ?? "";
+    expect(renderedText).toContain("Type something.");
+    expect(renderedText).not.toContain("Chat about this");
   });
 
   test("questionnaire component records single-select answer and completes at summary", () => {
@@ -419,6 +458,36 @@ describe("ask-user-question extension", () => {
       answers: [],
       activeQuestionIndex: 0,
       chatMessage: "Need trade-offs",
+    });
+  });
+
+  test("questionnaire component omits chat flow in bounded no-chat mode", () => {
+    const harness = createQuestionnaireHarness(
+      validParams({ questions: [validParams().questions[0]] }),
+      { allowChatAboutThis: false },
+    );
+
+    expect(harness.component.render(80).join("\n")).not.toContain("Chat about this");
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    harness.component.handleInput("down");
+    expect(harness.component.render(80)).toEqual(expect.arrayContaining(["> 3. Type something."]));
+
+    harness.component.handleInput("enter");
+    harness.component.handleInput("Use existing DB");
+    harness.component.handleInput("enter");
+    harness.component.handleInput("enter");
+
+    expect(harness.result).toEqual({
+      status: "completed",
+      answers: [
+        {
+          questionIndex: 0,
+          question: "Which database should we use?",
+          kind: "custom",
+          answer: "Use existing DB",
+        },
+      ],
     });
   });
 

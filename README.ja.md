@@ -26,6 +26,7 @@ pi config
 - `agmsg-pi` — pi セッション同士でローカルメッセージを送受信します。
 - `ask-user-question` — エージェントが構造化された確認質問を行えるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
+- `commit` — `--commit` で既存の `/skill:commit` を bounded one-shot flow として起動します。
 - `commandcode-provider` — Command Code の model provider を登録します。live model discovery と fallback catalog を含みます。
 - `copy-file` — `/copy-file` で最新の assistant message を cwd の `RESULT_<uuid>.md` に保存します。
 - `exit` — `/quit` の alias として `/exit` を追加し、resume command を表示します。
@@ -42,6 +43,22 @@ pi config
 - `todo` — multi-step work 用の branch-local todos を管理します。
 - `vertex-claude-provider` — Google Vertex AI 経由で提供される Claude models を登録します。
 
+## commit one-shot flow
+
+セッションやモデルの flag は呼び出し元で指定し、`--commit` を追加すると commit skill を起動して agent run 終了後に exit します。
+
+```bash
+pi \
+  --no-session \
+  --no-session-title \
+  --model 'opencode-go/deepseek-v4-flash:high' \
+  --fallback-model 'commandcode/deepseek/deepseek-v4-flash,deepseek/deepseek-v4-flash' \
+  --commit
+```
+
+任意の commit flag は `--commit-language english|japanese`、`--commit-branch`、および `--commit-branch` と一緒に使う `--commit-base <branch>` です。
+
 依存関係:
 
+- `commit` は `ask_user_question` LLM Tool が利用可能な場合だけ `--commit` を起動するため、`ask-user-question` が必要です。
 - `todo` は review 実行中に todo widget を抑制するために `review` workflow events を import します。
