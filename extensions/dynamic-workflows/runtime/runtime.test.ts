@@ -176,6 +176,53 @@ describe("dynamic workflow runtime", () => {
     expect(result.result).toEqual({ verdict: "pass" });
   });
 
+  test.each([
+    { option: "model", source: `{ model: "anthropic/claude" }` },
+    { option: "thinkingLevel", source: `{ thinkingLevel: "high" }` },
+    { option: "isolation", source: `{ isolation: "worktree" }` },
+  ])("rejects unsupported agent execution selector $option", async ({ option, source }) => {
+    const calls: string[] = [];
+
+    await expect(
+      runWorkflow(
+        `
+          export const meta = {
+            name: "unsupported_agent_selector",
+            description: "Reject unsupported execution selectors",
+            phases: [{ title: "Run" }],
+          };
+
+          return await agent("bad", ${source});
+        `,
+        {
+          cwd: "/repo",
+          agent: (prompt) => {
+            calls.push(prompt);
+            return "unexpected";
+          },
+        },
+      ),
+    ).rejects.toThrow(`agent option \`${option}\` is unsupported`);
+    expect(calls).toEqual([]);
+  });
+
+  test("unsupported agent execution selectors hard-stop parallel branches", async () => {
+    await expect(
+      runWorkflow(
+        `
+          export const meta = {
+            name: "parallel_unsupported_agent_selector",
+            description: "Reject unsupported execution selectors in parallel",
+            phases: [{ title: "Run" }],
+          };
+
+          return await parallel([() => agent("bad", { model: "anthropic/claude" })]);
+        `,
+        { cwd: "/repo", agent: () => "unexpected" },
+      ),
+    ).rejects.toThrow("agent option `model` is unsupported");
+  });
+
   test("emits stable journal keys for effective agent calls", async () => {
     const schema = {
       type: "object",
@@ -212,16 +259,12 @@ describe("dynamic workflow runtime", () => {
           label: "verify",
           phase: "Verify",
           agentType: "verifier",
-          model: "explicit/model",
-          thinkingLevel: "low",
         });
         return "done";
       `,
       {
         cwd: "/repo",
         args: { schema },
-        selectedModel: "anthropic/claude",
-        selectedThinkingLevel: "high",
         journalAgentIdFactory: () => {
           nextJournalAgentId += 1;
           return `journal-agent-${nextJournalAgentId}`;
@@ -239,8 +282,6 @@ describe("dynamic workflow runtime", () => {
       label: "security",
       phase: "Review",
       agentType: "reviewer",
-      model: "anthropic/claude",
-      thinkingLevel: "high",
       cwd: "/repo",
     });
     const verifyKey = createWorkflowAgentJournalKey({
@@ -248,8 +289,6 @@ describe("dynamic workflow runtime", () => {
       label: "verify",
       phase: "Verify",
       agentType: "verifier",
-      model: "explicit/model",
-      thinkingLevel: "low",
       cwd: "/repo",
     });
 
@@ -737,6 +776,39 @@ describe("dynamic workflow runtime", () => {
       ),
     ).rejects.toThrow("token budget");
     expect(prompts).toEqual(["first"]);
+  });
+
+  test("runtime limits do not start queued parallel agents after token budget is exhausted", async () => {
+    const prompts: string[] = [];
+
+    await expect(
+      runWorkflow(
+        `
+          export const meta = {
+            name: "parallel_token_budget_queue",
+            description: "Do not start queued agents after budget exhaustion",
+            phases: [{ title: "Run" }],
+          };
+
+          return await parallel([
+            () => agent("one", { label: "one" }),
+            () => agent("two", { label: "two" }),
+          ]);
+        `,
+        {
+          cwd: "/repo",
+          maxConcurrentAgents: 1,
+          tokenBudget: 1,
+          agent: async (prompt) => {
+            prompts.push(prompt);
+            return "abcd";
+          },
+        },
+      ),
+    ).rejects.toThrow("token budget");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(prompts).toEqual(["one"]);
   });
 
   test.each([

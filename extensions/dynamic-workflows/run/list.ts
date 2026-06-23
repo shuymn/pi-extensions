@@ -1,7 +1,11 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { WorkflowRunState, WorkflowRunStatus } from "./model";
+import {
+  WORKFLOW_RUN_STATE_SCHEMA_VERSION,
+  type WorkflowRunState,
+  type WorkflowRunStatus,
+} from "./model";
 
 const WORKFLOW_RUN_STATUSES = new Set<WorkflowRunStatus>([
   "queued",
@@ -73,7 +77,7 @@ function workflowRunSortTime(state: WorkflowRunState): number {
 
 function isWorkflowRunState(value: unknown): value is WorkflowRunState {
   if (!isRecord(value)) return false;
-  if (value.schemaVersion !== 1) return false;
+  if (value.schemaVersion !== WORKFLOW_RUN_STATE_SCHEMA_VERSION) return false;
   if (typeof value.runId !== "string") return false;
   if (typeof value.taskId !== "string") return false;
   if (value.sessionId !== undefined && typeof value.sessionId !== "string") return false;
@@ -89,8 +93,7 @@ function isWorkflowRunState(value: unknown): value is WorkflowRunState {
   if (!Array.isArray(value.agents) || !value.agents.every(isWorkflowRunAgentState)) return false;
   if (!isWorkflowRunProgress(value.workflowProgress)) return false;
   if (typeof value.agentCount !== "number") return false;
-  if (typeof value.totalTokens !== "number") return false;
-  if (typeof value.totalToolCalls !== "number") return false;
+  if (typeof value.estimatedResultTokens !== "number") return false;
   if (typeof value.startTime !== "string") return false;
   if (typeof value.updatedAt !== "string") return false;
   if (value.durationMs !== undefined && typeof value.durationMs !== "number") return false;

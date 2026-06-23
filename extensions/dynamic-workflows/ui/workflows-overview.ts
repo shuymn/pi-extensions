@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { accentBorder } from "../../../lib/tui";
 import {
+  formatWorkflowMonitorControlInstruction,
   formatWorkflowMonitorControls,
   type WorkflowMonitorControlAction,
   workflowMonitorControlActionForInput,
@@ -96,7 +97,7 @@ class WorkflowsOverviewComponent implements Component {
     add("");
     this.renderControls(lines, safeWidth);
     add("");
-    add(this.theme.fg("dim", "Enterで選択中エージェント詳細 · 操作キーで実行 · Escで閉じる"));
+    add(this.theme.fg("dim", overviewFooterParts(this.projection).join(" · ")));
     add(accentBorder(this.theme, safeWidth));
     return lines;
   }
@@ -107,10 +108,6 @@ class WorkflowsOverviewComponent implements Component {
     overview: WorkflowRunOverviewViewModel,
   ): void {
     const add = (line = "") => lines.push(truncateToWidth(line, width));
-    const addWrapped = (line: string, prefix = "") => {
-      const contentWidth = Math.max(1, width - visibleWidth(prefix));
-      for (const wrapped of wrapTextWithAnsi(line, contentWidth)) add(`${prefix}${wrapped}`);
-    };
 
     add(
       this.theme.fg(
@@ -120,10 +117,14 @@ class WorkflowsOverviewComponent implements Component {
         ),
       ),
     );
-    if (overview.description) addWrapped(this.theme.fg("muted", overview.description), "説明: ");
-    addWrapped(this.theme.fg("dim", overview.runId), "runId: ");
-    addWrapped(this.theme.fg("dim", overview.artifactDir), "成果物: ");
-    if (overview.outputPath) addWrapped(this.theme.fg("dim", overview.outputPath), "output: ");
+    if (overview.description) {
+      addWrapped(lines, width, this.theme.fg("muted", overview.description), "説明: ");
+    }
+    addWrapped(lines, width, this.theme.fg("dim", overview.runId), "runId: ");
+    addWrapped(lines, width, this.theme.fg("dim", overview.artifactDir), "成果物: ");
+    if (overview.outputPath) {
+      addWrapped(lines, width, this.theme.fg("dim", overview.outputPath), "output: ");
+    }
     add(this.theme.fg("dim", `開始: ${overview.startTime} · 更新: ${overview.updatedAt}`));
   }
 
@@ -138,7 +139,7 @@ class WorkflowsOverviewComponent implements Component {
       truncateToWidth(
         this.theme.fg(
           "muted",
-          `メトリクス: エージェント ${metrics.agentCount} (待機${metrics.queuedAgents}/実行${metrics.runningAgents}/完了${metrics.completedAgents}/失敗${metrics.failedAgents}) · tokens ${metrics.totalTokens} · tools ${metrics.totalToolCalls}${duration}`,
+          `メトリクス: エージェント ${metrics.agentCount} (待機${metrics.queuedAgents}/実行${metrics.runningAgents}/完了${metrics.completedAgents}/失敗${metrics.failedAgents}) · 推定結果トークン ${metrics.estimatedResultTokens}${duration}`,
         ),
         width,
       ),
@@ -167,28 +168,50 @@ class WorkflowsOverviewComponent implements Component {
 
   private renderAgents(lines: string[], width: number, agents: WorkflowAgentItemViewModel[]): void {
     const add = (line = "") => lines.push(truncateToWidth(line, width));
-    const addWrapped = (line: string, prefix = "") => {
-      const contentWidth = Math.max(1, width - visibleWidth(prefix));
-      for (const wrapped of wrapTextWithAnsi(line, contentWidth)) add(`${prefix}${wrapped}`);
-    };
     const title = this.projection.phase?.selectedPhaseTitle ?? "全体";
-    add(this.theme.fg("accent", this.theme.bold(`選択中フェーズのエージェント: ${title}`)));
-    if (agents.length === 0) {
+    const selectedAgent = this.projection.agentDetail;
+    const visibleAgents = agents.slice(0, MAX_AGENT_ROWS);
+    add(this.theme.fg("accent", this.theme.bold(`表示フェーズのエージェント: ${title}`)));
+    if (agents.length === 0 && selectedAgent === undefined) {
       add(this.theme.fg("dim", "  エージェントはまだありません"));
       return;
     }
 
-    for (const agent of agents.slice(0, MAX_AGENT_ROWS)) {
-      const row = `- ${agent.statusIcon} ${agent.label} [${agent.statusLabel}]`;
-      add(colorAgentRow(this.theme, agent, row));
-      addWrapped(this.theme.fg("dim", agent.promptPreview), "    prompt: ");
-      if (agent.resultPreview)
-        addWrapped(this.theme.fg("muted", agent.resultPreview), "    result: ");
-      if (agent.error) addWrapped(this.theme.fg("warning", agent.error), "    error: ");
+    for (const agent of visibleAgents) {
+      this.renderAgentRow(lines, width, agent, agent.id === selectedAgent?.id ? "›" : "-");
     }
-    if (agents.length > MAX_AGENT_ROWS) {
-      add(this.theme.fg("dim", `  …他 ${agents.length - MAX_AGENT_ROWS} エージェント`));
+
+    const selectedIsVisible = visibleAgents.some((agent) => agent.id === selectedAgent?.id);
+    const selectedIsInPhase = agents.some((agent) => agent.id === selectedAgent?.id);
+    const rendersHiddenSelected = selectedAgent !== undefined && !selectedIsVisible;
+    if (rendersHiddenSelected) {
+      this.renderAgentRow(lines, width, selectedAgent, "›");
     }
+
+    if (agents.length === 0) {
+      add(this.theme.fg("dim", "  表示フェーズ内のエージェントはまだありません"));
+    }
+    const hiddenCount =
+      agents.length - visibleAgents.length - (rendersHiddenSelected && selectedIsInPhase ? 1 : 0);
+    if (hiddenCount > 0) {
+      add(this.theme.fg("dim", `  …他 ${hiddenCount} エージェント`));
+    }
+  }
+
+  private renderAgentRow(
+    lines: string[],
+    width: number,
+    agent: WorkflowAgentItemViewModel,
+    pointer: "-" | "›",
+  ): void {
+    const add = (line = "") => lines.push(truncateToWidth(line, width));
+    const phase = agent.phase === undefined ? "" : ` · フェーズ ${agent.phase}`;
+    const row = `${pointer} ${agent.statusIcon} ${agent.label} [${agent.statusLabel}]${phase}`;
+    add(colorAgentRow(this.theme, agent, row));
+    addWrapped(lines, width, this.theme.fg("dim", agent.promptPreview), "    prompt: ");
+    if (agent.resultPreview)
+      addWrapped(lines, width, this.theme.fg("muted", agent.resultPreview), "    result: ");
+    if (agent.error) addWrapped(lines, width, this.theme.fg("warning", agent.error), "    error: ");
   }
 
   private renderControls(lines: string[], width: number): void {
@@ -205,6 +228,22 @@ class WorkflowsOverviewComponent implements Component {
     fallback: Parameters<typeof matchesKey>[1],
   ): boolean {
     return this.keybindings.matches(data, id) || matchesKey(data, fallback);
+  }
+}
+
+function overviewFooterParts(projection: WorkflowsProjectionViewModel): string[] {
+  const parts: string[] = [];
+  if (projection.agentDetail !== undefined) parts.push("Enterで›エージェント詳細");
+  const controlInstruction = formatWorkflowMonitorControlInstruction(projection.controls);
+  if (controlInstruction !== undefined) parts.push(controlInstruction);
+  parts.push("Escで閉じる");
+  return parts;
+}
+
+function addWrapped(lines: string[], width: number, text: string, prefix = ""): void {
+  const contentWidth = Math.max(1, width - visibleWidth(prefix));
+  for (const wrapped of wrapTextWithAnsi(text, contentWidth)) {
+    lines.push(truncateToWidth(`${prefix}${wrapped}`, width));
   }
 }
 

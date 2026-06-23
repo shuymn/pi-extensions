@@ -109,8 +109,7 @@ export type WorkflowCompletionStatus = "completed" | "failed" | "cancelled";
 
 export type WorkflowUsageSummary = {
   agentCount: number;
-  totalTokens: number;
-  totalToolCalls: number;
+  estimatedResultTokens: number;
   durationMs?: number;
 };
 
@@ -147,7 +146,6 @@ export type WorkflowToolOptions = {
   backgroundScheduler?: (task: BackgroundTask) => void;
   controllerRegistry?: WorkflowRunControllerRegistry;
   completionNotifier?: WorkflowCompletionNotifier;
-  selectedThinkingLevelFactory?: () => string | undefined;
   journalAgentIdFactory?: WorkflowJournalAgentIdFactory;
   maxConcurrentAgents?: number;
   maxTotalAgents?: number;
@@ -208,13 +206,13 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, the first statement after comments/whitespace must be `export const meta = { name, description, phases }`; keep meta a plain literal object.",
       `For workflow, \`meta.phases\` entries must use the accepted contract \`${PHASE_TITLE_EXAMPLE}\`, or provide a description as \`${PHASE_DESCRIPTION_EXAMPLE}\`; never use \`${PHASE_STRING_REJECTED_EXAMPLE}\` or \`${PHASE_NAME_REJECTED_EXAMPLE}\`.`,
       "For workflow, do not use TypeScript syntax, imports, require(), fs, shell, network, Date.now(), Math.random(), or argument-less new Date().",
-      "For workflow, available globals are args, cwd, process.cwd(), phase(title), log(message), agent(prompt, options), parallel(thunks), pipeline(items, ...stages), and budget.",
+      "For workflow, available globals are args, cwd, process.cwd(), phase(title), log(message), agent(prompt, options), parallel(thunks), pipeline(items, ...stages), and budget. The budget values are estimates based on agent result size, not actual model token usage.",
       "For workflow, every script must call agent() at least once. Do not use workflow only to return a static object or declare phases.",
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent(...)))`, never `await parallel(items.map(item => agent(...)))`.",
       "For workflow, pipeline(items, ...stages) runs each item through all stages independently; do not assume a global barrier between stages.",
       "For workflow, include short unique agent labels such as { label: 'repo inventory' } so progress and errors are readable.",
-      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided; model and thinkingLevel are request hints/metadata, not guaranteed subagent selectors. Pass a plain JSON-schema object as schema and never hand-parse JSON or strip markdown fences.",
-      "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted or a hard runtime limit is reached.",
+      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided. Supported options are label, phase, schema, and agentType; model, thinkingLevel, and isolation are unsupported and fail fast.",
+      "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted or a hard runtime/contract error is reached.",
       "For workflow, return a compact JSON-serializable value. Use a final synthesis agent when combining several subagent results.",
     ],
     parameters: workflowToolSchema,
@@ -223,12 +221,14 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       if (signal?.aborted) throw new Error("workflow launch was aborted.");
 
       const input = normalizeWorkflowToolInput(params);
-      const agent = options.agent ?? options.agentFactory?.(ctx) ?? createUnconfiguredAgent();
       const cwd = options.cwd ?? ctx.cwd;
+      const effectiveCtx = workflowToolContextWithCwd(ctx, cwd);
+      const agent =
+        options.agent ?? options.agentFactory?.(effectiveCtx) ?? createUnconfiguredAgent();
       const workflowRoot = options.workflowRoot ?? resolveWorkflowRoot(cwd);
       const workflowCatalog = workflowCatalogForRoot(
         workflowRoot,
-        workflowAdditionalRoots(options.additionalWorkflowRoots, ctx),
+        workflowAdditionalRoots(options.additionalWorkflowRoots, effectiveCtx),
       );
       const resumePaths =
         input.resumeFromRunId === undefined
@@ -254,7 +254,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       const state = createInitialWorkflowRunState({
         runId,
         taskId,
-        sessionId: getSessionId(ctx),
+        sessionId: getSessionId(effectiveCtx),
         cwd,
         workflowName: parsed.meta.name,
         description: parsed.meta.description,
@@ -277,11 +277,11 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
         state,
         options,
         controller,
-        ctx,
+        ctx: effectiveCtx,
         replayCache,
         resumeFromRunId: input.resumeFromRunId,
       });
-      refreshWorkflowWidget(ctx, state);
+      refreshWorkflowWidget(effectiveCtx, state);
 
       const details = createLaunchDetails(parsed.meta, state, createdPaths, input.resumeFromRunId);
       return textResult(
@@ -338,8 +338,6 @@ function scheduleBackgroundWorkflow(input: ScheduleBackgroundWorkflowInput): voi
         maxConcurrentAgents: input.options.maxConcurrentAgents,
         maxTotalAgents: input.options.maxTotalAgents,
         tokenBudget: input.options.tokenBudget,
-        selectedModel: selectedModelId(input.ctx.model),
-        selectedThinkingLevel: input.options.selectedThinkingLevelFactory?.(),
         journalAgentIdFactory: input.options.journalAgentIdFactory,
         replayCache: input.replayCache,
         transcriptTargetFactory: (event) => ({
@@ -369,6 +367,9 @@ function scheduleBackgroundWorkflow(input: ScheduleBackgroundWorkflowInput): voi
             activeManifest.agentCompleted(event);
             activeJournal.result(event);
           }
+        },
+        onEstimatedResultTokensChange(estimatedResultTokens) {
+          activeManifest.updateEstimatedResultTokens(estimatedResultTokens);
         },
       });
 
@@ -434,8 +435,7 @@ async function finalizeCompletedWorkflowRun(
     outputPath: effectiveOutputPath,
     result: runResult.result,
     durationMs: runResult.durationMs,
-    totalTokens: runResult.totalTokens,
-    totalToolCalls: runResult.totalToolCalls,
+    estimatedResultTokens: runResult.estimatedResultTokens,
   });
   await manifest.flush().catch(() => undefined);
   await flushTerminalJournal(manifest, journal);
@@ -559,8 +559,7 @@ function createCompletedOutput(
     phases: result.phases,
     agentCount: result.agentCount,
     durationMs: result.durationMs,
-    totalTokens: result.totalTokens,
-    totalToolCalls: result.totalToolCalls,
+    estimatedResultTokens: result.estimatedResultTokens,
     usage: usageFromRunResult(result),
   };
 }
@@ -640,7 +639,7 @@ function formatWorkflowCompletionMessage(notification: WorkflowCompletionNotific
       `/workflow: ワークフロー「${notification.workflowName}」が${status}しました。`,
       `runId: ${notification.runId}`,
       `output: ${notification.outputPath}`,
-      `usage: agents=${notification.usage.agentCount}, tokens=${notification.usage.totalTokens}, toolCalls=${notification.usage.totalToolCalls}${notification.usage.durationMs === undefined ? "" : `, durationMs=${notification.usage.durationMs}`}`,
+      `usage: agents=${notification.usage.agentCount}, estimatedResultTokens=${notification.usage.estimatedResultTokens}${notification.usage.durationMs === undefined ? "" : `, durationMs=${notification.usage.durationMs}`}`,
     ].join("\n") + resultOrError
   );
 }
@@ -724,8 +723,7 @@ function textResult(detailsText: string, details: WorkflowToolDetails) {
 function usageFromRunResult(result: WorkflowRunResult): WorkflowUsageSummary {
   return {
     agentCount: result.agentCount,
-    totalTokens: result.totalTokens,
-    totalToolCalls: result.totalToolCalls,
+    estimatedResultTokens: result.estimatedResultTokens,
     durationMs: result.durationMs,
   };
 }
@@ -733,8 +731,7 @@ function usageFromRunResult(result: WorkflowRunResult): WorkflowUsageSummary {
 function usageFromState(state: WorkflowRunState): WorkflowUsageSummary {
   return {
     agentCount: state.agentCount,
-    totalTokens: state.totalTokens,
-    totalToolCalls: state.totalToolCalls,
+    estimatedResultTokens: state.estimatedResultTokens,
     durationMs: state.durationMs,
   };
 }
@@ -762,14 +759,14 @@ function getSessionId(ctx: ExtensionContext): string | undefined {
   }
 }
 
-function selectedModelId(model: ExtensionContext["model"]): string | undefined {
-  if (!model || typeof model !== "object") return undefined;
-  const candidate = model as { provider?: unknown; id?: unknown };
-  if (typeof candidate.provider === "string" && typeof candidate.id === "string") {
-    return `${candidate.provider}/${candidate.id}`;
-  }
-  if (typeof candidate.id === "string") return candidate.id;
-  return undefined;
+function workflowToolContextWithCwd(ctx: ExtensionContext, cwd: string): ExtensionContext {
+  if (ctx.cwd === cwd) return ctx;
+  return new Proxy(ctx, {
+    get(target, property, receiver) {
+      if (property === "cwd") return cwd;
+      return Reflect.get(target, property, receiver);
+    },
+  });
 }
 
 export type WorkflowToolContext = Pick<ExtensionContext, "cwd">;

@@ -19,8 +19,6 @@ const baseInput = {
   label: "security",
   phase: "Review",
   agentType: "reviewer",
-  model: "anthropic/claude",
-  thinkingLevel: "high",
   cwd: "/repo",
 };
 
@@ -33,22 +31,17 @@ describe("workflow agent journal key", () => {
       label: "security",
       phase: "Review",
       agentType: "reviewer",
-      model: "anthropic/claude",
-      thinkingLevel: "high",
-      isolation: null,
       cwd: "/repo",
     });
 
     expect(createWorkflowAgentJournalKey(baseInput)).toBe(
-      "v1:8ac245df948d72f823d57055486a13fce4fffaf3b0815c283b4487241e38bc46",
+      "v1:db3c85a9513adbd5af73c375faadbb2420b89b36b28d203cf347ad25c471f7df",
     );
   });
 
   test("canonicalizes object key order without changing array order", () => {
     const reordered = {
       cwd: "/repo",
-      thinkingLevel: "high",
-      model: "anthropic/claude",
       agentType: "reviewer",
       phase: "Review",
       label: "security",
@@ -80,15 +73,25 @@ describe("workflow agent journal key", () => {
       { label: "correctness" },
       { phase: "Verify" },
       { agentType: "verifier" },
-      { model: "openai/gpt-5" },
-      { thinkingLevel: "medium" },
-      { isolation: "worktree" as const },
       { cwd: "/other" },
     ];
 
     for (const variant of variants) {
       expect(createWorkflowAgentJournalKey({ ...baseInput, ...variant })).not.toBe(baseKey);
     }
+  });
+
+  test("ignores unsupported execution selector metadata", () => {
+    const withUnsupportedSelectors = {
+      ...baseInput,
+      model: "openai/gpt-5",
+      thinkingLevel: "medium",
+      isolation: "worktree",
+    };
+
+    expect(createWorkflowAgentJournalKey(withUnsupportedSelectors)).toBe(
+      createWorkflowAgentJournalKey(baseInput),
+    );
   });
 
   test("rejects non-canonical JSON inputs", () => {

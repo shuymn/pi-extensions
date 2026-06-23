@@ -80,13 +80,15 @@ async function runWorkflowSubagent(
   ];
 
   const thinkingLevel = pi.getThinkingLevel();
+  const sessionModel = ctx.model;
+  const sessionModelId = currentModelId(sessionModel);
   const { session } = await createAgentSession({
     cwd: ctx.cwd,
     agentDir,
     sessionManager: SessionManager.inMemory(ctx.cwd),
     settingsManager: SettingsManager.create(ctx.cwd, agentDir),
     modelRegistry: ctx.modelRegistry,
-    model: ctx.model,
+    model: sessionModel,
     thinkingLevel,
     tools,
     customTools,
@@ -122,6 +124,7 @@ async function runWorkflowSubagent(
       sessionName,
       session,
       thinkingLevel,
+      model: sessionModelId,
       outcome,
       startedAt,
       completedAt: new Date(),
@@ -181,6 +184,7 @@ async function persistWorkflowSubagentTranscript(input: {
   sessionName: string;
   session: AgentSession;
   thinkingLevel?: string;
+  model?: string;
   outcome: WorkflowSubagentOutcome;
   startedAt: Date;
   completedAt: Date;
@@ -188,7 +192,6 @@ async function persistWorkflowSubagentTranscript(input: {
   const target = input.options.transcript;
   if (target === undefined) return;
 
-  const model = modelMetadata(input.ctx.model, input.options.model);
   await writeWorkflowAgentTranscript(
     target.transcriptsDir,
     createWorkflowAgentTranscript({
@@ -197,12 +200,8 @@ async function persistWorkflowSubagentTranscript(input: {
       ...(input.options.label === undefined ? {} : { label: input.options.label }),
       ...(input.options.phase === undefined ? {} : { phase: input.options.phase }),
       ...(input.options.agentType === undefined ? {} : { agentType: input.options.agentType }),
-      ...model,
+      ...(input.model === undefined ? {} : { model: input.model }),
       ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
-      ...(input.options.thinkingLevel === undefined
-        ? {}
-        : { requestedThinkingLevel: input.options.thinkingLevel }),
-      ...(input.options.isolation === undefined ? {} : { isolation: input.options.isolation }),
       hasSchema: input.options.schema !== undefined,
       status: input.outcome.status,
       prompt: input.prompt,
@@ -218,18 +217,7 @@ async function persistWorkflowSubagentTranscript(input: {
   );
 }
 
-function modelMetadata(
-  model: WorkflowRunnerContext["model"],
-  modelHint: string | undefined,
-): { model?: string; requestedModel?: string } {
-  const modelId = selectedModelId(model);
-  return {
-    ...(modelId === undefined ? {} : { model: modelId }),
-    ...(modelHint === undefined ? {} : { requestedModel: modelHint }),
-  };
-}
-
-function selectedModelId(model: WorkflowRunnerContext["model"]): string | undefined {
+function currentModelId(model: WorkflowRunnerContext["model"]): string | undefined {
   if (!model || typeof model !== "object") return undefined;
   const candidate = model as { provider?: unknown; id?: unknown };
   if (typeof candidate.provider === "string" && typeof candidate.id === "string") {
@@ -266,9 +254,6 @@ function buildWorkflowSubagentPrompt(prompt: string, options: WorkflowAgentRunne
     options.phase ? `Workflow phase: ${options.phase}` : undefined,
     options.label ? `Workflow agent label: ${options.label}` : undefined,
     options.agentType ? `Workflow agent type: ${options.agentType}` : undefined,
-    options.model ? `Requested model hint: ${options.model}` : undefined,
-    options.thinkingLevel ? `Requested thinking level hint: ${options.thinkingLevel}` : undefined,
-    options.isolation ? `Requested isolation hint: ${options.isolation}` : undefined,
   ].filter((line): line is string => line !== undefined);
 
   const structuredOutputInstruction = options.schema

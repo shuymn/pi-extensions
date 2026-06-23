@@ -23,8 +23,7 @@ function runState(overrides: Partial<WorkflowRunState> = {}): WorkflowRunState {
   state.workflowProgress.runningAgents = 1;
   state.workflowProgress.completedAgents = 1;
   state.agentCount = 3;
-  state.totalTokens = 1234;
-  state.totalToolCalls = 5;
+  state.estimatedResultTokens = 1234;
   state.phases[0] = {
     title: "Inspect",
     description: "Inspect sources",
@@ -104,8 +103,7 @@ describe("workflows projection", () => {
         runningAgents: 1,
         completedAgents: 1,
         failedAgents: 0,
-        totalTokens: 1234,
-        totalToolCalls: 5,
+        estimatedResultTokens: 1234,
       },
       recentLogs: ["two", "three", "four", "five", "six"],
       failures: [{ message: "minor issue" }],

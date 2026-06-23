@@ -23,9 +23,6 @@ export type WorkflowAgentOptions = {
   phase?: string;
   schema?: JsonSchema;
   agentType?: string;
-  model?: string;
-  thinkingLevel?: string;
-  isolation?: "worktree";
   signal?: AbortSignal;
   transcript?: WorkflowAgentTranscriptTarget;
 };
@@ -66,8 +63,6 @@ export type WorkflowRuntimeOptions = {
   maxConcurrentAgents?: number;
   maxTotalAgents?: number;
   tokenBudget?: number;
-  selectedModel?: string;
-  selectedThinkingLevel?: string;
   journalAgentIdFactory?: WorkflowJournalAgentIdFactory;
   replayCache?: WorkflowReplayCache;
   transcriptTargetFactory?: WorkflowAgentTranscriptTargetFactory;
@@ -78,6 +73,7 @@ export type WorkflowRuntimeOptions = {
   onAgentStart?: (event: WorkflowAgentRuntimeEvent) => void;
   onAgentStop?: (event: WorkflowAgentRuntimeEvent, reason: string) => void;
   onAgentEnd?: (event: WorkflowAgentRuntimeEvent & { result: unknown; error?: string }) => void;
+  onEstimatedResultTokensChange?: (estimatedResultTokens: number) => void;
 };
 
 export type WorkflowRunResult = {
@@ -86,8 +82,7 @@ export type WorkflowRunResult = {
   logs: string[];
   phases: string[];
   agentCount: number;
-  totalTokens: number;
-  totalToolCalls: number;
+  estimatedResultTokens: number;
   durationMs: number;
 };
 
@@ -96,11 +91,12 @@ type RuntimeState = {
   logs: string[];
   phases: string[];
   agentCount: number;
-  spentTokens: number;
+  estimatedResultTokens: number;
 };
 
 const MAX_PARALLEL_ITEMS = 4096;
 const WORKFLOW_LIMIT_ERROR_NAME = "WorkflowLimitError";
+const WORKFLOW_CONTRACT_ERROR_NAME = "WorkflowContractError";
 const DEFAULT_MAX_CONCURRENT_AGENTS = 16;
 const DEFAULT_MAX_TOTAL_AGENTS = 1000;
 
@@ -124,6 +120,13 @@ class WorkflowLimitError extends WorkflowRuntimeError {
   }
 }
 
+class WorkflowContractError extends WorkflowRuntimeError {
+  constructor(message: string) {
+    super(message);
+    this.name = WORKFLOW_CONTRACT_ERROR_NAME;
+  }
+}
+
 export async function runWorkflow(
   script: string,
   options: WorkflowRuntimeOptions,
@@ -134,7 +137,7 @@ export async function runWorkflow(
     logs: [],
     phases: [],
     agentCount: 0,
-    spentTokens: 0,
+    estimatedResultTokens: 0,
   };
   const limits = normalizeRuntimeLimits(options);
   const runWithAgentConcurrency = createLimiter(limits.maxConcurrentAgents);
@@ -156,6 +159,12 @@ export async function runWorkflow(
     options.onPhase?.(text);
   };
 
+  const recordEstimatedResultTokens = (result: unknown): void => {
+    state.estimatedResultTokens += estimateTokens(result);
+    options.onEstimatedResultTokensChange?.(state.estimatedResultTokens);
+    throwIfTokenBudgetExceeded(state, limits);
+  };
+
   const agent = async (prompt: unknown, rawOptions: unknown = {}): Promise<unknown> => {
     throwIfAborted();
     const taskPrompt = requireString(prompt, "agent prompt");
@@ -171,9 +180,6 @@ export async function runWorkflow(
       label,
       phase: assignedPhase,
       agentType: agentOptions.agentType,
-      model: agentOptions.model ?? options.selectedModel,
-      thinkingLevel: agentOptions.thinkingLevel ?? options.selectedThinkingLevel,
-      isolation: agentOptions.isolation,
       cwd: options.cwd,
     });
     const journalAgentId = options.journalAgentIdFactory?.() ?? createWorkflowJournalAgentId();
@@ -189,6 +195,7 @@ export async function runWorkflow(
     const replayResult = options.replayCache?.resultsByKey.get(journalKey);
     if (replayResult !== undefined) {
       options.onAgentStart?.(event);
+      recordEstimatedResultTokens(replayResult.result);
       options.onAgentEnd?.({ ...event, result: replayResult.result });
       return replayResult.result;
     }
@@ -206,17 +213,18 @@ export async function runWorkflow(
     };
 
     try {
-      const rawResult = await runWithAgentConcurrency(async () => {
+      const result = await runWithAgentConcurrency(async () => {
         throwIfAborted();
         throwIfAgentStopped(control);
+        throwIfTokenBudgetExhausted(state, limits);
         options.onAgentStart?.(event);
-        return options.agent(taskPrompt, effectiveOptions);
+        const rawResult = await options.agent(taskPrompt, effectiveOptions);
+        const result = toContextValue(context, rawResult, "agent result");
+        throwIfAborted();
+        throwIfAgentStopped(control);
+        recordEstimatedResultTokens(result);
+        return result;
       }, agentSignal);
-      const result = toContextValue(context, rawResult, "agent result");
-      throwIfAborted();
-      throwIfAgentStopped(control);
-      state.spentTokens += estimateTokens(result);
-      throwIfTokenBudgetExceeded(state, limits);
       options.onAgentEnd?.({ ...event, result });
       return result;
     } catch (error) {
@@ -314,11 +322,11 @@ export async function runWorkflow(
       phase: safeHostFunction(phase),
       log: safeHostFunction(log),
       budgetTotal: safeHostFunction(() => limits.tokenBudget),
-      budgetSpent: safeHostFunction(() => state.spentTokens),
+      budgetSpent: safeHostFunction(() => state.estimatedResultTokens),
       budgetRemaining: safeHostFunction(() =>
         limits.tokenBudget === null
           ? Number.POSITIVE_INFINITY
-          : Math.max(0, limits.tokenBudget - state.spentTokens),
+          : Math.max(0, limits.tokenBudget - state.estimatedResultTokens),
       ),
     }),
   );
@@ -346,8 +354,7 @@ export async function runWorkflow(
     logs: state.logs,
     phases: state.phases,
     agentCount: state.agentCount,
-    totalTokens: state.spentTokens,
-    totalToolCalls: 0,
+    estimatedResultTokens: state.estimatedResultTokens,
     durationMs: Date.now() - startedAt,
   };
 }
@@ -377,7 +384,12 @@ function installWorkflowGlobals(context: vm.Context): void {
         }
 
         function hostErrorName(error) {
-          if (error && typeof error === "object" && error.name === ${JSON.stringify(WORKFLOW_LIMIT_ERROR_NAME)}) {
+          if (
+            error &&
+            typeof error === "object" &&
+            (error.name === ${JSON.stringify(WORKFLOW_LIMIT_ERROR_NAME)} ||
+              error.name === ${JSON.stringify(WORKFLOW_CONTRACT_ERROR_NAME)})
+          ) {
             return error.name;
           }
           return undefined;
@@ -540,7 +552,9 @@ function normalizePositiveInteger(
 function normalizeTokenBudget(value: number | undefined): number | null {
   if (value === undefined) return null;
   if (!Number.isInteger(value) || value < 0) {
-    throw new WorkflowRuntimeError("tokenBudget must be a non-negative integer.");
+    throw new WorkflowRuntimeError(
+      "tokenBudget must be a non-negative estimated result-token budget.",
+    );
   }
   return value;
 }
@@ -556,17 +570,17 @@ function reserveAgentSlot(state: RuntimeState, limits: RuntimeLimits): void {
 }
 
 function throwIfTokenBudgetExhausted(state: RuntimeState, limits: RuntimeLimits): void {
-  if (limits.tokenBudget !== null && state.spentTokens >= limits.tokenBudget) {
+  if (limits.tokenBudget !== null && state.estimatedResultTokens >= limits.tokenBudget) {
     throw new WorkflowLimitError(
-      `workflow token budget exhausted: spent ${state.spentTokens}/${limits.tokenBudget}`,
+      `workflow estimated result-token budget exhausted: estimated ${state.estimatedResultTokens}/${limits.tokenBudget}`,
     );
   }
 }
 
 function throwIfTokenBudgetExceeded(state: RuntimeState, limits: RuntimeLimits): void {
-  if (limits.tokenBudget !== null && state.spentTokens > limits.tokenBudget) {
+  if (limits.tokenBudget !== null && state.estimatedResultTokens > limits.tokenBudget) {
     throw new WorkflowLimitError(
-      `workflow token budget exceeded: spent ${state.spentTokens}/${limits.tokenBudget}`,
+      `workflow estimated result-token budget exceeded: estimated ${state.estimatedResultTokens}/${limits.tokenBudget}`,
     );
   }
 }
@@ -668,15 +682,14 @@ function normalizeAgentOptions(value: unknown): WorkflowAgentOptions {
   if (value === undefined || value === null) return {};
   if (!isPlainObject(value)) throw new TypeError("agent options must be an object.");
 
+  rejectUnsupportedAgentExecutionSelectors(value);
+
   return {
     label: optionalString(value.label, "agent label"),
     phase: optionalString(value.phase, "agent phase"),
     schema:
       value.schema === undefined ? undefined : requirePlainObject(value.schema, "agent schema"),
     agentType: optionalString(value.agentType, "agent type"),
-    model: optionalString(value.model, "agent model"),
-    thinkingLevel: optionalString(value.thinkingLevel, "agent thinkingLevel"),
-    isolation: value.isolation === undefined ? undefined : requireIsolation(value.isolation),
   };
 }
 
@@ -695,9 +708,12 @@ function requirePlainObject(value: unknown, label: string): Record<string, unkno
   return value;
 }
 
-function requireIsolation(value: unknown): "worktree" {
-  if (value !== "worktree") throw new TypeError("agent isolation must be 'worktree' when present.");
-  return value;
+function rejectUnsupportedAgentExecutionSelectors(value: Record<string, unknown>): void {
+  const unsupported = ["model", "thinkingLevel", "isolation"].find((key) => key in value);
+  if (unsupported === undefined) return;
+  throw new WorkflowContractError(
+    `agent option \`${unsupported}\` is unsupported; workflow agent() cannot select per-agent model, thinking level, or isolation.`,
+  );
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -723,6 +739,9 @@ function errorMessage(error: unknown): string {
 }
 
 function isHardStopError(error: unknown): boolean {
-  if (error instanceof WorkflowLimitError) return true;
-  return isPlainObject(error) && error.name === WORKFLOW_LIMIT_ERROR_NAME;
+  if (error instanceof WorkflowLimitError || error instanceof WorkflowContractError) return true;
+  return (
+    isPlainObject(error) &&
+    (error.name === WORKFLOW_LIMIT_ERROR_NAME || error.name === WORKFLOW_CONTRACT_ERROR_NAME)
+  );
 }

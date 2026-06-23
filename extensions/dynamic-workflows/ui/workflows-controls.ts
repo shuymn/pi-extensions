@@ -169,10 +169,10 @@ export function workflowMonitorControlActionForInput(
   controls: WorkflowMonitorControlsViewModel | undefined,
   data: string,
 ): WorkflowMonitorControlAction | undefined {
-  const item = controls?.items.find((candidate) => matchesKey(data, candidate.shortcut));
-  return item === undefined || controls === undefined
-    ? undefined
-    : workflowMonitorControlActionFromItem(controls, item);
+  if (controls === undefined) return undefined;
+  const item = controls.items.find((candidate) => matchesKey(data, candidate.shortcut));
+  if (item === undefined || !item.enabled) return undefined;
+  return workflowMonitorControlActionFromItem(controls, item);
 }
 
 export function formatWorkflowMonitorControls(
@@ -183,6 +183,15 @@ export function formatWorkflowMonitorControls(
     const state = item.enabled ? "有効" : (item.disabledReason ?? "無効");
     return `[${item.shortcut}] ${item.label} (${state})`;
   });
+}
+
+export function formatWorkflowMonitorControlInstruction(
+  controls: WorkflowMonitorControlsViewModel | undefined,
+): string | undefined {
+  if (controls === undefined) return undefined;
+  const enabledCount = controls.items.filter((item) => item.enabled).length;
+  if (enabledCount === 0) return undefined;
+  return enabledCount === controls.items.length ? "操作キーで実行" : "有効な操作キーで実行";
 }
 
 export function controlDefinition(

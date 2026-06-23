@@ -4,12 +4,110 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
-mock.module("@earendil-works/pi-coding-agent", () => ({}));
+type Subscriber = (event: any) => void;
+
+export const createAgentSessionCalls: any[] = [];
+export const loaderInstances: any[] = [];
+export const createdSessions: any[] = [];
+let nextResultText = "workflow subagent result";
+
+export function setNextWorkflowAgentResultText(text: string): void {
+  nextResultText = text;
+}
+
+function createSession() {
+  const subscribers: Subscriber[] = [];
+  let name = "";
+  let disposed = false;
+  let aborted = false;
+  const session = {
+    messages: [] as any[],
+    lastPrompt: "",
+    get name() {
+      return name;
+    },
+    get disposed() {
+      return disposed;
+    },
+    get aborted() {
+      return aborted;
+    },
+    setSessionName(value: string) {
+      name = value;
+    },
+    subscribe(subscriber: Subscriber) {
+      subscribers.push(subscriber);
+      return () => {
+        const index = subscribers.indexOf(subscriber);
+        if (index >= 0) subscribers.splice(index, 1);
+      };
+    },
+    async prompt(prompt: string) {
+      session.lastPrompt = prompt;
+      for (const subscriber of subscribers) subscriber({ type: "message_start" });
+      for (const subscriber of subscribers) {
+        subscriber({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: nextResultText },
+        });
+      }
+      session.messages.push({
+        role: "assistant",
+        content: [{ type: "text", text: nextResultText }],
+      });
+    },
+    async abort() {
+      aborted = true;
+    },
+    dispose() {
+      disposed = true;
+    },
+  };
+  createdSessions.push(session);
+  return session;
+}
+
+mock.module("@earendil-works/pi-coding-agent", () => ({
+  getAgentDir: () => "/agent-dir",
+  DefaultResourceLoader: class {
+    options: any;
+    reloaded = false;
+    constructor(options: any) {
+      this.options = options;
+      loaderInstances.push(this);
+    }
+    async reload() {
+      this.reloaded = true;
+    }
+  },
+  SessionManager: {
+    inMemory: (cwd: string) => ({ kind: "in-memory", cwd }),
+  },
+  SettingsManager: {
+    create: (cwd: string, agentDir: string) => ({ cwd, agentDir }),
+  },
+  createAgentSession: async (options: any) => {
+    createAgentSessionCalls.push(options);
+    return { session: createSession() };
+  },
+}));
 mock.module("@earendil-works/pi-tui", () => ({
+  Key: { enter: { name: "enter" }, escape: { name: "escape" } },
   Text: class {
     constructor(public value: string) {}
   },
+  matchesKey: (data: string, key: string | { name?: string }) =>
+    typeof key === "string" ? data === key : data === key.name,
   truncateToWidth: (text: string, width: number) => text.slice(0, width),
+  visibleWidth: (text: string) => text.length,
+  wrapTextWithAnsi: (text: string, width: number) => {
+    if (text.length <= width) return [text];
+    const lines: string[] = [];
+    for (let index = 0; index < text.length; index += width) {
+      lines.push(text.slice(index, index + width));
+    }
+    return lines;
+  },
 }));
 installTypeboxMock();
 
@@ -58,5 +156,9 @@ export async function waitUntil(predicate: () => boolean): Promise<void> {
 }
 
 afterEach(() => {
+  createAgentSessionCalls.splice(0);
+  loaderInstances.splice(0);
+  createdSessions.splice(0);
+  nextResultText = "workflow subagent result";
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
