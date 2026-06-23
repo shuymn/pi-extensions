@@ -44,6 +44,7 @@ pi config
 - `tavily` — Tavily search、extract、map、crawl、auth tools を追加します。
 - `todo` — multi-step work 用の branch-local todos を管理します。
 - `vertex-claude-provider` — Google Vertex AI 経由で提供される Claude models を登録します。
+- `wt` — `/wt` で `git-wt` worktree を作成し、現在のセッションをそこで継続します。
 
 ## one-shot flows
 
