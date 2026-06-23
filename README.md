@@ -46,6 +46,7 @@ pi config
 - `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.
 - `todo` — Manage branch-local todos for multi-step work.
 - `vertex-claude-provider` — Register Claude models served through Google Vertex AI.
+- `wt` — Add `/wt` to create a `git-wt` worktree and continue the current session there.
 
 ## One-shot flows
 
