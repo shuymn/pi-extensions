@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createWorkflowAgentJournalKey } from "./journal/key";
 import {
+  createAgentSessionCalls,
+  loaderInstances,
   loadWorkflowToolModule,
   readJournalLines,
+  setNextWorkflowAgentResultText,
   tempCwd,
   tempDir,
   tempWorkflowRoot,
@@ -139,6 +143,115 @@ describe("dynamic workflow tool launch", () => {
     expect(calls).toEqual(["skill pi"]);
   });
 
+  test("uses WorkflowToolOptions.cwd for workflow state and the default subagent runner", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const { createWorkflowAgentRunner } = await import("./agent/runner");
+    const ctxCwd = tempCwd();
+    const effectiveCwdRoot = tempCwd();
+    const effectiveCwd = join(effectiveCwdRoot, "workspace", "app");
+    mkdirSync(effectiveCwd, { recursive: true });
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    let agentFactoryCwd: string | undefined;
+    setNextWorkflowAgentResultText("subagent used effective cwd");
+    const tool = createWorkflowTool({
+      cwd: effectiveCwd,
+      runIdFactory: () => "wf_cwd_override_12345678",
+      taskIdFactory: () => "task_cwd_override_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      agentFactory: (agentCtx) => {
+        agentFactoryCwd = agentCtx.cwd;
+        return createWorkflowAgentRunner({ getThinkingLevel: () => "high" } as never, agentCtx);
+      },
+    });
+
+    await tool.execute(
+      "call",
+      {
+        script: `
+          export const meta = {
+            name: "cwd_override",
+            phases: [{ title: "Run" }],
+          };
+
+          phase("Run");
+          log("cwd=" + cwd);
+          const answer = await agent("cwd:" + process.cwd(), { label: "cwd check" });
+          return { workflowCwd: cwd, processCwd: process.cwd(), answer };
+        `,
+      },
+      undefined,
+      undefined,
+      {
+        cwd: ctxCwd,
+        modelRegistry: { id: "registry" },
+        model: { id: "model" },
+        getSystemPrompt: () => "parent system prompt",
+        sessionManager: { getSessionId: () => "session-cwd" },
+      } as never,
+    );
+
+    expect(agentFactoryCwd).toBe(effectiveCwd);
+    const runDir = join(effectiveCwd, ".pi", "workflows", "wf_cwd_override_12345678");
+    expect(JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"))).toMatchObject({
+      runId: "wf_cwd_override_12345678",
+      taskId: "task_cwd_override_12345678",
+      sessionId: "session-cwd",
+      cwd: effectiveCwd,
+      status: "queued",
+      scriptPath: join(runDir, "script.js"),
+    });
+
+    await backgroundTasks[0]!();
+
+    expect(loaderInstances[0].options.cwd).toBe(effectiveCwd);
+    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
+      `Working directory: ${effectiveCwd}`,
+    );
+    expect(createAgentSessionCalls[0]).toMatchObject({
+      cwd: effectiveCwd,
+      sessionManager: { kind: "in-memory", cwd: effectiveCwd },
+      settingsManager: { cwd: effectiveCwd, agentDir: "/agent-dir" },
+    });
+    const expectedKey = createWorkflowAgentJournalKey({
+      prompt: `cwd:${effectiveCwd}`,
+      label: "cwd check",
+      phase: "Run",
+      cwd: effectiveCwd,
+    });
+    expect(readJournalLines(join(runDir, "journal.jsonl"))).toEqual([
+      { type: "started", key: expectedKey, agentId: expect.any(String) },
+      {
+        type: "result",
+        key: expectedKey,
+        agentId: expect.any(String),
+        result: "subagent used effective cwd",
+      },
+    ]);
+    expect(JSON.parse(readFileSync(join(runDir, "output.json"), "utf8"))).toMatchObject({
+      status: "completed",
+      result: {
+        workflowCwd: effectiveCwd,
+        processCwd: effectiveCwd,
+        answer: "subagent used effective cwd",
+      },
+      logs: [`cwd=${effectiveCwd}`],
+    });
+    expect(JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"))).toMatchObject({
+      status: "completed",
+      cwd: effectiveCwd,
+      logs: [`cwd=${effectiveCwd}`],
+    });
+    expect(
+      JSON.parse(readFileSync(join(runDir, "transcripts", "0001-cwd-check.json"), "utf8")),
+    ).toMatchObject({
+      metadata: {
+        cwd: effectiveCwd,
+        prompt: `cwd:${effectiveCwd}`,
+        sessionPrompt: expect.stringContaining(`cwd:${effectiveCwd}`),
+      },
+    });
+  });
+
   test("launches a workflow in the background after writing initial run artifacts", async () => {
     const { createWorkflowTool } = await loadWorkflowToolModule();
     const workflowRoot = tempWorkflowRoot();
@@ -247,12 +360,10 @@ describe("dynamic workflow tool launch", () => {
       taskId: "task_tool_12345678",
       result: { ok: true },
       agentCount: 1,
-      totalTokens: expect.any(Number),
-      totalToolCalls: 0,
+      estimatedResultTokens: expect.any(Number),
       usage: {
         agentCount: 1,
-        totalTokens: expect.any(Number),
-        totalToolCalls: 0,
+        estimatedResultTokens: expect.any(Number),
       },
       logs: ["started"],
     });
@@ -267,8 +378,7 @@ describe("dynamic workflow tool launch", () => {
         resultPreview: expect.stringContaining('"ok":true'),
         usage: expect.objectContaining({
           agentCount: 1,
-          totalTokens: expect.any(Number),
-          totalToolCalls: 0,
+          estimatedResultTokens: expect.any(Number),
         }),
       }),
     ]);
@@ -291,8 +401,7 @@ describe("dynamic workflow tool launch", () => {
       logs: ["started"],
       outputPath: join(runDir, "output.json"),
       agentCount: 1,
-      totalTokens: expect.any(Number),
-      totalToolCalls: 0,
+      estimatedResultTokens: expect.any(Number),
       workflowProgress: {
         queuedAgents: 0,
         runningAgents: 0,

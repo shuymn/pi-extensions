@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { createTaskId, createWorkflowRunId } from "./ids";
-import { createInitialWorkflowRunState, serializeWorkflowRunState } from "./model";
+import {
+  createInitialWorkflowRunState,
+  serializeWorkflowRunState,
+  WORKFLOW_RUN_STATE_SCHEMA_VERSION,
+} from "./model";
 
 describe("workflow run model", () => {
   test("generates run and task ids with stable prefixes and injected entropy", () => {
@@ -24,7 +28,7 @@ describe("workflow run model", () => {
     });
 
     expect(state).toEqual({
-      schemaVersion: 1,
+      schemaVersion: WORKFLOW_RUN_STATE_SCHEMA_VERSION,
       runId: "wf_20260907T133736_abcdef12",
       taskId: "task_12345678",
       sessionId: "session-1",
@@ -47,8 +51,7 @@ describe("workflow run model", () => {
         runningAgents: 0,
       },
       agentCount: 0,
-      totalTokens: 0,
-      totalToolCalls: 0,
+      estimatedResultTokens: 0,
       startTime: "2026-09-07T13:37:36.000Z",
       updatedAt: "2026-09-07T13:37:36.000Z",
       durationMs: undefined,

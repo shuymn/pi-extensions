@@ -25,10 +25,7 @@ export type WorkflowAgentTranscriptMetadata = {
   phase?: string;
   agentType?: string;
   model?: string;
-  requestedModel?: string;
   thinkingLevel?: string;
-  requestedThinkingLevel?: string;
-  isolation?: "worktree";
   hasSchema: boolean;
   status: WorkflowAgentTranscriptStatus;
   prompt: string;
@@ -54,10 +51,7 @@ export type CreateWorkflowAgentTranscriptInput = {
   phase?: string;
   agentType?: string;
   model?: string;
-  requestedModel?: string;
   thinkingLevel?: string;
-  requestedThinkingLevel?: string;
-  isolation?: "worktree";
   hasSchema: boolean;
   status: WorkflowAgentTranscriptStatus;
   prompt: string;
@@ -87,12 +81,7 @@ export function createWorkflowAgentTranscript(
       ...(input.phase === undefined ? {} : { phase: input.phase }),
       ...(input.agentType === undefined ? {} : { agentType: input.agentType }),
       ...(input.model === undefined ? {} : { model: input.model }),
-      ...(input.requestedModel === undefined ? {} : { requestedModel: input.requestedModel }),
       ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),
-      ...(input.requestedThinkingLevel === undefined
-        ? {}
-        : { requestedThinkingLevel: input.requestedThinkingLevel }),
-      ...(input.isolation === undefined ? {} : { isolation: input.isolation }),
       hasSchema: input.hasSchema,
       status: input.status,
       prompt: input.prompt,

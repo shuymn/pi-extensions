@@ -1,5 +1,7 @@
 import type { WorkflowPhaseMeta } from "../runtime/parser";
 
+export const WORKFLOW_RUN_STATE_SCHEMA_VERSION = 2;
+
 export type WorkflowRunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export type WorkflowPhaseStatus =
@@ -49,7 +51,7 @@ export type WorkflowRunProgress = {
 };
 
 export type WorkflowRunState = {
-  schemaVersion: 1;
+  schemaVersion: typeof WORKFLOW_RUN_STATE_SCHEMA_VERSION;
   runId: string;
   taskId: string;
   sessionId?: string;
@@ -63,8 +65,7 @@ export type WorkflowRunState = {
   agents: WorkflowRunAgentState[];
   workflowProgress: WorkflowRunProgress;
   agentCount: number;
-  totalTokens: number;
-  totalToolCalls: number;
+  estimatedResultTokens: number;
   startTime: string;
   updatedAt: string;
   durationMs?: number;
@@ -91,7 +92,7 @@ export function createInitialWorkflowRunState(
   const startTime = input.startTime ?? new Date().toISOString();
 
   return {
-    schemaVersion: 1,
+    schemaVersion: WORKFLOW_RUN_STATE_SCHEMA_VERSION,
     runId: input.runId,
     taskId: input.taskId,
     ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
@@ -115,8 +116,7 @@ export function createInitialWorkflowRunState(
       runningAgents: 0,
     },
     agentCount: 0,
-    totalTokens: 0,
-    totalToolCalls: 0,
+    estimatedResultTokens: 0,
     startTime,
     updatedAt: startTime,
     durationMs: undefined,

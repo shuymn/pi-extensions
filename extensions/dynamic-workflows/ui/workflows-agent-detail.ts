@@ -8,6 +8,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { accentBorder } from "../../../lib/tui";
 import {
+  formatWorkflowMonitorControlInstruction,
   formatWorkflowMonitorControls,
   type WorkflowMonitorControlAction,
   workflowMonitorControlActionForInput,
@@ -91,7 +92,7 @@ class WorkflowsAgentDetailComponent implements Component {
     add("");
     this.renderControls(lines, safeWidth);
     add("");
-    add(this.theme.fg("dim", "Enterでfull prompt表示 · 操作キーで実行 · Escで閉じる"));
+    add(this.theme.fg("dim", agentDetailFooterParts(this.projection).join(" · ")));
     add(accentBorder(this.theme, safeWidth));
     return lines;
   }
@@ -105,17 +106,9 @@ class WorkflowsAgentDetailComponent implements Component {
       ),
     );
     add(
-      this.theme.fg(
-        "muted",
-        `状態: ${agent.statusLabel} · フェーズ: ${agent.phase ?? "未記録"} · model: 未記録`,
-      ),
+      this.theme.fg("muted", `状態: ${agent.statusLabel} · フェーズ: ${agent.phase ?? "未記録"}`),
     );
-    add(
-      this.theme.fg(
-        "dim",
-        `メトリクス: duration ${formatDuration(agent)} · tokens 未記録 · tools 未記録`,
-      ),
-    );
+    add(this.theme.fg("dim", `メトリクス: 実行時間 ${formatDuration(agent)}`));
   }
 
   private renderPrompt(lines: string[], width: number, agent: WorkflowAgentDetailViewModel): void {
@@ -163,6 +156,14 @@ class WorkflowsAgentDetailComponent implements Component {
   ): boolean {
     return this.keybindings.matches(data, id) || matchesKey(data, fallback);
   }
+}
+
+function agentDetailFooterParts(projection: WorkflowsProjectionViewModel): string[] {
+  const parts = ["Enterでプロンプト表示"];
+  const controlInstruction = formatWorkflowMonitorControlInstruction(projection.controls);
+  if (controlInstruction !== undefined) parts.push(controlInstruction);
+  parts.push("Escで閉じる");
+  return parts;
 }
 
 function addWrapped(lines: string[], width: number, text: string, prefix = ""): void {

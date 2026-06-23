@@ -64,8 +64,7 @@ async function writeRun(
   state.workflowProgress.completedAgents = input.status === "completed" ? 2 : 1;
   state.workflowProgress.failedAgents = input.status === "failed" ? 1 : 0;
   if (input.agents !== undefined) state.agents = input.agents;
-  state.totalTokens = 123;
-  state.totalToolCalls = 4;
+  state.estimatedResultTokens = 123;
   if (input.status === "completed") {
     state.outputPath = join(root, input.runId, "output.json");
     state.resultPreview = '{"ok":true}';
@@ -467,8 +466,7 @@ describe("/workflows command", () => {
           workflowName: "json_smoke",
           status: "completed",
           statusLabel: "完了",
-          totalTokens: 123,
-          totalToolCalls: 4,
+          estimatedResultTokens: 123,
           resultPreview: '{"ok":true}',
         },
       ],

@@ -32,7 +32,6 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
     agentFactory: (ctx) => createWorkflowAgentRunner(pi, ctx),
     controllerRegistry,
     completionNotifier: createWorkflowCompletionNotifier(pi),
-    selectedThinkingLevelFactory: () => pi.getThinkingLevel(),
     additionalWorkflowRoots: skillWorkflowRoots,
   });
 

@@ -16,6 +16,19 @@ While enabled, the extension appends session policy guidance telling the main ag
 
 Use `/ultracode status` to inspect the mode and `/ultracode off` to disable it. The mode resets at session start and does not make skill-packaged workflow discovery an authorization signal by itself.
 
+## Workflow script contract
+
+Workflow scripts can call `agent(prompt, options)` to delegate work to a Pi subagent. Supported author options are:
+
+- `label` — short human-readable label for progress, journal, and transcript artifacts.
+- `phase` — explicit phase label for this agent call; otherwise the current `phase()` is used.
+- `schema` — JSON schema for structured output. When provided, the subagent must finish with the structured output tool and `agent()` returns the parsed object.
+- `agentType` — English role metadata for prompts, journals, and transcripts.
+
+`model`, `thinkingLevel`, and `isolation` are intentionally unsupported. Passing any of them to `agent()` fails fast instead of becoming a no-op hint. Workflows cannot select per-agent models, per-agent thinking levels, or git worktree isolation in this slice.
+
+The `budget` global and `tokenBudget` launch option are estimate-based guards derived from serialized agent result size. They are not actual model-token accounting, and workflow outputs do not report real tool-call counts.
+
 ## When not to use dynamic workflows
 
 Do not launch a dynamic workflow when the task is better handled by the main agent directly:

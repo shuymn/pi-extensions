@@ -10,9 +10,6 @@ export type WorkflowAgentJournalKeyInput = {
   label?: string;
   phase?: string;
   agentType?: string;
-  model?: string;
-  thinkingLevel?: string;
-  isolation?: "worktree";
   cwd: string;
 };
 
@@ -23,9 +20,6 @@ export type WorkflowAgentJournalKeyPreimage = {
   label: string | null;
   phase: string | null;
   agentType: string | null;
-  model: string | null;
-  thinkingLevel: string | null;
-  isolation: "worktree" | null;
   cwd: string;
 };
 
@@ -47,9 +41,6 @@ export function createWorkflowAgentJournalKeyPreimage(
     label: normalizeOptionalString(input.label),
     phase: normalizeOptionalString(input.phase),
     agentType: normalizeOptionalString(input.agentType),
-    model: normalizeOptionalString(input.model),
-    thinkingLevel: normalizeOptionalString(input.thinkingLevel),
-    isolation: input.isolation ?? null,
     cwd: input.cwd,
   };
 }

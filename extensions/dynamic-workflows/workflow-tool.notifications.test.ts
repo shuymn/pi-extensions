@@ -72,7 +72,10 @@ describe("dynamic workflow tool notifications", () => {
         status: "completed",
         outputPath: join(runDir, "output.json"),
         resultPreview: "null",
-        usage: expect.objectContaining({ agentCount: 1, totalToolCalls: 0 }),
+        usage: expect.objectContaining({
+          agentCount: 1,
+          estimatedResultTokens: expect.any(Number),
+        }),
       }),
     ]);
   });
@@ -125,7 +128,10 @@ describe("dynamic workflow tool notifications", () => {
         workflowName: "journal_flush_smoke",
         status: "completed",
         outputPath: join(runDir, "output.json"),
-        usage: expect.objectContaining({ agentCount: 1, totalToolCalls: 0 }),
+        usage: expect.objectContaining({
+          agentCount: 1,
+          estimatedResultTokens: expect.any(Number),
+        }),
       }),
     ]);
   });
@@ -179,7 +185,63 @@ describe("dynamic workflow tool notifications", () => {
         status: "failed",
         outputPath: join(runDir, "output.json"),
         error: expect.stringContaining("max total agents"),
-        usage: expect.objectContaining({ agentCount: 1, totalToolCalls: 0 }),
+        usage: expect.objectContaining({
+          agentCount: 1,
+          estimatedResultTokens: expect.any(Number),
+        }),
+      }),
+    ]);
+  });
+
+  test("keeps budget-exceeded failure usage aligned with estimated result tokens", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    const notifications: unknown[] = [];
+    const tool = createWorkflowTool({
+      workflowRoot,
+      tokenBudget: 1,
+      runIdFactory: () => "wf_budget_fail_12345678",
+      taskIdFactory: () => "task_budget_fail_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      completionNotifier: (notification) => notifications.push(notification),
+      agent: () => "abcd",
+    });
+
+    await tool.execute(
+      "call",
+      {
+        script: `
+          export const meta = {
+            name: "budget_fail_smoke",
+            phases: [{ title: "Run" }],
+          };
+          return await agent("too large", { label: "large" });
+        `,
+      },
+      undefined,
+      undefined,
+      { cwd: "/repo" } as never,
+    );
+
+    await backgroundTasks[0]!();
+
+    const runDir = join(workflowRoot, "wf_budget_fail_12345678");
+    expect(JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"))).toMatchObject({
+      status: "failed",
+      estimatedResultTokens: 2,
+    });
+    expect(notifications).toEqual([
+      expect.objectContaining({
+        runId: "wf_budget_fail_12345678",
+        taskId: "task_budget_fail_12345678",
+        workflowName: "budget_fail_smoke",
+        status: "failed",
+        error: expect.stringContaining("estimated result-token budget"),
+        usage: expect.objectContaining({
+          agentCount: 1,
+          estimatedResultTokens: 2,
+        }),
       }),
     ]);
   });
@@ -201,7 +263,7 @@ describe("dynamic workflow tool notifications", () => {
       artifactDir: "/repo/.pi/workflows/wf_notify_12345678",
       outputPath: "/repo/.pi/workflows/wf_notify_12345678/output.json",
       resultPreview: '{"ok":true}',
-      usage: { agentCount: 2, totalTokens: 42, totalToolCalls: 0, durationMs: 1000 },
+      usage: { agentCount: 2, estimatedResultTokens: 42, durationMs: 1000 },
     });
 
     expect(sentMessages).toEqual([
@@ -213,7 +275,7 @@ describe("dynamic workflow tool notifications", () => {
           details: expect.objectContaining({
             runId: "wf_notify_12345678",
             outputPath: "/repo/.pi/workflows/wf_notify_12345678/output.json",
-            usage: { agentCount: 2, totalTokens: 42, totalToolCalls: 0, durationMs: 1000 },
+            usage: { agentCount: 2, estimatedResultTokens: 42, durationMs: 1000 },
           }),
         },
         options: { triggerTurn: true, deliverAs: "followUp" },

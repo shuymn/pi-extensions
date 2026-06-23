@@ -27,7 +27,11 @@ describe("dynamic workflow tool contract", () => {
     expect(guidelines).toContain("parallel() takes functions");
     expect(guidelines).toContain("do not use TypeScript");
     expect(guidelines).toContain("agent(prompt, { schema, label }) returns the parsed object");
-    expect(guidelines).toContain("model and thinkingLevel are request hints/metadata");
+    expect(guidelines).toContain("Supported options are label, phase, schema, and agentType");
+    expect(guidelines).toContain(
+      "model, thinkingLevel, and isolation are unsupported and fail fast",
+    );
+    expect(guidelines).toContain("hard runtime/contract error");
     expect((tool.parameters as any).properties).toMatchObject({
       resumeFromRunId: { type: "string", optional: true },
     });

@@ -35,8 +35,7 @@ export type WorkflowMetricsViewModel = {
   runningAgents: number;
   completedAgents: number;
   failedAgents: number;
-  totalTokens: number;
-  totalToolCalls: number;
+  estimatedResultTokens: number;
   durationMs?: number;
 };
 
@@ -276,8 +275,7 @@ function metricsFromState(state: WorkflowRunState): WorkflowMetricsViewModel {
     runningAgents: state.workflowProgress.runningAgents,
     completedAgents: state.workflowProgress.completedAgents,
     failedAgents: state.workflowProgress.failedAgents,
-    totalTokens: state.totalTokens,
-    totalToolCalls: state.totalToolCalls,
+    estimatedResultTokens: state.estimatedResultTokens,
     ...(state.durationMs === undefined ? {} : { durationMs: state.durationMs }),
   };
 }

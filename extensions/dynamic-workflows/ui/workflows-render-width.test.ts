@@ -59,8 +59,7 @@ function workflowRun(
   state.workflowProgress.completedAgents = 1;
   state.workflowProgress.failedAgents = 1;
   state.agentCount = 4;
-  state.totalTokens = 123_456;
-  state.totalToolCalls = 789;
+  state.estimatedResultTokens = 123_456;
   state.outputPath = `/repo/.pi/workflows/${runId}/output-with-long-name.json`;
   state.resultPreview = longText("result preview");
   state.logs = [longText("first log"), longText("latest log")];

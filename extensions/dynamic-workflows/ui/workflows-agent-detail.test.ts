@@ -81,15 +81,18 @@ function createComponent(agentId?: string) {
 }
 
 describe("workflows agent detail component", () => {
-  test("renders status/model line, metrics, prompt preview, activity, and outcome", () => {
+  test("renders status, duration, prompt preview, activity, and outcome", () => {
     const { component } = createComponent("agent_1");
 
     const lines = component.render(72);
     const text = lines.join("\n");
 
     expect(text).toContain("inventory [完了]");
-    expect(text).toContain("状態: 完了 · フェーズ: 調査 · model: 未記録");
-    expect(text).toContain("メトリクス: duration 3000ms · tokens 未記録 · tools 未記録");
+    expect(text).toContain("状態: 完了 · フェーズ: 調査");
+    expect(text).toContain("メトリクス: 実行時間 3000ms");
+    expect(text).not.toContain(["model:", "未記録"].join(" "));
+    expect(text).not.toContain(["tokens", "未記録"].join(" "));
+    expect(text).not.toContain(["tools", "未記録"].join(" "));
     expect(text).toContain("Prompt preview");
     expect(text).toContain("重要ファイルを調べて");
     expect(text).toContain("Recent activity");
@@ -110,7 +113,7 @@ describe("workflows agent detail component", () => {
     expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
   });
 
-  test("opens full prompt reader on confirm and closes on cancel", () => {
+  test("opens prompt reader on confirm and closes on cancel", () => {
     const picker = createComponent("agent_1");
 
     picker.component.handleInput!("enter");
@@ -120,7 +123,7 @@ describe("workflows agent detail component", () => {
     expect(picker.doneValue).toBeNull();
   });
 
-  test("renders disabled monitor controls and returns agent-scoped actions", () => {
+  test("renders disabled monitor controls without returning agent-scoped actions", () => {
     let doneValue: WorkflowsAgentDetailResult | undefined;
     const component = createWorkflowsAgentDetailComponent(
       createWorkflowsProjection(
@@ -140,17 +143,11 @@ describe("workflows agent detail component", () => {
     const text = lines.join("\n");
     expect(text).toContain("操作");
     expect(text).toContain("[k] agent停止 (未接続)");
+    expect(text).not.toContain("操作キーで実行");
     expect(lines.every((line) => visibleWidth(line) <= 88)).toBe(true);
 
     component.handleInput!("k");
-    expect(doneValue).toEqual({
-      type: "controlAction",
-      action: {
-        type: "stopAgent",
-        runId: "wf_agent_detail_12345678",
-        agentId: "agent_1",
-      },
-    });
+    expect(doneValue).toBeUndefined();
   });
 
   test("renders empty detail safely", () => {

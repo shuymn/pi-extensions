@@ -44,8 +44,7 @@ function workflowRun(overrides: Partial<WorkflowRunState> = {}): WorkflowRunStat
   state.workflowProgress.completedAgents = 1;
   state.workflowProgress.failedAgents = 0;
   state.agentCount = 3;
-  state.totalTokens = 1234;
-  state.totalToolCalls = 5;
+  state.estimatedResultTokens = 1234;
   state.phases[0] = {
     title: "調査",
     status: "running",
@@ -113,10 +112,11 @@ describe("workflows overview component", () => {
     expect(text).toContain("overview_smoke [実行中]");
     expect(text).toContain("成果物: /repo/.pi/workflows/wf_overview_12345678");
     expect(text).toContain("メトリクス: エージェント 3");
+    expect(text).toContain("推定結果トーク");
     expect(text).toContain("フェーズ");
     expect(text).toContain("調査 [実行中]");
-    expect(text).toContain("選択中フェーズのエージェント: 調査");
-    expect(text).toContain("runner [実行中]");
+    expect(text).toContain("表示フェーズのエージェント: 調査");
+    expect(text).toContain("› ◐ runner [実行中]");
     expect(text).toContain("prompt: 実行中の調査プロンプト");
     expect(text).toContain("Escで閉じる");
     expect(lines.every((line) => visibleWidth(line) <= 72)).toBe(true);
@@ -141,7 +141,25 @@ describe("workflows overview component", () => {
     expect(picker.doneValue).toBeNull();
   });
 
-  test("renders disabled monitor controls and returns control actions", () => {
+  test("renders the selected Enter target when it is outside the visible phase agents", () => {
+    let doneValue: WorkflowsOverviewResult | undefined;
+    const component = createWorkflowsOverviewComponent(
+      createWorkflowsProjection("/repo/.pi/workflows", [workflowRun()], { agentId: "agent_3" }),
+      theme,
+      keybindings(),
+      (value) => {
+        doneValue = value;
+      },
+    );
+
+    const text = component.render(96).join("\n");
+    expect(text).toContain("› ○ summary [待機中] · フェーズ 統合");
+
+    component.handleInput!("enter");
+    expect(doneValue).toEqual({ type: "openAgentDetail", agentId: "agent_3" });
+  });
+
+  test("renders disabled monitor controls without returning control actions", () => {
     let doneValue: WorkflowsOverviewResult | undefined;
     const component = createWorkflowsOverviewComponent(
       createWorkflowsProjection(
@@ -162,13 +180,11 @@ describe("workflows overview component", () => {
     expect(text).toContain("操作");
     expect(text).toContain("[x] run停止 (未接続)");
     expect(text).toContain("[k] agent停止 (未接続)");
+    expect(text).not.toContain("操作キーで実行");
     expect(lines.every((line) => visibleWidth(line) <= 88)).toBe(true);
 
     component.handleInput!("x");
-    expect(doneValue).toEqual({
-      type: "controlAction",
-      action: { type: "stopRun", runId: "wf_overview_12345678" },
-    });
+    expect(doneValue).toBeUndefined();
   });
 
   test("renders an empty overview safely", () => {

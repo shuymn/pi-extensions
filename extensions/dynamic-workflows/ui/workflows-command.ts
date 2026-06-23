@@ -47,8 +47,7 @@ export type WorkflowRunSummary = {
   runningAgents: number;
   completedAgents: number;
   failedAgents: number;
-  totalTokens: number;
-  totalToolCalls: number;
+  estimatedResultTokens: number;
   startTime: string;
   updatedAt: string;
   durationMs?: number;
@@ -336,8 +335,7 @@ function workflowRunSummary(workflowRoot: string, state: WorkflowRunState): Work
     runningAgents: state.workflowProgress.runningAgents,
     completedAgents: state.workflowProgress.completedAgents,
     failedAgents: state.workflowProgress.failedAgents,
-    totalTokens: state.totalTokens,
-    totalToolCalls: state.totalToolCalls,
+    estimatedResultTokens: state.estimatedResultTokens,
     startTime: state.startTime,
     updatedAt: state.updatedAt,
     ...(state.durationMs === undefined ? {} : { durationMs: state.durationMs }),
@@ -352,7 +350,7 @@ function formatWorkflowRunSummaryLines(summary: WorkflowRunSummary): string[] {
   const duration = summary.durationMs === undefined ? "" : ` / ${summary.durationMs}ms`;
   const lines = [
     `- ${runStatusIcon(summary.status)} ${summary.workflowName} [${summary.statusLabel}] ${summary.runId}${phase}${duration}`,
-    `  エージェント=${summary.agentCount} (待機${summary.queuedAgents}/実行${summary.runningAgents}/完了${summary.completedAgents}/失敗${summary.failedAgents}) tokens=${summary.totalTokens} tools=${summary.totalToolCalls}`,
+    `  エージェント=${summary.agentCount} (待機${summary.queuedAgents}/実行${summary.runningAgents}/完了${summary.completedAgents}/失敗${summary.failedAgents}) 推定結果トークン=${summary.estimatedResultTokens}`,
   ];
   if (summary.outputPath) lines.push(`  output: ${summary.outputPath}`);
   if (summary.resultPreview) lines.push(`  result: ${truncateInline(summary.resultPreview, 160)}`);

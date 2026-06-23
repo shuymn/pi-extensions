@@ -130,20 +130,25 @@ export class WorkflowManifestUpdater {
     this.touch(timestamp);
   }
 
+  updateEstimatedResultTokens(estimatedResultTokens: number): void {
+    this.state.estimatedResultTokens = estimatedResultTokens;
+    this.touch();
+  }
+
   complete(input: {
     outputPath: string;
     result: unknown;
     durationMs?: number;
-    totalTokens?: number;
-    totalToolCalls?: number;
+    estimatedResultTokens?: number;
   }): void {
     const timestamp = this.#now();
     this.state.status = "completed";
     this.state.outputPath = input.outputPath;
     this.state.resultPreview = previewValue(input.result);
     this.state.durationMs = input.durationMs ?? durationMs(this.state.startTime, timestamp);
-    if (input.totalTokens !== undefined) this.state.totalTokens = input.totalTokens;
-    if (input.totalToolCalls !== undefined) this.state.totalToolCalls = input.totalToolCalls;
+    if (input.estimatedResultTokens !== undefined) {
+      this.state.estimatedResultTokens = input.estimatedResultTokens;
+    }
     for (const phase of this.state.phases) {
       if (phase.status === "running") {
         phase.status = "completed";
