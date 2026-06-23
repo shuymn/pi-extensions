@@ -28,6 +28,7 @@ pi config
 - `agmsg-pi` — Send and receive local messages between pi sessions.
 - `ask-user-question` — Let the agent ask structured clarification questions.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
+- `compact` — Let the agent request Pi context compaction at semantic checkpoints.
 - `commit` — Launch the existing `/skill:commit` as a bounded one-shot flow with `--commit`.
 - `create-pr` — Launch the existing `/skill:create-pr` as a bounded one-shot flow with `--create-pr`.
 - `commandcode-provider` — Register the Command Code model provider with live model discovery and a fallback catalog.

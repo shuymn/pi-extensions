@@ -26,6 +26,7 @@ pi config
 - `agmsg-pi` — pi セッション同士でローカルメッセージを送受信します。
 - `ask-user-question` — エージェントが構造化された確認質問を行えるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
+- `compact` — semantic checkpoint で Pi context compaction を agent が要求できるようにします。
 - `commit` — `--commit` で既存の `/skill:commit` を bounded one-shot flow として起動します。
 - `create-pr` — `--create-pr` で既存の `/skill:create-pr` を bounded one-shot flow として起動します。
 - `commandcode-provider` — Command Code の model provider を登録します。live model discovery と fallback catalog を含みます。
