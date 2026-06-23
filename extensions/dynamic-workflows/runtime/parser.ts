@@ -16,6 +16,7 @@ export type ParsedWorkflowScript = {
 
 const META_EXPORT_RE = /export\s+const\s+meta\s*=/y;
 const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+const DIAGNOSTIC_PREVIEW_MAX_LENGTH = 80;
 
 export class WorkflowParseError extends Error {
   constructor(message: string) {
@@ -84,14 +85,14 @@ function validateWorkflowMeta(value: unknown): WorkflowMeta {
 
 function validateWorkflowPhase(value: unknown, index: number): WorkflowPhaseMeta {
   if (!isPlainObject(value)) {
-    throw new WorkflowParseError(`Workflow meta.phases[${index}] must be an object literal.`);
+    throw new WorkflowParseError(
+      `Workflow meta.phases[${index}] must be an object literal with a non-empty title, for example ${phaseRepairExample(value)}; phases: [${formatDiagnosticValue(value)}] is not accepted.`,
+    );
   }
 
   const title = value.title;
   if (typeof title !== "string" || title.trim() === "") {
-    throw new WorkflowParseError(
-      `Workflow meta.phases[${index}].title must be a non-empty string.`,
-    );
+    throw new WorkflowParseError(missingPhaseTitleMessage(value, index));
   }
 
   const description = value.description;
@@ -105,6 +106,36 @@ function validateWorkflowPhase(value: unknown, index: number): WorkflowPhaseMeta
     title,
     ...(description === undefined ? {} : { description }),
   };
+}
+
+function missingPhaseTitleMessage(value: Record<string, unknown>, index: number): string {
+  if (typeof value.name === "string" && value.name.trim() !== "") {
+    return `Workflow meta.phases[${index}].title must be a non-empty string. Use ${phaseRepairExample(value.name)}; { name: ${formatDiagnosticValue(value.name)} } is not accepted.`;
+  }
+
+  return `Workflow meta.phases[${index}].title must be a non-empty string. Use ${phaseRepairExample()}.`;
+}
+
+function phaseRepairExample(value: unknown = "Run"): string {
+  const title =
+    typeof value === "string" &&
+    value.trim() !== "" &&
+    value.length <= DIAGNOSTIC_PREVIEW_MAX_LENGTH
+      ? value
+      : "Run";
+  return `{ title: ${JSON.stringify(title)} }`;
+}
+
+function formatDiagnosticValue(value: unknown): string {
+  if (typeof value === "string") return JSON.stringify(truncateDiagnosticText(value));
+  const text = JSON.stringify(value) ?? String(value);
+  return truncateDiagnosticText(text);
+}
+
+function truncateDiagnosticText(text: string): string {
+  return text.length <= DIAGNOSTIC_PREVIEW_MAX_LENGTH
+    ? text
+    : `${text.slice(0, DIAGNOSTIC_PREVIEW_MAX_LENGTH - 1)}…`;
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

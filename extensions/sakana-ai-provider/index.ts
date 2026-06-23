@@ -43,7 +43,7 @@ export const SAKANA_AI_OPENAI_RESPONSES_COMPAT = {
 
 const UNKNOWN_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
 const FUGU_ULTRA_STANDARD_COST = { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 };
-const FUGU_CONTEXT_WINDOW = 1_000_000;
+const FUGU_CONTEXT_WINDOW = 272_000;
 const FUGU_MAX_TOKENS = 128_000;
 
 export const SAKANA_AI_MODELS = [

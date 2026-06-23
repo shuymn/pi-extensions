@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -871,6 +872,96 @@ describe("add-dir extension", () => {
     await pi.events.get("session_shutdown")![0]({ reason: "exit" });
     await expect(stat(tempRoot)).rejects.toThrow();
     expect(cwd).toBeString();
+  });
+
+  test("removing a temporary clone root deletes it before reload can orphan it", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const tempRoot = await createTempDir("pi-github-workspace-");
+    const clone = join(tempRoot, "repo");
+    await mkdir(clone);
+    await pi.events.get("session_start")![0](
+      {},
+      {
+        sessionManager: {
+          getEntries: () => [
+            {
+              type: "custom",
+              customType: "add-dir-state",
+              data: {
+                dirs: [{ name: "repo", path: clone, temporary: true, tempRoot }],
+              },
+            },
+          ],
+        },
+      },
+    );
+
+    const appendedEntries = pi.appendedEntries;
+    let rootExistedAtPersist: boolean | undefined;
+    pi.appendEntry = (type: string, data: unknown) => {
+      rootExistedAtPersist = existsSync(tempRoot);
+      appendedEntries.push({ type, data });
+    };
+
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("remove-dir")!.handler("repo", ctx);
+
+    expect(rootExistedAtPersist).toBe(false);
+    expect(notifications.at(-1)).toEqual({
+      message: "ディレクトリを削除しました。追加ディレクトリはありません。",
+      level: "info",
+    });
+    expect(pi.appendedEntries.at(-1)).toEqual({ type: "add-dir-state", data: { dirs: [] } });
+    await expect(stat(tempRoot)).rejects.toThrow();
+
+    await pi.events.get("session_shutdown")![0]({ reason: "reload" });
+    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    await pi.events.get("session_shutdown")![0]({ reason: "exit" });
+    await expect(stat(tempRoot)).rejects.toThrow();
+  });
+
+  test("keeps failed temporary cleanup roots tracked for shutdown retry", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    const cwd = await createTempDir();
+    const tempRoot = await createTempDir("pi-github-workspace-");
+    const clone = join(tempRoot, "repo");
+    const locked = join(clone, "locked");
+    await mkdir(locked, { recursive: true });
+    await writeFile(join(locked, "file.txt"), "content");
+    await chmod(locked, 0o500);
+    await pi.events.get("session_start")![0](
+      {},
+      {
+        sessionManager: {
+          getEntries: () => [
+            {
+              type: "custom",
+              customType: "add-dir-state",
+              data: {
+                dirs: [{ name: "repo", path: clone, temporary: true, tempRoot }],
+              },
+            },
+          ],
+        },
+      },
+    );
+
+    const { ctx } = createCommandContext(cwd);
+    await pi.commands.get("remove-dir")!.handler("repo", ctx);
+
+    expect(pi.appendedEntries.at(-1)).toEqual({ type: "add-dir-state", data: { dirs: [] } });
+    await expect(stat(tempRoot)).resolves.toBeTruthy();
+
+    await chmod(locked, 0o700);
+    await pi.events.get("session_shutdown")![0]({ reason: "exit" });
+    await expect(stat(tempRoot)).rejects.toThrow();
   });
 
   test("drops restored temporary clone roots outside the managed temp area", async () => {

@@ -111,6 +111,48 @@ function createContext() {
   };
 }
 
+const INVESTIGATION_TOOL_NAMES = [
+  "tavily_search",
+  "tavily_extract",
+  "tavily_map",
+  "tavily_crawl",
+  "tavily_auth_status",
+  "github_clone_workspace",
+];
+const WORKFLOW_TOOL_NAMES = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "edit",
+  "write",
+  ...INVESTIGATION_TOOL_NAMES,
+];
+const EXCLUDED_WORKFLOW_TOOL_NAMES = [
+  "workflow",
+  "review",
+  "todo",
+  "spawn_subagent",
+  "ask_user_question",
+  "deep_research",
+  "tavily_research",
+];
+
+function createFakeInvestigationToolset() {
+  return {
+    toolNames: [...INVESTIGATION_TOOL_NAMES],
+    tools: INVESTIGATION_TOOL_NAMES.map((name) => ({
+      name,
+      label: name,
+      description: `${name} test tool`,
+      parameters: { type: "object", properties: {} },
+      execute: async () => ({ content: [{ type: "text", text: `${name} result` }], details: {} }),
+    })),
+    cleanup: async () => {},
+  };
+}
+
 function tempTranscriptsDir(): string {
   const dir = mkdtempSync(join(tmpdir(), "pi-workflow-agent-transcripts-"));
   tempDirs.push(dir);
@@ -136,7 +178,11 @@ describe("workflow subagent runner", () => {
     const { createWorkflowAgentRunner } = await loadRunnerModule();
     nextResultText = "final answer";
 
-    const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
     const result = await runner("Inspect src", { label: "inspect src", phase: "Review" });
 
     expect(result).toBe("final answer");
@@ -150,9 +196,16 @@ describe("workflow subagent runner", () => {
       modelRegistry: { id: "registry" },
       model: { id: "model" },
       thinkingLevel: "high",
-      tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+      tools: WORKFLOW_TOOL_NAMES,
       sessionManager: { kind: "in-memory", cwd: "/repo" },
     });
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual(INVESTIGATION_TOOL_NAMES);
+    expect(createAgentSessionCalls[0].tools).not.toContain("structured_output");
+    for (const excluded of EXCLUDED_WORKFLOW_TOOL_NAMES) {
+      expect(createAgentSessionCalls[0].tools).not.toContain(excluded);
+    }
     expect(loaderInstances[0].reloaded).toBe(true);
     expect(loaderInstances[0].options.noExtensions).toBe(true);
     expect(loaderInstances[0].options.noSkills).toBe(true);
@@ -165,7 +218,11 @@ describe("workflow subagent runner", () => {
     const transcriptsDir = tempTranscriptsDir();
     nextResultText = "final answer";
 
-    const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
     const result = await runner("Inspect src", {
       label: "inspect src",
       phase: "Review",
@@ -229,7 +286,11 @@ describe("workflow subagent runner", () => {
     console.warn = warn as never;
 
     try {
-      const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+      const runner = createWorkflowAgentRunner(
+        createPi() as never,
+        createContext() as never,
+        createFakeInvestigationToolset() as never,
+      );
       const result = await runner("Inspect src", {
         label: "inspect src",
         transcript: {
@@ -254,7 +315,11 @@ describe("workflow subagent runner", () => {
     const transcriptsDir = tempTranscriptsDir();
     nextPromptError = new Error("subagent exploded");
 
-    const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
     await expect(
       runner("Inspect src", {
         label: "inspect src",
@@ -284,7 +349,11 @@ describe("workflow subagent runner", () => {
     const controller = new AbortController();
     nextPromptError = new Error("aborted");
 
-    const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
     const promise = runner("Inspect src", {
       label: "inspect src",
       signal: controller.signal,
@@ -305,7 +374,11 @@ describe("workflow subagent runner", () => {
     };
     nextStructuredOutput = { verdict: "pass" };
 
-    const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
     const result = await runner("Return a verdict", {
       label: "verdict",
       schema,
@@ -313,13 +386,17 @@ describe("workflow subagent runner", () => {
 
     expect(result).toEqual({ verdict: "pass" });
     expect(createdSessions[0].lastPrompt).toContain("structured_output");
-    expect(createAgentSessionCalls[0].tools).toContain("structured_output");
-    expect(createAgentSessionCalls[0].customTools[0]).toMatchObject({
+    expect(createAgentSessionCalls[0].tools).toEqual([...WORKFLOW_TOOL_NAMES, "structured_output"]);
+    expect(createAgentSessionCalls[0].tools.at(-1)).toBe("structured_output");
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, "structured_output"]);
+    expect(createAgentSessionCalls[0].customTools.at(-1)).toMatchObject({
       name: "structured_output",
       label: "Structured Output",
       parameters: schema,
     });
-    const toolResult = await createAgentSessionCalls[0].customTools[0].execute("call", {
+    const toolResult = await createAgentSessionCalls[0].customTools.at(-1).execute("call", {
       verdict: "pass",
     });
     expect(toolResult).toMatchObject({
@@ -330,7 +407,11 @@ describe("workflow subagent runner", () => {
 
   test("fails schema-backed agent calls when the subagent does not use structured_output", async () => {
     const { createWorkflowAgentRunner } = await loadRunnerModule();
-    const runner = createWorkflowAgentRunner(createPi() as never, createContext() as never);
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
 
     await expect(
       runner("Return a verdict", {

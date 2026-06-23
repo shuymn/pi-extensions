@@ -9,6 +9,10 @@ mock.module("node:crypto", () => ({
 
 installTypeboxMock();
 
+mock.module("@earendil-works/pi-ai", () => ({
+  StringEnum: (values: readonly string[], options = {}) => ({ enum: values, ...options }),
+}));
+
 type Subscriber = (event: any) => void;
 type SessionBehavior = {
   resultText?: string;
@@ -49,6 +53,54 @@ const createdPis: any[] = [];
 let nextBehaviors: SessionBehavior[] = [];
 
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
+
+const INVESTIGATION_TOOL_NAMES = [
+  "tavily_search",
+  "tavily_extract",
+  "tavily_map",
+  "tavily_crawl",
+  "tavily_auth_status",
+  "github_clone_workspace",
+];
+const SORTED_INVESTIGATION_TOOL_NAMES = [
+  "github_clone_workspace",
+  "tavily_auth_status",
+  "tavily_crawl",
+  "tavily_extract",
+  "tavily_map",
+  "tavily_search",
+];
+const DEFAULT_SUBAGENT_TOOL_NAMES = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "edit",
+  "write",
+  ...INVESTIGATION_TOOL_NAMES,
+];
+const READ_ONLY_SUBAGENT_TOOL_NAMES = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  ...INVESTIGATION_TOOL_NAMES,
+];
+const EXCLUDED_TOOL_NAMES = [
+  "deep_research",
+  "tavily_research",
+  "workflow",
+  "review",
+  "todo",
+  "spawn_subagent",
+  "get_subagent_result",
+  "stop_subagent",
+  "list_subagents",
+  "ask_user_question",
+  "structured_output",
+];
 
 function createSession(behavior: SessionBehavior) {
   const subscribers: Subscriber[] = [];
@@ -283,7 +335,7 @@ describe("subagents extension", () => {
       },
     });
     expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Default subagents receive read, grep, find, ls, bash, edit, and write",
+      "Default subagents receive read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace",
     );
   });
 
@@ -313,29 +365,31 @@ describe("subagents extension", () => {
     expect(updates).toEqual(["Subagent id000001 running...\n\nfinal answer"]);
     expect(createdSessions[0].name).toBe("subagent#id000001");
     expect(createdSessions[0].disposed).toBe(true);
-    expect(createdSessions[0].registeredTools).toEqual([]);
-    expect(createdSessions[0].activeTools).toEqual([
-      "read",
-      "grep",
-      "find",
-      "ls",
-      "bash",
-      "edit",
-      "write",
-    ]);
+    expect(createdSessions[0].registeredTools).toEqual(SORTED_INVESTIGATION_TOOL_NAMES);
+    expect(createdSessions[0].activeTools).toEqual(DEFAULT_SUBAGENT_TOOL_NAMES);
     expect(createAgentSessionCalls[0]).toMatchObject({
       cwd: "/repo",
       agentDir: "/agent-dir",
       thinkingLevel: "high",
-      tools: ["read", "grep", "find", "ls", "bash", "edit", "write"],
+      tools: DEFAULT_SUBAGENT_TOOL_NAMES,
       model: { name: "model" },
       modelRegistry: { id: "registry" },
     });
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual(INVESTIGATION_TOOL_NAMES);
+    for (const excluded of EXCLUDED_TOOL_NAMES) {
+      expect(createAgentSessionCalls[0].tools).not.toContain(excluded);
+      expect(createdSessions[0].registeredTools).not.toContain(excluded);
+    }
     expect(loaderInstances[0].reloaded).toBe(true);
     expect(loaderInstances[0].options.noExtensions).toBe(true);
     expect(loaderInstances[0].options.extensionFactories).toEqual([]);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("parent system prompt");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("Working directory: /repo");
+    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
+      "Default subagents have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace.",
+    );
   });
 
   test("readOnly spawn restricts tools and adds read-only system prompt rule", async () => {
@@ -354,18 +408,26 @@ describe("subagents extension", () => {
         createContext(),
       );
 
-    expect(createAgentSessionCalls[0].tools).toEqual(["read", "grep", "find", "ls", "bash"]);
-    expect(createdSessions[0].registeredTools).toEqual(["bash"]);
-    expect(createdSessions[0].activeTools).toEqual(["read", "grep", "find", "ls", "bash"]);
+    expect(createAgentSessionCalls[0].tools).toEqual(READ_ONLY_SUBAGENT_TOOL_NAMES);
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash"]);
+    expect(createdSessions[0].registeredTools).toEqual([
+      "bash",
+      ...SORTED_INVESTIGATION_TOOL_NAMES,
+    ]);
+    expect(createdSessions[0].activeTools).toEqual(READ_ONLY_SUBAGENT_TOOL_NAMES);
+    expect(createAgentSessionCalls[0].tools).not.toContain("edit");
+    expect(createAgentSessionCalls[0].tools).not.toContain("write");
     expect(loaderInstances[0].options.extensionFactories).toEqual([]);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
       "This subagent is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Default subagents have read, grep, find, ls, bash, edit, and write.",
+      "Default subagents have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Read-only subagents have read, grep, find, ls, and bash only.",
+      "Read-only subagents have read, grep, find, ls, bash, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace only.",
     );
   });
 

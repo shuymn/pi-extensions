@@ -97,6 +97,64 @@ describe("dynamic workflow tool controls", () => {
     expect(existsSync(workflowRoot)).toBe(false);
   });
 
+  test("does not rethrow internally reported background task errors", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    const controller = new AbortController();
+    const tool = createWorkflowTool({
+      workflowRoot,
+      runIdFactory: () => "wf_internal_error_12345678",
+      taskIdFactory: () => "task_internal_error_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      controllerRegistry: {
+        register: (runId: string) => ({
+          runId,
+          signal: controller.signal,
+          get stopReason() {
+            return undefined;
+          },
+          stop: (reason?: string) => controller.abort(reason),
+          registerAgent: (agentId: string) => ({
+            runId,
+            agentId,
+            signal: new AbortController().signal,
+            get stopReason() {
+              return undefined;
+            },
+            stop: () => undefined,
+            unregister: () => undefined,
+          }),
+          trackCompletion: (completion: Promise<void>) => {
+            void completion.catch(() => undefined);
+          },
+          unregister: () => {
+            throw new Error("unregister failed");
+          },
+        }),
+      } as never,
+      agent: () => "ok",
+    });
+
+    await tool.execute(
+      "call",
+      {
+        script: `
+          export const meta = {
+            name: "internal_error_smoke",
+            phases: [{ title: "Run" }],
+          };
+          return await agent("work", { label: "worker" });
+        `,
+      },
+      undefined,
+      undefined,
+      { cwd: "/repo" } as never,
+    );
+
+    await expect(backgroundTasks[0]!()).resolves.toBeUndefined();
+  });
+
   test("exposes a background stop seam that cancels a running workflow", async () => {
     const { createWorkflowTool } = await loadWorkflowToolModule();
     const workflowRoot = tempWorkflowRoot();
