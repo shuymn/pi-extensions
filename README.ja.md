@@ -56,7 +56,7 @@ pi \
   --commit
 ```
 
-任意の commit flag は `--commit-language english|japanese`、`--commit-branch`、および `--commit-branch` と一緒に使う `--commit-base <branch>` です。
+任意の commit flag は `--english`/`--japanese`、`--branch`、および `--branch` と一緒に使う `--base <branch>` です。
 
 依存関係:
 

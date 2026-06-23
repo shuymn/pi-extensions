@@ -59,7 +59,7 @@ pi \
   --commit
 ```
 
-Optional commit flags: `--commit-language english|japanese`, `--commit-branch`, and `--commit-base <branch>` with `--commit-branch`.
+Optional commit flags: `--english`/`--japanese`, `--branch`, and `--base <branch>` with `--branch`.
 
 Dependencies:
 

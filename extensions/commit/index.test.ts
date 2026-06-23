@@ -4,8 +4,9 @@ import commitExtension, {
   buildCommitSkillPrompt,
   COMMIT_BASE_FLAG,
   COMMIT_BRANCH_FLAG,
+  COMMIT_ENGLISH_FLAG,
   COMMIT_FLAG,
-  COMMIT_LANGUAGE_FLAG,
+  COMMIT_JAPANESE_FLAG,
   COMMIT_SAFE_TOOLS,
   parseCommitLaunchOptions,
 } from "./index";
@@ -28,17 +29,7 @@ type FakeContext = {
   shutdown: () => void;
 };
 
-const DEFAULT_TOOLS = [
-  "read",
-  "bash",
-  "grep",
-  "find",
-  "ls",
-  "edit",
-  "write",
-  "ask_user_question",
-  "todo",
-];
+const DEFAULT_TOOLS = [...COMMIT_SAFE_TOOLS, "edit", "write", "todo"];
 
 function createFakePi(
   options: {
@@ -116,9 +107,10 @@ function userMessage(content: string) {
   return { role: "user", content: [{ type: "text", text: content }] };
 }
 
-function expandedCommitSkillMessage(args = "--english") {
+function expandedCommitSkillMessage(args = "") {
+  const suffix = args ? `\n\n${args}` : "";
   return userMessage(
-    `<skill name="commit" location="/skills/commit/SKILL.md">\nbody\n</skill>\n\n${args}`,
+    `<skill name="commit" location="/skills/commit/SKILL.md">\nbody\n</skill>${suffix}`,
   );
 }
 
@@ -129,6 +121,18 @@ async function agentEnd(
 ) {
   await pi.getEventHandlers("agent_end")[0]!({ messages }, ctx);
   return ctx;
+}
+
+type CommitFlagValues = Parameters<typeof parseCommitLaunchOptions>[0];
+
+function parseOptions(overrides: Partial<CommitFlagValues> = {}) {
+  return parseCommitLaunchOptions({
+    english: undefined,
+    japanese: undefined,
+    branch: undefined,
+    base: undefined,
+    ...overrides,
+  });
 }
 
 describe("commit extension", () => {
@@ -142,9 +146,13 @@ describe("commit extension", () => {
       type: "boolean",
       default: false,
     });
-    expect(pi.flagDefinitions.get(COMMIT_LANGUAGE_FLAG)).toMatchObject({
-      type: "string",
-      default: "english",
+    expect(pi.flagDefinitions.get(COMMIT_ENGLISH_FLAG)).toMatchObject({
+      type: "boolean",
+      default: false,
+    });
+    expect(pi.flagDefinitions.get(COMMIT_JAPANESE_FLAG)).toMatchObject({
+      type: "boolean",
+      default: false,
     });
     expect(pi.flagDefinitions.get(COMMIT_BRANCH_FLAG)).toMatchObject({
       type: "boolean",
@@ -168,7 +176,7 @@ describe("commit extension", () => {
     expect(ctx.shutdowns).toBe(0);
   });
 
-  test("launches the English commit skill with bounded questionnaire mode by default", async () => {
+  test("launches the commit skill with bounded questionnaire mode by default", async () => {
     const pi = createFakePi({ flags: { [COMMIT_FLAG]: true } });
     commitExtension(pi as never);
 
@@ -181,15 +189,26 @@ describe("commit extension", () => {
         data: { allowChatAboutThis: false },
       },
     ]);
-    expect(pi.sentUserMessages).toEqual(["/skill:commit --english"]);
+    expect(pi.sentUserMessages).toEqual(["/skill:commit"]);
     expect(ctx.shutdowns).toBe(0);
+  });
+
+  test("builds English commit skill prompts when requested", async () => {
+    const pi = createFakePi({
+      flags: { [COMMIT_FLAG]: true, [COMMIT_ENGLISH_FLAG]: true },
+    });
+    commitExtension(pi as never);
+
+    await sessionStart(pi);
+
+    expect(pi.sentUserMessages).toEqual(["/skill:commit --english"]);
   });
 
   test("builds Japanese branch/base commit skill prompts", async () => {
     const pi = createFakePi({
       flags: {
         [COMMIT_FLAG]: true,
-        [COMMIT_LANGUAGE_FLAG]: "japanese",
+        [COMMIT_JAPANESE_FLAG]: true,
         [COMMIT_BRANCH_FLAG]: true,
         [COMMIT_BASE_FLAG]: "main",
       },
@@ -211,7 +230,7 @@ describe("commit extension", () => {
     await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([["read", "bash", "ask_user_question"]]);
-    expect(pi.sentUserMessages).toEqual(["/skill:commit --english"]);
+    expect(pi.sentUserMessages).toEqual(["/skill:commit"]);
   });
 
   test("does not launch when ask_user_question is unavailable", async () => {
@@ -236,7 +255,7 @@ describe("commit extension", () => {
     expect(ctx.shutdowns).toBe(1);
   });
 
-  test("rejects --commit-base without --commit-branch", async () => {
+  test("rejects --base without --branch", async () => {
     const pi = createFakePi({
       flags: { [COMMIT_FLAG]: true, [COMMIT_BASE_FLAG]: "main" },
     });
@@ -248,7 +267,7 @@ describe("commit extension", () => {
     expect(pi.emittedEvents).toEqual([]);
     expect(pi.sentUserMessages).toEqual([]);
     expect(ctx.notifications).toEqual([
-      { message: "--commit-base は --commit-branch と一緒に指定してください。", level: "error" },
+      { message: "--base は --branch と一緒に指定してください。", level: "error" },
     ]);
     expect(ctx.shutdowns).toBe(1);
   });
@@ -261,7 +280,7 @@ describe("commit extension", () => {
     await sessionStart(pi, ctx);
     await sessionStart(pi, ctx);
 
-    expect(pi.sentUserMessages).toEqual(["/skill:commit --english"]);
+    expect(pi.sentUserMessages).toEqual(["/skill:commit"]);
     expect(pi.emittedEvents).toHaveLength(1);
 
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
@@ -315,26 +334,28 @@ describe("commit extension", () => {
   });
 
   test("validates option flags and builds prompts deterministically", () => {
-    expect(
-      parseCommitLaunchOptions({ language: undefined, branch: undefined, base: undefined }),
-    ).toEqual({ ok: true, options: { language: "english", branch: false } });
-    expect(
-      parseCommitLaunchOptions({ language: "klingon", branch: false, base: undefined }),
-    ).toEqual({
-      ok: false,
-      message: "--commit-language には english または japanese を指定してください。",
+    expect(parseOptions()).toEqual({ ok: true, options: { branch: false } });
+    expect(parseOptions({ english: true, japanese: false, branch: false })).toEqual({
+      ok: true,
+      options: { language: "english", branch: false },
     });
-    expect(parseCommitLaunchOptions({ language: "english", branch: true, base: "  " })).toEqual({
+    expect(parseOptions({ english: true, japanese: true, branch: false })).toEqual({
       ok: false,
-      message: "--commit-base には空でない base branch 名を指定してください。",
+      message: "--english と --japanese は同時に指定できません。",
+    });
+    expect(parseOptions({ branch: true, base: "  " })).toEqual({
+      ok: false,
+      message: "--base には空でない base branch 名を指定してください。",
     });
     for (const base of ["main --japanese", "main\nnext", "--main", "@{upstream}"]) {
-      expect(parseCommitLaunchOptions({ language: "english", branch: true, base })).toEqual({
+      expect(parseOptions({ branch: true, base })).toEqual({
         ok: false,
-        message:
-          "--commit-base には main や origin/main のような安全な branch/ref 名を指定してください。",
+        message: "--base には main や origin/main のような安全な branch/ref 名を指定してください。",
       });
     }
+    expect(buildCommitSkillPrompt({ branch: true, base: "develop" })).toBe(
+      "/skill:commit --branch --base=develop",
+    );
     expect(buildCommitSkillPrompt({ language: "japanese", branch: true, base: "develop" })).toBe(
       "/skill:commit --japanese --branch --base=develop",
     );

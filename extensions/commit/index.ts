@@ -4,9 +4,10 @@ import { notifyIfUI } from "../../lib/tui";
 import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 
 export const COMMIT_FLAG = "commit";
-export const COMMIT_LANGUAGE_FLAG = "commit-language";
-export const COMMIT_BRANCH_FLAG = "commit-branch";
-export const COMMIT_BASE_FLAG = "commit-base";
+export const COMMIT_ENGLISH_FLAG = "english";
+export const COMMIT_JAPANESE_FLAG = "japanese";
+export const COMMIT_BRANCH_FLAG = "branch";
+export const COMMIT_BASE_FLAG = "base";
 
 export const COMMIT_SAFE_TOOLS = [
   "read",
@@ -20,7 +21,7 @@ export const COMMIT_SAFE_TOOLS = [
 export type CommitLanguage = "english" | "japanese";
 
 export type CommitLaunchOptions = {
-  language: CommitLanguage;
+  language?: CommitLanguage;
   branch: boolean;
   base?: string;
 };
@@ -30,38 +31,56 @@ export type CommitOptionsResult =
   | { ok: false; message: string };
 
 export function parseCommitLaunchOptions(flags: {
-  language: unknown;
+  english: unknown;
+  japanese: unknown;
   branch: unknown;
   base: unknown;
 }): CommitOptionsResult {
-  const language = flags.language ?? "english";
-  if (language !== "english" && language !== "japanese") {
+  if (flags.english !== undefined && typeof flags.english !== "boolean") {
     return {
       ok: false,
-      message: "--commit-language には english または japanese を指定してください。",
+      message: "--english は値を取らない boolean flag として指定してください。",
     };
   }
+  if (flags.japanese !== undefined && typeof flags.japanese !== "boolean") {
+    return {
+      ok: false,
+      message: "--japanese は値を取らない boolean flag として指定してください。",
+    };
+  }
+  const english = flags.english === true;
+  const japanese = flags.japanese === true;
+  if (english && japanese) {
+    return {
+      ok: false,
+      message: "--english と --japanese は同時に指定できません。",
+    };
+  }
+  let language: CommitLanguage | undefined;
+  if (japanese) language = "japanese";
+  else if (english) language = "english";
 
   if (flags.branch !== undefined && typeof flags.branch !== "boolean") {
     return {
       ok: false,
-      message: "--commit-branch は値を取らない boolean flag として指定してください。",
+      message: "--branch は値を取らない boolean flag として指定してください。",
     };
   }
   const branch = flags.branch === true;
 
-  if (flags.base !== undefined && flags.base !== null && typeof flags.base !== "string") {
+  const hasBase = flags.base !== undefined && flags.base !== null;
+  if (hasBase && typeof flags.base !== "string") {
     return {
       ok: false,
-      message: "--commit-base には base branch 名を指定してください。",
+      message: "--base には base branch 名を指定してください。",
     };
   }
 
   let base = typeof flags.base === "string" ? flags.base.trim() : undefined;
-  if (flags.base !== undefined && flags.base !== null && !base) {
+  if (hasBase && !base) {
     return {
       ok: false,
-      message: "--commit-base には空でない base branch 名を指定してください。",
+      message: "--base には空でない base branch 名を指定してください。",
     };
   }
   if (base) {
@@ -70,8 +89,7 @@ export function parseCommitLaunchOptions(flags: {
     } catch {
       return {
         ok: false,
-        message:
-          "--commit-base には main や origin/main のような安全な branch/ref 名を指定してください。",
+        message: "--base には main や origin/main のような安全な branch/ref 名を指定してください。",
       };
     }
   }
@@ -79,14 +97,14 @@ export function parseCommitLaunchOptions(flags: {
   if (base && !branch) {
     return {
       ok: false,
-      message: "--commit-base は --commit-branch と一緒に指定してください。",
+      message: "--base は --branch と一緒に指定してください。",
     };
   }
 
   return {
     ok: true,
     options: {
-      language,
+      ...(language ? { language } : {}),
       branch,
       ...(base ? { base } : {}),
     },
@@ -94,7 +112,8 @@ export function parseCommitLaunchOptions(flags: {
 }
 
 export function buildCommitSkillPrompt(options: CommitLaunchOptions): string {
-  const parts = ["/skill:commit", options.language === "japanese" ? "--japanese" : "--english"];
+  const parts = ["/skill:commit"];
+  if (options.language) parts.push(options.language === "japanese" ? "--japanese" : "--english");
   if (options.branch) parts.push("--branch");
   if (options.base) parts.push(`--base=${options.base}`);
   return parts.join(" ");
@@ -149,10 +168,15 @@ export default function commitExtension(pi: ExtensionAPI): void {
     type: "boolean",
     default: false,
   });
-  pi.registerFlag(COMMIT_LANGUAGE_FLAG, {
-    description: "Commit message language for --commit: english or japanese",
-    type: "string",
-    default: "english",
+  pi.registerFlag(COMMIT_ENGLISH_FLAG, {
+    description: "Use English for the commit skill in --commit mode",
+    type: "boolean",
+    default: false,
+  });
+  pi.registerFlag(COMMIT_JAPANESE_FLAG, {
+    description: "Use Japanese for the commit skill in --commit mode",
+    type: "boolean",
+    default: false,
   });
   pi.registerFlag(COMMIT_BRANCH_FLAG, {
     description: "Create a new branch before committing in --commit mode",
@@ -160,7 +184,7 @@ export default function commitExtension(pi: ExtensionAPI): void {
     default: false,
   });
   pi.registerFlag(COMMIT_BASE_FLAG, {
-    description: "Base branch to switch to before creating --commit-branch",
+    description: "Base branch to switch to before creating --branch",
     type: "string",
   });
 
@@ -190,7 +214,8 @@ export default function commitExtension(pi: ExtensionAPI): void {
     launchAttempted = true;
 
     const parsed = parseCommitLaunchOptions({
-      language: pi.getFlag(COMMIT_LANGUAGE_FLAG),
+      english: pi.getFlag(COMMIT_ENGLISH_FLAG),
+      japanese: pi.getFlag(COMMIT_JAPANESE_FLAG),
       branch: pi.getFlag(COMMIT_BRANCH_FLAG),
       base: pi.getFlag(COMMIT_BASE_FLAG),
     });
