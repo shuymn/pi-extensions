@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resetOneShotSharedFlagsForTest } from "../../lib/one-shot-flow";
 import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 import commitExtension, {
   buildCommitSkillPrompt,
@@ -30,6 +34,17 @@ type FakeContext = {
 };
 
 const DEFAULT_TOOLS = [...COMMIT_SAFE_TOOLS, "edit", "write", "todo"];
+const COMMIT_SKILL_DIR = mkdtempSync(join(tmpdir(), "pi-commit-skill-"));
+const COMMIT_SKILL_PATH = join(COMMIT_SKILL_DIR, "SKILL.md");
+writeFileSync(
+  COMMIT_SKILL_PATH,
+  "---\nname: commit\ndescription: Test commit skill\n---\n\n# Commit skill\n",
+);
+
+function expandedCommitSkillPrompt(args = "") {
+  const suffix = args ? `\n\n${args}` : "";
+  return `<skill name="commit" location="${COMMIT_SKILL_PATH}">\nReferences are relative to ${COMMIT_SKILL_DIR}.\n\n# Commit skill\n</skill>${suffix}`;
+}
 
 function createFakePi(
   options: {
@@ -59,6 +74,15 @@ function createFakePi(
     },
     getAllTools() {
       return tools.map((name) => ({ name }));
+    },
+    getCommands() {
+      return [
+        {
+          name: "skill:commit",
+          source: "skill",
+          sourceInfo: { path: COMMIT_SKILL_PATH, baseDir: COMMIT_SKILL_DIR },
+        },
+      ];
     },
     setActiveTools(names: string[]) {
       activeToolsCalls.push([...names]);
@@ -135,7 +159,20 @@ function parseOptions(overrides: Partial<CommitFlagValues> = {}) {
   });
 }
 
+function withArgv<T>(argv: string[], callback: () => T): T {
+  const originalArgv = process.argv;
+  process.argv = [originalArgv[0] ?? "bun", originalArgv[1] ?? "pi", ...argv];
+  try {
+    return callback();
+  } finally {
+    process.argv = originalArgv;
+  }
+}
+
 describe("commit extension", () => {
+  beforeEach(() => {
+    resetOneShotSharedFlagsForTest();
+  });
   test("registers commit startup flags", () => {
     const pi = createFakePi();
 
@@ -189,7 +226,7 @@ describe("commit extension", () => {
         data: { allowChatAboutThis: false },
       },
     ]);
-    expect(pi.sentUserMessages).toEqual(["/skill:commit"]);
+    expect(pi.sentUserMessages).toEqual([expandedCommitSkillPrompt()]);
     expect(ctx.shutdowns).toBe(0);
   });
 
@@ -201,7 +238,7 @@ describe("commit extension", () => {
 
     await sessionStart(pi);
 
-    expect(pi.sentUserMessages).toEqual(["/skill:commit --english"]);
+    expect(pi.sentUserMessages).toEqual([expandedCommitSkillPrompt("--english")]);
   });
 
   test("builds Japanese branch/base commit skill prompts", async () => {
@@ -217,7 +254,35 @@ describe("commit extension", () => {
 
     await sessionStart(pi);
 
-    expect(pi.sentUserMessages).toEqual(["/skill:commit --japanese --branch --base=main"]);
+    expect(pi.sentUserMessages).toEqual([
+      expandedCommitSkillPrompt("--japanese --branch --base=main"),
+    ]);
+  });
+
+  test("appends CLI free-form input and handles the duplicate initial prompt", async () => {
+    const pi = withArgv(["--commit", "--english", "focus staged files", "additional note"], () =>
+      createFakePi({ flags: { [COMMIT_FLAG]: true, [COMMIT_ENGLISH_FLAG]: true } }),
+    );
+    withArgv(["--commit", "--english", "focus staged files", "additional note"], () =>
+      commitExtension(pi as never),
+    );
+
+    const ctx = await sessionStart(pi);
+
+    expect(pi.sentUserMessages).toEqual([
+      expandedCommitSkillPrompt("--english\n\nfocus staged files\n\nadditional note"),
+    ]);
+    await expect(
+      pi.getEventHandlers("input")[0]!(
+        { source: "interactive", text: "additional note" },
+        createContext(),
+      ),
+    ).resolves.toEqual({ action: "handled" });
+
+    await agentEnd(pi, ctx, [
+      expandedCommitSkillMessage("--english\n\nfocus staged files\n\nadditional note"),
+    ]);
+    expect(ctx.shutdowns).toBe(1);
   });
 
   test("filters active tools to the available commit-safe allowlist", async () => {
@@ -230,7 +295,7 @@ describe("commit extension", () => {
     await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([["read", "bash", "ask_user_question"]]);
-    expect(pi.sentUserMessages).toEqual(["/skill:commit"]);
+    expect(pi.sentUserMessages).toEqual([expandedCommitSkillPrompt()]);
   });
 
   test("does not launch when ask_user_question is unavailable", async () => {
@@ -280,7 +345,7 @@ describe("commit extension", () => {
     await sessionStart(pi, ctx);
     await sessionStart(pi, ctx);
 
-    expect(pi.sentUserMessages).toEqual(["/skill:commit"]);
+    expect(pi.sentUserMessages).toEqual([expandedCommitSkillPrompt()]);
     expect(pi.emittedEvents).toHaveLength(1);
 
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);

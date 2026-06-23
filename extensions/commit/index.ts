@@ -1,24 +1,34 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { normalizeBaseBranch } from "../../lib/git";
+import {
+  agentEndIncludesSkillPrompt,
+  appendOneShotFreeInput,
+  availableOneShotTools,
+  collectOneShotCliFreeInputs,
+  consumeOneShotFreeInput,
+  expandOneShotSkillPrompt,
+  findOneShotPrimaryFlagConflict,
+  getAvailableToolNames,
+  ONE_SHOT_BASE_FLAG,
+  ONE_SHOT_ENGLISH_FLAG,
+  ONE_SHOT_JAPANESE_FLAG,
+  ONE_SHOT_SAFE_TOOLS,
+  type OneShotLanguage,
+  parseOneShotBaseFlag,
+  parseOneShotLanguageFlags,
+  registerOneShotSharedFlags,
+} from "../../lib/one-shot-flow";
 import { notifyIfUI } from "../../lib/tui";
 import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 
 export const COMMIT_FLAG = "commit";
-export const COMMIT_ENGLISH_FLAG = "english";
-export const COMMIT_JAPANESE_FLAG = "japanese";
+export const COMMIT_ENGLISH_FLAG = ONE_SHOT_ENGLISH_FLAG;
+export const COMMIT_JAPANESE_FLAG = ONE_SHOT_JAPANESE_FLAG;
 export const COMMIT_BRANCH_FLAG = "branch";
-export const COMMIT_BASE_FLAG = "base";
+export const COMMIT_BASE_FLAG = ONE_SHOT_BASE_FLAG;
 
-export const COMMIT_SAFE_TOOLS = [
-  "read",
-  "bash",
-  "grep",
-  "find",
-  "ls",
-  "ask_user_question",
-] as const;
+export const COMMIT_SAFE_TOOLS = ONE_SHOT_SAFE_TOOLS;
 
-export type CommitLanguage = "english" | "japanese";
+export type CommitLanguage = OneShotLanguage;
 
 export type CommitLaunchOptions = {
   language?: CommitLanguage;
@@ -36,29 +46,8 @@ export function parseCommitLaunchOptions(flags: {
   branch: unknown;
   base: unknown;
 }): CommitOptionsResult {
-  if (flags.english !== undefined && typeof flags.english !== "boolean") {
-    return {
-      ok: false,
-      message: "--english は値を取らない boolean flag として指定してください。",
-    };
-  }
-  if (flags.japanese !== undefined && typeof flags.japanese !== "boolean") {
-    return {
-      ok: false,
-      message: "--japanese は値を取らない boolean flag として指定してください。",
-    };
-  }
-  const english = flags.english === true;
-  const japanese = flags.japanese === true;
-  if (english && japanese) {
-    return {
-      ok: false,
-      message: "--english と --japanese は同時に指定できません。",
-    };
-  }
-  let language: CommitLanguage | undefined;
-  if (japanese) language = "japanese";
-  else if (english) language = "english";
+  const language = parseOneShotLanguageFlags(flags);
+  if (!language.ok) return language;
 
   if (flags.branch !== undefined && typeof flags.branch !== "boolean") {
     return {
@@ -68,33 +57,10 @@ export function parseCommitLaunchOptions(flags: {
   }
   const branch = flags.branch === true;
 
-  const hasBase = flags.base !== undefined && flags.base !== null;
-  if (hasBase && typeof flags.base !== "string") {
-    return {
-      ok: false,
-      message: "--base には base branch 名を指定してください。",
-    };
-  }
+  const base = parseOneShotBaseFlag(flags.base);
+  if (!base.ok) return base;
 
-  let base = typeof flags.base === "string" ? flags.base.trim() : undefined;
-  if (hasBase && !base) {
-    return {
-      ok: false,
-      message: "--base には空でない base branch 名を指定してください。",
-    };
-  }
-  if (base) {
-    try {
-      base = normalizeBaseBranch(base);
-    } catch {
-      return {
-        ok: false,
-        message: "--base には main や origin/main のような安全な branch/ref 名を指定してください。",
-      };
-    }
-  }
-
-  if (base && !branch) {
+  if (base.base && !branch) {
     return {
       ok: false,
       message: "--base は --branch と一緒に指定してください。",
@@ -104,9 +70,9 @@ export function parseCommitLaunchOptions(flags: {
   return {
     ok: true,
     options: {
-      ...(language ? { language } : {}),
+      ...(language.language ? { language: language.language } : {}),
       branch,
-      ...(base ? { base } : {}),
+      ...(base.base ? { base: base.base } : {}),
     },
   };
 }
@@ -119,73 +85,19 @@ export function buildCommitSkillPrompt(options: CommitLaunchOptions): string {
   return parts.join(" ");
 }
 
-function getAvailableToolNames(pi: Pick<ExtensionAPI, "getAllTools">): Set<string> {
-  return new Set(pi.getAllTools().map((tool) => tool.name));
-}
-
-function availableCommitTools(availableTools: Set<string>): string[] {
-  return COMMIT_SAFE_TOOLS.filter((tool) => availableTools.has(tool));
-}
-
-function textFromContent(content: unknown): string | undefined {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-
-  const parts: string[] = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const block = part as { type?: unknown; text?: unknown };
-    if (block.type === "text" && typeof block.text === "string" && block.text) {
-      parts.push(block.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("\n") : undefined;
-}
-
-function expandedSkillTextMatchesPrompt(text: string, prompt: string): boolean {
-  if (!prompt.startsWith("/skill:commit")) return false;
-  const args = prompt.slice("/skill:commit".length).trim();
-  return text.startsWith('<skill name="commit" ') && (!args || text.endsWith(`\n\n${args}`));
-}
-
-function userTextMatchesPrompt(text: string, prompt: string): boolean {
-  return text === prompt || expandedSkillTextMatchesPrompt(text, prompt);
-}
-
-function agentEndIncludesUserPrompt(messages: unknown, prompt: string): boolean {
-  if (!Array.isArray(messages)) return false;
-  return messages.some((message) => {
-    if (!message || typeof message !== "object") return false;
-    const record = message as { role?: unknown; content?: unknown };
-    const text = record.role === "user" ? textFromContent(record.content) : undefined;
-    return text !== undefined && userTextMatchesPrompt(text, prompt);
-  });
-}
-
 export default function commitExtension(pi: ExtensionAPI): void {
   pi.registerFlag(COMMIT_FLAG, {
     description: "Launch the commit skill as a bounded one-shot flow",
     type: "boolean",
     default: false,
   });
-  pi.registerFlag(COMMIT_ENGLISH_FLAG, {
-    description: "Use English for the commit skill in --commit mode",
-    type: "boolean",
-    default: false,
-  });
-  pi.registerFlag(COMMIT_JAPANESE_FLAG, {
-    description: "Use Japanese for the commit skill in --commit mode",
-    type: "boolean",
-    default: false,
-  });
+  const getSharedFlags = registerOneShotSharedFlags(pi);
+  const cliFreeInputs = collectOneShotCliFreeInputs(COMMIT_FLAG);
+  const pendingInitialMessages = [...cliFreeInputs.initialMessages];
   pi.registerFlag(COMMIT_BRANCH_FLAG, {
     description: "Create a new branch before committing in --commit mode",
     type: "boolean",
     default: false,
-  });
-  pi.registerFlag(COMMIT_BASE_FLAG, {
-    description: "Base branch to switch to before creating --branch",
-    type: "string",
   });
 
   let launchAttempted = false;
@@ -213,11 +125,21 @@ export default function commitExtension(pi: ExtensionAPI): void {
     if (launchAttempted) return;
     launchAttempted = true;
 
+    const primaryFlagConflict = findOneShotPrimaryFlagConflict();
+    if (!primaryFlagConflict.ok) {
+      if (primaryFlagConflict.shouldReport) {
+        notifyIfUI(ctx, primaryFlagConflict.message, "error");
+        ctx.shutdown();
+      }
+      return;
+    }
+
+    const sharedFlags = getSharedFlags();
     const parsed = parseCommitLaunchOptions({
-      english: pi.getFlag(COMMIT_ENGLISH_FLAG),
-      japanese: pi.getFlag(COMMIT_JAPANESE_FLAG),
+      english: sharedFlags.english,
+      japanese: sharedFlags.japanese,
       branch: pi.getFlag(COMMIT_BRANCH_FLAG),
-      base: pi.getFlag(COMMIT_BASE_FLAG),
+      base: sharedFlags.base,
     });
     if (!parsed.ok) {
       notifyIfUI(ctx, parsed.message, "error");
@@ -237,10 +159,14 @@ export default function commitExtension(pi: ExtensionAPI): void {
     }
 
     try {
-      pi.setActiveTools(availableCommitTools(availableTools));
-      const prompt = buildCommitSkillPrompt(parsed.options);
+      pi.setActiveTools(availableOneShotTools(availableTools));
+      const prompt = appendOneShotFreeInput(
+        buildCommitSkillPrompt(parsed.options),
+        cliFreeInputs.all,
+      );
+      const expandedPrompt = expandOneShotSkillPrompt(pi, "commit", prompt);
       setBoundedQuestionnaire();
-      pi.sendUserMessage(prompt);
+      pi.sendUserMessage(expandedPrompt);
       launchedCommitPrompt = prompt;
     } catch (error) {
       clearActiveCommitRun();
@@ -253,9 +179,15 @@ export default function commitExtension(pi: ExtensionAPI): void {
     }
   });
 
+  if (pendingInitialMessages.length > 0) {
+    pi.on("input", async (event) => {
+      if (consumeOneShotFreeInput(pendingInitialMessages, event)) return { action: "handled" };
+    });
+  }
+
   pi.on("agent_end", async (event, ctx) => {
     if (!launchedCommitPrompt) return;
-    if (!agentEndIncludesUserPrompt(event.messages, launchedCommitPrompt)) return;
+    if (!agentEndIncludesSkillPrompt(event.messages, "commit", launchedCommitPrompt)) return;
     clearActiveCommitRun();
     ctx.shutdown();
   });
