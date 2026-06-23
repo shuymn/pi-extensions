@@ -29,6 +29,7 @@ pi config
 - `ask-user-question` — Let the agent ask structured clarification questions.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
 - `commit` — Launch the existing `/skill:commit` as a bounded one-shot flow with `--commit`.
+- `create-pr` — Launch the existing `/skill:create-pr` as a bounded one-shot flow with `--create-pr`.
 - `commandcode-provider` — Register the Command Code model provider with live model discovery and a fallback catalog.
 - `copy-file` — Add `/copy-file` to write the latest assistant message to `RESULT_<uuid>.md` in cwd.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
@@ -46,9 +47,9 @@ pi config
 - `todo` — Manage branch-local todos for multi-step work.
 - `vertex-claude-provider` — Register Claude models served through Google Vertex AI.
 
-## Commit one-shot flow
+## One-shot flows
 
-Use caller-provided session and model flags, then add `--commit` to launch the commit skill and exit after the agent run:
+Use caller-provided session and model flags, then add a one-shot flag to launch a skill and exit after the agent run:
 
 ```bash
 pi \
@@ -59,9 +60,18 @@ pi \
   --commit
 ```
 
-Optional commit flags: `--english`/`--japanese`, `--branch`, and `--base <branch>` with `--branch`.
+```bash
+pi \
+  --no-session \
+  --no-session-title \
+  --model 'opencode-go/deepseek-v4-flash:high' \
+  --fallback-model 'commandcode/deepseek/deepseek-v4-flash,deepseek/deepseek-v4-flash' \
+  --create-pr --japanese
+```
+
+Shared optional flags: `--english`/`--japanese` and `--base <branch>`. `--base` requires `--branch` with `--commit`, and cannot be used with `--update` for `--create-pr`. Commit-only flag: `--branch`. Create-pr-only flag: `--update`. Non-flag free-form CLI arguments are appended to the launched skill prompt.
 
 Dependencies:
 
-- `commit` requires `ask-user-question` because `--commit` launches only when the `ask_user_question` LLM Tool is available.
+- `commit` and `create-pr` require `ask-user-question` because these one-shot flows launch only when the `ask_user_question` LLM Tool is available.
 - `todo` imports `review` workflow events to suppress the todo widget while review runs.

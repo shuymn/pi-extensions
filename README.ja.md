@@ -27,6 +27,7 @@ pi config
 - `ask-user-question` — エージェントが構造化された確認質問を行えるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
 - `commit` — `--commit` で既存の `/skill:commit` を bounded one-shot flow として起動します。
+- `create-pr` — `--create-pr` で既存の `/skill:create-pr` を bounded one-shot flow として起動します。
 - `commandcode-provider` — Command Code の model provider を登録します。live model discovery と fallback catalog を含みます。
 - `copy-file` — `/copy-file` で最新の assistant message を cwd の `RESULT_<uuid>.md` に保存します。
 - `exit` — `/quit` の alias として `/exit` を追加し、resume command を表示します。
@@ -43,9 +44,9 @@ pi config
 - `todo` — multi-step work 用の branch-local todos を管理します。
 - `vertex-claude-provider` — Google Vertex AI 経由で提供される Claude models を登録します。
 
-## commit one-shot flow
+## one-shot flows
 
-セッションやモデルの flag は呼び出し元で指定し、`--commit` を追加すると commit skill を起動して agent run 終了後に exit します。
+セッションやモデルの flag は呼び出し元で指定し、one-shot flag を追加すると skill を起動して agent run 終了後に exit します。
 
 ```bash
 pi \
@@ -56,9 +57,18 @@ pi \
   --commit
 ```
 
-任意の commit flag は `--english`/`--japanese`、`--branch`、および `--branch` と一緒に使う `--base <branch>` です。
+```bash
+pi \
+  --no-session \
+  --no-session-title \
+  --model 'opencode-go/deepseek-v4-flash:high' \
+  --fallback-model 'commandcode/deepseek/deepseek-v4-flash,deepseek/deepseek-v4-flash' \
+  --create-pr --japanese
+```
+
+共通の任意 flag は `--english`/`--japanese` と `--base <branch>` です。`--base` は `--commit` では `--branch` と一緒に使い、`--create-pr` では `--update` と同時に使えません。commit 専用 flag は `--branch`、create-pr 専用 flag は `--update` です。flag 以外の自由入力は起動する skill prompt に追記されます。
 
 依存関係:
 
-- `commit` は `ask_user_question` LLM Tool が利用可能な場合だけ `--commit` を起動するため、`ask-user-question` が必要です。
+- `commit` と `create-pr` は `ask_user_question` LLM Tool が利用可能な場合だけ one-shot flow を起動するため、`ask-user-question` が必要です。
 - `todo` は review 実行中に todo widget を抑制するために `review` workflow events を import します。
