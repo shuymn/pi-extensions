@@ -94,8 +94,11 @@ describe("compact extension", () => {
     expect(tool.description).toContain("semantic checkpoint");
     expect(tool.promptSnippet).toContain("semantic checkpoint");
     expect(tool.promptGuidelines!.join("\n")).toContain("as the only tool");
+    expect(tool.promptGuidelines!.join("\n")).toContain("stopAfterCompaction");
     expect(tool.executionMode).toBe("sequential");
     expect(tool.parameters.properties.customInstructions).toBeDefined();
+    expect(tool.parameters.properties.continuationPrompt).toBeDefined();
+    expect(tool.parameters.properties.stopAfterCompaction).toBeDefined();
   });
 
   test("context hook appends a transient warning near the built-in compaction threshold", async () => {
@@ -164,9 +167,11 @@ describe("compact extension", () => {
         accepted: true,
         status: "scheduled",
         customInstructions: "Focus on active implementation state.",
+        stopAfterCompaction: false,
       },
     });
     expect(compactCalls).toHaveLength(0);
+    expect(pi.sentMessages).toEqual([]);
     expect(ui.notifications.at(-1)).toEqual({
       message: "コンテキスト圧縮を予約しました。ターン終了時に実行します。",
       level: "info",
@@ -178,6 +183,7 @@ describe("compact extension", () => {
       details: { accepted: false, status: "pending" },
     });
     expect(duplicate.content[0].text).toContain("already scheduled");
+    expect(pi.sentMessages).toEqual([]);
 
     await turnEnd({ turnIndex: 0 }, ctx);
     expect(compactCalls).toHaveLength(1);
@@ -186,6 +192,7 @@ describe("compact extension", () => {
       message: "コンテキスト圧縮を開始しました。",
       level: "info",
     });
+    expect(pi.sentMessages).toEqual([]);
 
     await turnEnd({ turnIndex: 1 }, ctx);
     expect(compactCalls).toHaveLength(1);
@@ -202,9 +209,66 @@ describe("compact extension", () => {
       message: "コンテキスト圧縮が完了しました。",
       level: "info",
     });
+    expect(pi.sentMessages).toHaveLength(1);
+    expect(pi.sentMessages[0]!.message).toMatchObject({
+      customType: "compact-continuation",
+      display: false,
+      details: { source: COMPACT_TOOL_NAME },
+    });
+    expect(pi.sentMessages[0]!.message.content).toContain("Context compaction completed.");
+    expect(pi.sentMessages[0]!.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
     expect(await contextHandler({ messages: [] }, ctx)).toMatchObject({
       messages: expect.any(Array),
     });
+  });
+
+  test("compact_context uses custom continuation prompt and supports stopAfterCompaction", async () => {
+    const pi = createFakePi<ToolDefinition>();
+    compactExtension(pi as never);
+    const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
+    const turnEnd = pi.getEventHandlers("turn_end")[0]!;
+    const { ctx, compactCalls } = createCtx({ cwd: tempDir });
+
+    const scheduled = await tool.execute(
+      "call",
+      { continuationPrompt: "  Resume verification from the compacted summary.  " },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(scheduled).toMatchObject({
+      details: {
+        accepted: true,
+        status: "scheduled",
+        continuationPrompt: "Resume verification from the compacted summary.",
+        stopAfterCompaction: false,
+      },
+    });
+
+    await turnEnd({ turnIndex: 0 }, ctx);
+    compactCalls[0]!.onComplete?.({ ok: true });
+
+    expect(pi.sentMessages).toHaveLength(1);
+    expect(pi.sentMessages[0]!.message.content).toBe(
+      "Resume verification from the compacted summary.",
+    );
+    pi.sentMessages.length = 0;
+
+    const stopped = await tool.execute(
+      "call",
+      { stopAfterCompaction: true },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(stopped).toMatchObject({
+      details: { accepted: true, status: "scheduled", stopAfterCompaction: true },
+    });
+
+    await turnEnd({ turnIndex: 1 }, ctx);
+    compactCalls[1]!.onComplete?.({ ok: true });
+
+    expect(pi.sentMessages).toEqual([]);
   });
 
   test("turn_end without a pending request does not compact", async () => {
@@ -232,6 +296,7 @@ describe("compact extension", () => {
       message: "コンテキスト圧縮に失敗しました: summary model failed",
       level: "error",
     });
+    expect(pi.sentMessages).toEqual([]);
 
     const rescheduled = await tool.execute("call", {}, undefined, undefined, ctx);
     expect(rescheduled).toMatchObject({ details: { accepted: true, status: "scheduled" } });
@@ -256,6 +321,7 @@ describe("compact extension", () => {
       message: "コンテキスト圧縮に失敗しました: compact unavailable",
       level: "error",
     });
+    expect(pi.sentMessages).toEqual([]);
     const rescheduled = await tool.execute("call", {}, undefined, undefined, ctx);
     expect(rescheduled).toMatchObject({ details: { accepted: true, status: "scheduled" } });
   });

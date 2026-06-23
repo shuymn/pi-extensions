@@ -105,7 +105,9 @@ describe("compact policy", () => {
   test("suppresses warnings when usage is unknown, invalid, pending, or compacting", () => {
     const usage = { tokens: 163_136, contextWindow: 200_000 };
     const state = initialCompactRequestState();
-    const pending = scheduleCompactRequest(state, "Focus on current task");
+    const pending = scheduleCompactRequest(state, {
+      customInstructions: "Focus on current task",
+    });
     expect(pending.accepted).toBe(true);
     if (!pending.accepted) return;
     const taken = takePendingCompactRequest(pending.state);
@@ -147,11 +149,20 @@ describe("compact policy", () => {
 
   test("tracks pending and compacting state transitions without duplicate scheduling", () => {
     const idle = initialCompactRequestState();
-    const scheduled = scheduleCompactRequest(idle, "  Focus on changed files.  ");
+    const scheduled = scheduleCompactRequest(idle, {
+      customInstructions: "  Focus on changed files.  ",
+      continuationPrompt: "  Continue verification after compaction.  ",
+      stopAfterCompaction: true,
+    });
 
     expect(scheduled).toEqual({
       accepted: true,
-      state: { phase: "pending", customInstructions: "Focus on changed files." },
+      state: {
+        phase: "pending",
+        customInstructions: "Focus on changed files.",
+        continuationPrompt: "Continue verification after compaction.",
+        stopAfterCompaction: true,
+      },
     });
     if (!scheduled.accepted) return;
 
@@ -166,6 +177,8 @@ describe("compact policy", () => {
       taken: true,
       state: { phase: "compacting" },
       customInstructions: "Focus on changed files.",
+      continuationPrompt: "Continue verification after compaction.",
+      stopAfterCompaction: true,
     });
     if (!taken.taken) return;
 
@@ -178,6 +191,25 @@ describe("compact policy", () => {
       taken: false,
       state: { phase: "idle" },
       reason: "not_pending",
+    });
+  });
+
+  test("defaults continuation state when optional prompts are blank or omitted", () => {
+    const scheduled = scheduleCompactRequest(initialCompactRequestState(), {
+      customInstructions: "  ",
+      continuationPrompt: "  ",
+    });
+
+    expect(scheduled).toEqual({
+      accepted: true,
+      state: { phase: "pending", stopAfterCompaction: false },
+    });
+    if (!scheduled.accepted) return;
+
+    expect(takePendingCompactRequest(scheduled.state)).toEqual({
+      taken: true,
+      state: { phase: "compacting" },
+      stopAfterCompaction: false,
     });
   });
 

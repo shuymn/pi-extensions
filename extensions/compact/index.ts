@@ -15,6 +15,15 @@ import {
   takePendingCompactRequest,
 } from "./policy";
 
+const DEFAULT_CONTINUATION_PROMPT = [
+  "Context compaction completed.",
+  "Continue the current user-requested work from the compaction summary, recent context, and any active reminders.",
+  "Do not repeat completed steps.",
+  "Do not request another compaction immediately unless context is still high and the next safe checkpoint has been reached.",
+].join(" ");
+
+const COMPACT_CONTINUATION_CUSTOM_TYPE = "compact-continuation";
+
 const COMPACT_TOOL_PARAMETERS = Type.Object({
   customInstructions: Type.Optional(
     Type.String({
@@ -22,15 +31,34 @@ const COMPACT_TOOL_PARAMETERS = Type.Object({
         "Optional instructions for Pi's compaction summary. Use only when a concise focus will make the checkpoint more useful.",
     }),
   ),
+  continuationPrompt: Type.Optional(
+    Type.String({
+      description:
+        "Optional follow-up instruction to run after successful compaction. Use a concise prompt for continuing unfinished user-requested work.",
+    }),
+  ),
+  stopAfterCompaction: Type.Optional(
+    Type.Boolean({
+      description:
+        "When true, compact and stop instead of automatically triggering a follow-up turn. Use only when no continuation is needed.",
+    }),
+  ),
 });
 
 type CompactToolParams = Static<typeof COMPACT_TOOL_PARAMETERS>;
 
-type CompactToolDetails = {
-  accepted: boolean;
-  status: "scheduled" | "pending" | "compacting";
-  customInstructions?: string;
-};
+type CompactToolDetails =
+  | {
+      accepted: true;
+      status: "scheduled";
+      customInstructions?: string;
+      continuationPrompt?: string;
+      stopAfterCompaction: boolean;
+    }
+  | {
+      accepted: false;
+      status: "pending" | "compacting";
+    };
 
 function appendTransientWarning(messages: ContextEvent["messages"]): ContextEvent["messages"] {
   return [
@@ -65,6 +93,20 @@ function notifyCompactionFailed(ctx: Pick<ExtensionContext, "hasUI" | "ui">, err
   notifyIfUI(ctx, `コンテキスト圧縮に失敗しました: ${error.message}`, "error");
 }
 
+function sendContinuation(pi: ExtensionAPI, continuationPrompt?: string): void {
+  pi.sendMessage(
+    {
+      customType: COMPACT_CONTINUATION_CUSTOM_TYPE,
+      content: continuationPrompt ?? DEFAULT_CONTINUATION_PROMPT,
+      display: false,
+      details: {
+        source: COMPACT_TOOL_NAME,
+      },
+    },
+    { triggerTurn: true, deliverAs: "followUp" },
+  );
+}
+
 export default function compactExtension(pi: ExtensionAPI) {
   let state: CompactRequestState = initialCompactRequestState();
 
@@ -78,11 +120,12 @@ export default function compactExtension(pi: ExtensionAPI) {
       `Use ${COMPACT_TOOL_NAME} only when context usage is high and the current atomic step is complete.`,
       `Call ${COMPACT_TOOL_NAME} as the only tool; do not combine it with other tool calls in the same response.`,
       `Do not use ${COMPACT_TOOL_NAME} as a general summarization tool or as a substitute for answering the user.`,
+      "By default, compaction will trigger a follow-up turn to continue unfinished work; set stopAfterCompaction only when no continuation is needed.",
     ],
     parameters: COMPACT_TOOL_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, params: CompactToolParams, _signal, _onUpdate, ctx) {
-      const result = scheduleCompactRequest(state, params.customInstructions);
+      const result = scheduleCompactRequest(state, params);
       if (!result.accepted) {
         const status = result.reason;
         return terminatingTextResult(compactPendingMessage(status), {
@@ -100,6 +143,8 @@ export default function compactExtension(pi: ExtensionAPI) {
           accepted: true,
           status: "scheduled",
           customInstructions: state.customInstructions,
+          continuationPrompt: state.continuationPrompt,
+          stopAfterCompaction: state.stopAfterCompaction,
         } satisfies CompactToolDetails,
       );
     },
@@ -132,6 +177,7 @@ export default function compactExtension(pi: ExtensionAPI) {
         onComplete: () => {
           state = finishCompactRequest();
           notifyCompactionCompleted(ctx);
+          if (!pending.stopAfterCompaction) sendContinuation(pi, pending.continuationPrompt);
         },
         onError: (error) => {
           state = finishCompactRequest();

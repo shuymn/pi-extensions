@@ -13,19 +13,34 @@ export const DEFAULT_WARNING_MARGIN_TOKENS = 4_096;
 const MAX_WARNING_MARGIN_CONTEXT_RATIO = 0.1;
 const COMPACTION_SETTINGS_KEY = "compaction";
 
-export type CompactPhase = "idle" | "pending" | "compacting";
+export type CompactRequestState =
+  | { phase: "idle" }
+  | {
+      phase: "pending";
+      customInstructions?: string;
+      continuationPrompt?: string;
+      stopAfterCompaction: boolean;
+    }
+  | { phase: "compacting" };
 
-export type CompactRequestState = {
-  phase: CompactPhase;
+export type CompactScheduleOptions = {
   customInstructions?: string;
+  continuationPrompt?: string;
+  stopAfterCompaction?: boolean;
 };
 
 export type CompactScheduleResult =
-  | { accepted: true; state: CompactRequestState }
+  | { accepted: true; state: Extract<CompactRequestState, { phase: "pending" }> }
   | { accepted: false; state: CompactRequestState; reason: "pending" | "compacting" };
 
 export type TakePendingResult =
-  | { taken: true; state: CompactRequestState; customInstructions?: string }
+  | {
+      taken: true;
+      state: Extract<CompactRequestState, { phase: "compacting" }>;
+      customInstructions?: string;
+      continuationPrompt?: string;
+      stopAfterCompaction: boolean;
+    }
   | { taken: false; state: CompactRequestState; reason: "not_pending" };
 
 export type ContextUsageInput = {
@@ -98,23 +113,28 @@ export function initialCompactRequestState(): CompactRequestState {
   return { phase: "idle" };
 }
 
-function normalizeCustomInstructions(customInstructions: string | undefined): string | undefined {
-  const trimmed = customInstructions?.trim();
+function normalizeOptionalText(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
 }
 
 export function scheduleCompactRequest(
   state: CompactRequestState,
-  customInstructions?: string,
+  options: CompactScheduleOptions = {},
 ): CompactScheduleResult {
   if (state.phase === "pending") return { accepted: false, state, reason: "pending" };
   if (state.phase === "compacting") return { accepted: false, state, reason: "compacting" };
+
+  const customInstructions = normalizeOptionalText(options.customInstructions);
+  const continuationPrompt = normalizeOptionalText(options.continuationPrompt);
 
   return {
     accepted: true,
     state: {
       phase: "pending",
-      customInstructions: normalizeCustomInstructions(customInstructions),
+      ...(customInstructions ? { customInstructions } : {}),
+      ...(continuationPrompt ? { continuationPrompt } : {}),
+      stopAfterCompaction: options.stopAfterCompaction === true,
     },
   };
 }
@@ -124,7 +144,9 @@ export function takePendingCompactRequest(state: CompactRequestState): TakePendi
 
   return {
     taken: true,
-    customInstructions: state.customInstructions,
+    ...(state.customInstructions ? { customInstructions: state.customInstructions } : {}),
+    ...(state.continuationPrompt ? { continuationPrompt: state.continuationPrompt } : {}),
+    stopAfterCompaction: state.stopAfterCompaction,
     state: { phase: "compacting" },
   };
 }
