@@ -1,27 +1,19 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { formatModelSpecWithThinking, type ModelSpec, parseModelSpec } from "../../lib/model-spec";
+import { shouldFallbackForError } from "../../lib/model-fallback";
+import {
+  formatModelSpecWithThinking,
+  type ModelSpec,
+  parseModelSpecList,
+} from "../../lib/model-spec";
 import { notifyIfUI } from "../../lib/tui";
 
+export { shouldFallbackForError } from "../../lib/model-fallback";
+
 export const FALLBACK_MODEL_FLAG = "fallback-model";
-const RETRYABLE_ERROR_PATTERN =
-  /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay|model.?unavailable|model.?not.?available|model.?not.?found/i;
-const NON_FALLBACK_ERROR_PATTERN =
-  /\b(401|403|unauthorized|forbidden|invalid api key|authentication|authorization)\b/i;
 
 export function parseFallbackModelList(raw: unknown): ModelSpec[] {
-  if (typeof raw !== "string") return [];
-
-  return raw
-    .split(",")
-    .map(parseModelSpec)
-    .filter((entry): entry is ModelSpec => entry !== undefined);
-}
-
-export function shouldFallbackForError(errorMessage: unknown): boolean {
-  if (typeof errorMessage !== "string" || errorMessage.trim() === "") return false;
-  if (NON_FALLBACK_ERROR_PATTERN.test(errorMessage)) return false;
-  return RETRYABLE_ERROR_PATTERN.test(errorMessage);
+  return parseModelSpecList(raw);
 }
 
 function sameModel(

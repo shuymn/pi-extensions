@@ -71,3 +71,13 @@ export function latestAssistantWasAborted(messages: unknown): boolean {
     return false;
   }
 }
+
+export function getLatestAssistantError(messages: unknown): string | undefined {
+  try {
+    const message = findLatestAssistantMessage(messages);
+    if (message?.stopReason !== "error") return undefined;
+    return typeof message.errorMessage === "string" ? message.errorMessage : undefined;
+  } catch {
+    return undefined;
+  }
+}
