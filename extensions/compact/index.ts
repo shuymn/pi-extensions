@@ -109,6 +109,12 @@ function sendContinuation(pi: ExtensionAPI, continuationPrompt?: string): void {
 
 export default function compactExtension(pi: ExtensionAPI) {
   let state: CompactRequestState = initialCompactRequestState();
+  let warningAlreadyInjected = false;
+
+  function finishCompaction(): void {
+    state = finishCompactRequest();
+    warningAlreadyInjected = false;
+  }
 
   pi.registerTool({
     name: COMPACT_TOOL_NAME,
@@ -157,8 +163,14 @@ export default function compactExtension(pi: ExtensionAPI) {
       state,
     });
 
-    if (!decision.inject) return;
+    if (!decision.inject) {
+      if (decision.reason === "not_near_threshold") warningAlreadyInjected = false;
+      return;
+    }
 
+    if (warningAlreadyInjected) return;
+
+    warningAlreadyInjected = true;
     return {
       messages: appendTransientWarning(event.messages),
     };
@@ -175,17 +187,17 @@ export default function compactExtension(pi: ExtensionAPI) {
       ctx.compact({
         customInstructions: pending.customInstructions,
         onComplete: () => {
-          state = finishCompactRequest();
+          finishCompaction();
           notifyCompactionCompleted(ctx);
           if (!pending.stopAfterCompaction) sendContinuation(pi, pending.continuationPrompt);
         },
         onError: (error) => {
-          state = finishCompactRequest();
+          finishCompaction();
           notifyCompactionFailed(ctx, error);
         },
       });
     } catch (error) {
-      state = finishCompactRequest();
+      finishCompaction();
       notifyCompactionFailed(ctx, error instanceof Error ? error : new Error(String(error)));
     }
   });

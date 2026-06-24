@@ -68,6 +68,13 @@ function createCtx({
   };
 }
 
+async function expectWarningInjectedOnce(contextHandler: any, ctx: any): Promise<void> {
+  expect(await contextHandler({ messages: [] }, ctx)).toMatchObject({
+    messages: expect.any(Array),
+  });
+  expect(await contextHandler({ messages: [] }, ctx)).toBeUndefined();
+}
+
 describe("compact extension", () => {
   let tempDir: string;
 
@@ -101,18 +108,24 @@ describe("compact extension", () => {
     expect(tool.parameters.properties.stopAfterCompaction).toBeDefined();
   });
 
-  test("context hook appends a transient warning near the built-in compaction threshold", async () => {
+  test("context hook appends a transient warning once per high-usage cycle", async () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
-    const { ctx } = createCtx({ cwd: tempDir });
+    let usage = { tokens: 150_000, contextWindow: 200_000 };
+    const { ctx } = createCtx({
+      cwd: tempDir,
+      usage: undefined,
+    });
+    ctx.getContextUsage = () => usage;
     const event = {
       messages: [{ role: "user", content: [{ type: "text", text: "original" }], timestamp: 1 }],
     };
+    const contextHandler = pi.getEventHandlers("context")[0]!;
 
-    const result = await pi.getEventHandlers("context")[0]!(event, ctx);
+    const first = await contextHandler(event, ctx);
 
-    expect(result).toBeDefined();
-    const messages = (result as any).messages;
+    expect(first).toBeDefined();
+    const messages = (first as any).messages;
     expect(messages).toHaveLength(2);
     expect(messages[0]).toBe(event.messages[0]);
     expect(event.messages).toHaveLength(1);
@@ -127,6 +140,14 @@ describe("compact extension", () => {
       ],
     });
     expect(warningText).toContain("Pi's built-in auto-compaction threshold");
+
+    expect(await contextHandler(event, ctx)).toBeUndefined();
+
+    usage = { tokens: 149_999, contextWindow: 200_000 };
+    expect(await contextHandler(event, ctx)).toBeUndefined();
+
+    usage = { tokens: 150_000, contextWindow: 200_000 };
+    expect(await contextHandler(event, ctx)).toMatchObject({ messages: expect.any(Array) });
     expect(pi.sentMessages).toEqual([]);
     expect(pi.appendedEntries).toEqual([]);
   });
@@ -153,6 +174,8 @@ describe("compact extension", () => {
     const turnEnd = pi.getEventHandlers("turn_end")[0]!;
     const contextHandler = pi.getEventHandlers("context")[0]!;
     const { ctx, ui, compactCalls } = createCtx({ cwd: tempDir });
+
+    await expectWarningInjectedOnce(contextHandler, ctx);
 
     const scheduled = await tool.execute(
       "call",
@@ -217,9 +240,7 @@ describe("compact extension", () => {
     });
     expect(pi.sentMessages[0]!.message.content).toContain("Context compaction completed.");
     expect(pi.sentMessages[0]!.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
-    expect(await contextHandler({ messages: [] }, ctx)).toMatchObject({
-      messages: expect.any(Array),
-    });
+    await expectWarningInjectedOnce(contextHandler, ctx);
   });
 
   test("compact_context uses custom continuation prompt and supports stopAfterCompaction", async () => {
@@ -286,7 +307,10 @@ describe("compact extension", () => {
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
     const turnEnd = pi.getEventHandlers("turn_end")[0]!;
+    const contextHandler = pi.getEventHandlers("context")[0]!;
     const { ctx, ui, compactCalls } = createCtx({ cwd: tempDir });
+
+    await expectWarningInjectedOnce(contextHandler, ctx);
 
     await tool.execute("call", {}, undefined, undefined, ctx);
     await turnEnd({ turnIndex: 0 }, ctx);
@@ -297,6 +321,7 @@ describe("compact extension", () => {
       level: "error",
     });
     expect(pi.sentMessages).toEqual([]);
+    await expectWarningInjectedOnce(contextHandler, ctx);
 
     const rescheduled = await tool.execute("call", {}, undefined, undefined, ctx);
     expect(rescheduled).toMatchObject({ details: { accepted: true, status: "scheduled" } });
@@ -307,12 +332,15 @@ describe("compact extension", () => {
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
     const turnEnd = pi.getEventHandlers("turn_end")[0]!;
+    const contextHandler = pi.getEventHandlers("context")[0]!;
     const { ctx, ui } = createCtx({
       cwd: tempDir,
       compactImpl: () => {
         throw new Error("compact unavailable");
       },
     });
+
+    await expectWarningInjectedOnce(contextHandler, ctx);
 
     await tool.execute("call", {}, undefined, undefined, ctx);
     await turnEnd({ turnIndex: 0 }, ctx);
@@ -322,6 +350,7 @@ describe("compact extension", () => {
       level: "error",
     });
     expect(pi.sentMessages).toEqual([]);
+    await expectWarningInjectedOnce(contextHandler, ctx);
     const rescheduled = await tool.execute("call", {}, undefined, undefined, ctx);
     expect(rescheduled).toMatchObject({ details: { accepted: true, status: "scheduled" } });
   });
