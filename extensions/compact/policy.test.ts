@@ -55,24 +55,24 @@ describe("compact policy", () => {
     expect(builtInAutoCompactThreshold(undefined, 16_384)).toBeUndefined();
   });
 
-  test("warns only in the bounded window before Pi's built-in auto-compaction threshold", () => {
+  test("warns from 75 percent of context until Pi's built-in auto-compaction threshold", () => {
     const state = initialCompactRequestState();
     const base = { usage: { contextWindow: 200_000 }, reserveTokens: 32_768, state };
 
     expect(
-      decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 163_135 } }),
+      decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 149_999 } }),
     ).toMatchObject({
       inject: false,
       reason: "not_near_threshold",
-      warningThreshold: 163_136,
+      warningThreshold: 150_000,
     });
     expect(
-      decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 163_136 } }),
+      decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 150_000 } }),
     ).toMatchObject({
       inject: true,
       autoCompactThreshold: 167_232,
-      warningThreshold: 163_136,
-      warningMarginTokens: 4_096,
+      warningThreshold: 150_000,
+      warningMarginTokens: 17_232,
     });
     expect(
       decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 167_231 } }),
@@ -87,17 +87,25 @@ describe("compact policy", () => {
     });
   });
 
-  test("clamps warning margin for small context windows", () => {
-    const decision = decideCompactWarning({
-      usage: { tokens: 6_300, contextWindow: 8_000 },
-      reserveTokens: 1_024,
-      state: initialCompactRequestState(),
-    });
+  test("falls back to a bounded margin when 75 percent is beyond auto-compaction", () => {
+    const state = initialCompactRequestState();
+    const base = { usage: { contextWindow: 8_000 }, reserveTokens: 3_000, state };
 
-    expect(decision).toMatchObject({
+    expect(
+      decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 4_199 } }),
+    ).toMatchObject({
+      inject: false,
+      reason: "not_near_threshold",
+      autoCompactThreshold: 5_000,
+      warningThreshold: 4_200,
+      warningMarginTokens: 800,
+    });
+    expect(
+      decideCompactWarning({ ...base, usage: { ...base.usage, tokens: 4_200 } }),
+    ).toMatchObject({
       inject: true,
-      autoCompactThreshold: 6_976,
-      warningThreshold: 6_176,
+      autoCompactThreshold: 5_000,
+      warningThreshold: 4_200,
       warningMarginTokens: 800,
     });
   });

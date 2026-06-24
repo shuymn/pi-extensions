@@ -9,6 +9,7 @@ import {
 
 export const COMPACT_TOOL_NAME = "compact_context";
 export const DEFAULT_RESERVE_TOKENS = DEFAULT_COMPACTION_SETTINGS.reserveTokens;
+export const DEFAULT_WARNING_CONTEXT_RATIO = 0.75;
 export const DEFAULT_WARNING_MARGIN_TOKENS = 4_096;
 const MAX_WARNING_MARGIN_CONTEXT_RATIO = 0.1;
 const COMPACTION_SETTINGS_KEY = "compaction";
@@ -187,6 +188,25 @@ function warningMarginTokens(
   return Math.min(fixedMargin, maxByContext, maxByThreshold);
 }
 
+function warningThresholdTokens({
+  contextWindow,
+  autoCompactThreshold,
+  fallbackMargin,
+}: {
+  contextWindow: number;
+  autoCompactThreshold: number;
+  fallbackMargin: number;
+}): { threshold: number; margin: number } | undefined {
+  const ratioThreshold = Math.floor(contextWindow * DEFAULT_WARNING_CONTEXT_RATIO);
+  if (ratioThreshold < autoCompactThreshold) {
+    return { threshold: ratioThreshold, margin: autoCompactThreshold - ratioThreshold };
+  }
+
+  const margin = warningMarginTokens(contextWindow, autoCompactThreshold, fallbackMargin);
+  if (margin <= 0) return undefined;
+  return { threshold: autoCompactThreshold - margin, margin };
+}
+
 export function decideCompactWarning({
   usage,
   reserveTokens,
@@ -236,8 +256,12 @@ export function decideCompactWarning({
     };
   }
 
-  const margin = warningMarginTokens(contextWindow, autoCompactThreshold, warningMargin);
-  if (margin <= 0) {
+  const warningThreshold = warningThresholdTokens({
+    contextWindow,
+    autoCompactThreshold,
+    fallbackMargin: warningMargin,
+  });
+  if (!warningThreshold) {
     return {
       inject: false,
       reason: "no_safe_warning_window",
@@ -248,8 +272,8 @@ export function decideCompactWarning({
     };
   }
 
-  const warningThreshold = autoCompactThreshold - margin;
-  if (tokens < warningThreshold) {
+  const { threshold, margin } = warningThreshold;
+  if (tokens < threshold) {
     return {
       inject: false,
       reason: "not_near_threshold",
@@ -257,7 +281,7 @@ export function decideCompactWarning({
       contextWindow,
       reserveTokens: reserve,
       autoCompactThreshold,
-      warningThreshold,
+      warningThreshold: threshold,
       warningMarginTokens: margin,
     };
   }
@@ -268,7 +292,7 @@ export function decideCompactWarning({
     contextWindow,
     reserveTokens: reserve,
     autoCompactThreshold,
-    warningThreshold,
+    warningThreshold: threshold,
     warningMarginTokens: margin,
   };
 }
