@@ -8,6 +8,12 @@
 - LLM-facing metadata（tool `description`, `promptSnippet`, `promptGuidelines`, parameter `description`）は英語を基本にする。
 - コマンド名、tool 名、CLI 出力、外部サービス固有語は原語を維持する。
 
+## Slash Command 公開方針
+
+- 明示的に人が呼ぶ workflow（例: `/plan`, `/impl`, `/review`, `/research`, `/workflow`, `/workflows`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
+- `ExtensionCommandContext` が必要だが、恒久的な個別コマンドとして見せる必要がない runtime 操作は allowlist された `/invoke <operation> [JSON args]` 経由にする。
+- `/invoke` は Slash Command 用の router であり、LLM Tool を置き換えるものではない。既存 Tool を `/invoke` 配下へ移動しない。
+
 ## TUI component
 
 - 検索可能な単一選択は `lib/tui.ts` の `selectFuzzy()` を使う。
