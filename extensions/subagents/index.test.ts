@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
 let uuidCounter = 0;
@@ -19,6 +22,7 @@ type SessionBehavior = {
   promptError?: Error;
   blockPrompt?: boolean;
   initialMessages?: Array<{ role: string; content: unknown }>;
+  disposeError?: Error;
 };
 type CreatedSession = any;
 
@@ -50,6 +54,7 @@ const createAgentSessionCalls: any[] = [];
 const loaderInstances: any[] = [];
 const createdSessions: CreatedSession[] = [];
 const createdPis: any[] = [];
+const tempDirs: string[] = [];
 let nextBehaviors: SessionBehavior[] = [];
 
 const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
@@ -88,13 +93,25 @@ const READ_ONLY_SUBAGENT_TOOL_NAMES = [
   "bash",
   ...INVESTIGATION_TOOL_NAMES,
 ];
+const DELEGATION_TOOL_NAME = "spawn_subagent";
+const SORTED_DELEGATING_INVESTIGATION_TOOL_NAMES = [
+  ...SORTED_INVESTIGATION_TOOL_NAMES,
+  DELEGATION_TOOL_NAME,
+].sort();
+const DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES = [
+  ...DEFAULT_SUBAGENT_TOOL_NAMES,
+  DELEGATION_TOOL_NAME,
+];
+const READ_ONLY_DELEGATING_SUBAGENT_TOOL_NAMES = [
+  ...READ_ONLY_SUBAGENT_TOOL_NAMES,
+  DELEGATION_TOOL_NAME,
+];
 const EXCLUDED_TOOL_NAMES = [
   "deep_research",
   "tavily_research",
   "workflow",
   "review",
   "todo",
-  "spawn_subagent",
   "get_subagent_result",
   "stop_subagent",
   "list_subagents",
@@ -168,6 +185,7 @@ function createSession(behavior: SessionBehavior) {
     },
     dispose() {
       disposed = true;
+      if (behavior.disposeError) throw behavior.disposeError;
     },
   };
   createdSessions.push(session);
@@ -246,6 +264,7 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
     const session = createSession(nextBehaviors.shift() ?? {});
     (session as any).activeTools = loader.activeTools;
     (session as any).registeredTools = [...loader.registeredTools].sort();
+    (session as any).customTools = options.customTools ?? [];
     return { session };
   },
 }));
@@ -273,12 +292,28 @@ function createFakePi() {
   return pi;
 }
 
-function createContext() {
+type ContextOverrides = Partial<{
+  cwd: string;
+  modelRegistry: { id: string; find?: (provider: string, model: string) => unknown };
+  model: unknown;
+  getSystemPrompt: () => string;
+}>;
+
+function tempProjectSettings(settings: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
+  tempDirs.push(dir);
+  mkdirSync(join(dir, ".pi"), { recursive: true });
+  writeFileSync(join(dir, ".pi", "settings.json"), `${JSON.stringify(settings)}\n`, "utf8");
+  return dir;
+}
+
+function createContext(overrides: ContextOverrides = {}) {
   return {
     cwd: "/repo",
     modelRegistry: { id: "registry" },
     model: { name: "model" },
     getSystemPrompt: () => "parent system prompt",
+    ...overrides,
   };
 }
 
@@ -292,6 +327,14 @@ async function waitForCreatedSession(index = 0): Promise<CreatedSession> {
     await Promise.resolve();
   }
   throw new Error(`session ${index} was not created`);
+}
+
+function findDelegationTool(session: CreatedSession): ToolDefinition {
+  const tool = session.customTools.find(
+    (candidate: ToolDefinition) => candidate.name === DELEGATION_TOOL_NAME,
+  );
+  if (!tool) throw new Error("spawn_subagent tool not found");
+  return tool;
 }
 
 async function cleanupRecords() {
@@ -310,6 +353,7 @@ afterEach(async () => {
   createAgentSessionCalls.splice(0);
   loaderInstances.splice(0);
   createdSessions.splice(0);
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
 describe("subagents extension", () => {
@@ -334,8 +378,37 @@ describe("subagents extension", () => {
         readOnly: { type: "boolean", optional: true },
       },
     });
+    expect(pi.tools.get("spawn_subagent")!.parameters).toMatchObject({
+      properties: {
+        modelTier: { enum: ["medium", "small"], optional: true },
+      },
+    });
     expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Default subagents receive read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace",
+      "Default subagents receive read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent",
+    );
+    expect(pi.tools.get("spawn_subagent")!.description).toContain(
+      "Top-level calls inherit the current model unless modelTier is explicitly set",
+    );
+    expect(pi.tools.get("spawn_subagent")!.description).toContain(
+      "delegated calls from an isolated session default omitted modelTier to medium",
+    );
+    expect(pi.tools.get("spawn_subagent")!.description).toContain(
+      "Reserve small for bounded, easy-to-check investigation whose output will be verified before use",
+    );
+    expect(pi.tools.get("spawn_subagent")!.description).toContain(
+      "within one additional delegation level",
+    );
+    expect(pi.tools.get("spawn_subagent")!.description).toContain(
+      "Use get_subagent_result to check status or retrieve the result.",
+    );
+    expect(pi.tools.get("spawn_subagent")!.description).not.toContain("notifies when complete");
+    expect(
+      (pi.tools.get("spawn_subagent")!.parameters as any).properties.background.description,
+    ).toContain("use get_subagent_result to check status or retrieve the result");
+    expect(
+      (pi.tools.get("spawn_subagent")!.parameters as any).properties.modelTier.description,
+    ).toContain(
+      'Use "small" only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples; verify results before relying on them.',
     );
   });
 
@@ -365,19 +438,19 @@ describe("subagents extension", () => {
     expect(updates).toEqual(["Subagent id000001 running...\n\nfinal answer"]);
     expect(createdSessions[0].name).toBe("subagent#id000001");
     expect(createdSessions[0].disposed).toBe(true);
-    expect(createdSessions[0].registeredTools).toEqual(SORTED_INVESTIGATION_TOOL_NAMES);
-    expect(createdSessions[0].activeTools).toEqual(DEFAULT_SUBAGENT_TOOL_NAMES);
+    expect(createdSessions[0].registeredTools).toEqual(SORTED_DELEGATING_INVESTIGATION_TOOL_NAMES);
+    expect(createdSessions[0].activeTools).toEqual(DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES);
     expect(createAgentSessionCalls[0]).toMatchObject({
       cwd: "/repo",
       agentDir: "/agent-dir",
       thinkingLevel: "high",
-      tools: DEFAULT_SUBAGENT_TOOL_NAMES,
+      tools: DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES,
       model: { name: "model" },
       modelRegistry: { id: "registry" },
     });
     expect(
       createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
-    ).toEqual(INVESTIGATION_TOOL_NAMES);
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, DELEGATION_TOOL_NAME]);
     for (const excluded of EXCLUDED_TOOL_NAMES) {
       expect(createAgentSessionCalls[0].tools).not.toContain(excluded);
       expect(createdSessions[0].registeredTools).not.toContain(excluded);
@@ -388,7 +461,19 @@ describe("subagents extension", () => {
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("parent system prompt");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("Working directory: /repo");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Default subagents have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace.",
+      "Default sessions have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
+    );
+    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
+      "When an independent focused check would materially improve quality or confidence, you may use spawn_subagent.",
+    );
+    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
+      "Verify and integrate delegated results before relying on them.",
+    );
+    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
+      "Use small only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples.",
+    );
+    expect(loaderInstances[0].options.systemPromptOverride()).not.toContain(
+      "Do not call or simulate subagents recursively.",
     );
   });
 
@@ -408,27 +493,608 @@ describe("subagents extension", () => {
         createContext(),
       );
 
-    expect(createAgentSessionCalls[0].tools).toEqual(READ_ONLY_SUBAGENT_TOOL_NAMES);
+    expect(createAgentSessionCalls[0].tools).toEqual(READ_ONLY_DELEGATING_SUBAGENT_TOOL_NAMES);
     expect(
       createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
-    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash"]);
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash", DELEGATION_TOOL_NAME]);
     expect(createdSessions[0].registeredTools).toEqual([
       "bash",
-      ...SORTED_INVESTIGATION_TOOL_NAMES,
+      ...SORTED_DELEGATING_INVESTIGATION_TOOL_NAMES,
     ]);
-    expect(createdSessions[0].activeTools).toEqual(READ_ONLY_SUBAGENT_TOOL_NAMES);
+    expect(createdSessions[0].activeTools).toEqual(READ_ONLY_DELEGATING_SUBAGENT_TOOL_NAMES);
     expect(createAgentSessionCalls[0].tools).not.toContain("edit");
     expect(createAgentSessionCalls[0].tools).not.toContain("write");
     expect(loaderInstances[0].options.extensionFactories).toEqual([]);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "This subagent is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.",
+      "This session is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Default subagents have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace.",
+      "Default sessions have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Read-only subagents have read, grep, find, ls, bash, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, and github_clone_workspace only.",
+      "Read-only sessions have read, grep, find, ls, bash, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent only.",
     );
+  });
+
+  test("first-level sessions can spawn one nested session that cannot spawn further", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [
+      { resultText: "top-level waiting", blockPrompt: true },
+      { resultText: "nested answer" },
+    ];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Coordinate" }, undefined, undefined, createContext());
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+
+    const nestedTool = findDelegationTool(firstSession);
+    const nestedResult = await nestedTool.execute(
+      "nested-call",
+      { prompt: "Check independently" },
+      undefined,
+      undefined,
+      createContext(),
+    );
+
+    expect(nestedResult).toEqual({
+      content: [{ type: "text", text: "nested answer" }],
+      details: { id: "id000002", status: "completed" },
+    });
+    expect(createAgentSessionCalls[1]).toMatchObject({
+      model: { name: "model" },
+      thinkingLevel: "medium",
+    });
+    expect(createAgentSessionCalls[1].tools).toEqual(DEFAULT_SUBAGENT_TOOL_NAMES);
+    expect(createAgentSessionCalls[1].tools).not.toContain(DELEGATION_TOOL_NAME);
+    expect(createdSessions[1].registeredTools).toEqual(SORTED_INVESTIGATION_TOOL_NAMES);
+    expect(createdSessions[1].activeTools).toEqual(DEFAULT_SUBAGENT_TOOL_NAMES);
+    expect(loaderInstances[1].options.systemPromptOverride()).toContain(
+      "No further delegation tool is available.",
+    );
+    expect(loaderInstances[1].options.systemPromptOverride()).not.toContain(
+      "When an independent focused check would materially improve quality or confidence",
+    );
+    expect(loaderInstances[1].options.systemPromptOverride()).not.toContain(
+      "Do not call or simulate subagents recursively.",
+    );
+
+    firstSession.releasePrompt();
+    await topLevel;
+  });
+
+  test("delegated spawn rejects background mode without creating another session", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [{ resultText: "top-level waiting", blockPrompt: true }];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Coordinate" }, undefined, undefined, createContext());
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+
+    const nestedTool = findDelegationTool(firstSession);
+    expect(nestedTool.description).toContain(
+      "Background mode is not available from delegated sessions.",
+    );
+    expect((nestedTool.parameters as any).properties.background.description).toContain(
+      "Background mode is not available from delegated sessions.",
+    );
+
+    const result = await nestedTool.execute(
+      "nested-call",
+      { prompt: "Background check", background: true },
+      undefined,
+      undefined,
+      createContext(),
+    );
+
+    expect(result).toEqual({
+      content: [
+        {
+          type: "text",
+          text: "Background mode is not available for delegated spawn_subagent calls. Run the delegated task in foreground mode instead.",
+        },
+      ],
+      details: { status: "rejected", background: false },
+    });
+    expect(createdSessions).toHaveLength(1);
+    expect(createAgentSessionCalls).toHaveLength(1);
+
+    firstSession.releasePrompt();
+    await topLevel;
+  });
+
+  test("nested sessions inherit read-only enforcement from their owner", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [
+      { resultText: "top-level waiting", blockPrompt: true },
+      { resultText: "nested read-only answer" },
+    ];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Read-only coordinate", readOnly: true },
+        undefined,
+        undefined,
+        createContext(),
+      );
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+
+    const nestedTool = findDelegationTool(firstSession);
+    expect(nestedTool.description).toContain(
+      "Spawned sessions are read-only because the calling session is read-only",
+    );
+    expect(nestedTool.description).not.toContain(
+      "Default subagents receive read, grep, find, ls, bash, edit, write",
+    );
+    expect((nestedTool.parameters as any).properties.readOnly.description).toContain(
+      "read-only regardless of this setting",
+    );
+
+    const nestedResult = await nestedTool.execute(
+      "nested-call",
+      { prompt: "Inspect safely", readOnly: false },
+      undefined,
+      undefined,
+      createContext(),
+    );
+
+    expect(nestedResult.details).toEqual({ id: "id000002", status: "completed" });
+    expect(createAgentSessionCalls[1].tools).toEqual(READ_ONLY_SUBAGENT_TOOL_NAMES);
+    expect(
+      createAgentSessionCalls[1].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash"]);
+    expect(createAgentSessionCalls[1].tools).not.toContain("edit");
+    expect(createAgentSessionCalls[1].tools).not.toContain("write");
+    expect(createAgentSessionCalls[1].tools).not.toContain(DELEGATION_TOOL_NAME);
+
+    firstSession.releasePrompt();
+    await topLevel;
+  });
+
+  test("nested modelTier defaults to configured medium and accepts small", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    pi.setThinkingLevel("high");
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          medium: "test/medium-model:low",
+          small: "test/small-model:minimal",
+        },
+      },
+    });
+    const mediumModel = { name: "medium model" };
+    const smallModel = { name: "small model" };
+    const findCalls: string[] = [];
+    const ctx = createContext({
+      cwd,
+      modelRegistry: {
+        id: "registry",
+        find(provider: string, model: string) {
+          findCalls.push(`${provider}/${model}`);
+          if (provider === "test" && model === "medium-model") return mediumModel;
+          if (provider === "test" && model === "small-model") return smallModel;
+          return undefined;
+        },
+      },
+    });
+    nextBehaviors = [
+      { resultText: "top-level waiting", blockPrompt: true },
+      { resultText: "medium nested answer" },
+      { resultText: "small nested answer" },
+    ];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Coordinate" }, undefined, undefined, ctx);
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+    const nestedTool = findDelegationTool(firstSession);
+
+    const defaultTier = await nestedTool.execute(
+      "nested-call-1",
+      { prompt: "Default tier check" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const smallTier = await nestedTool.execute(
+      "nested-call-2",
+      { prompt: "Small tier check", modelTier: "small" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(defaultTier.details).toEqual({ id: "id000002", status: "completed" });
+    expect(smallTier.details).toEqual({ id: "id000003", status: "completed" });
+    expect(createAgentSessionCalls[1]).toMatchObject({
+      model: mediumModel,
+      thinkingLevel: "low",
+    });
+    expect(createAgentSessionCalls[2]).toMatchObject({
+      model: smallModel,
+      thinkingLevel: "minimal",
+    });
+    expect(findCalls).toEqual(["test/medium-model", "test/small-model"]);
+
+    firstSession.releasePrompt();
+    await topLevel;
+  });
+
+  test("top-level explicit modelTier selects configured model", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    pi.setThinkingLevel("high");
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: { modelTiers: { medium: "test/medium-model:low" } },
+    });
+    const mediumModel = { name: "medium model" };
+    const ctx = createContext({
+      cwd,
+      modelRegistry: {
+        id: "registry",
+        find: (provider: string, model: string) =>
+          provider === "test" && model === "medium-model" ? mediumModel : undefined,
+      },
+    });
+    nextBehaviors = [{ resultText: "medium answer" }];
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Use configured tier", modelTier: "medium" },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+    expect(result.details).toEqual({ id: "id000001", status: "completed" });
+    expect(createAgentSessionCalls[0]).toMatchObject({
+      model: mediumModel,
+      thinkingLevel: "low",
+    });
+  });
+
+  test("nested modelTier fallback keeps the owning session model selection", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    pi.setThinkingLevel("high");
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          medium: "test/medium-model:low",
+          small: "test/missing-small:minimal",
+        },
+      },
+    });
+    const rootModel = { name: "root model" };
+    const mediumModel = { name: "medium model" };
+    const ctx = createContext({
+      cwd,
+      model: rootModel,
+      modelRegistry: {
+        id: "registry",
+        find: (provider: string, model: string) =>
+          provider === "test" && model === "medium-model" ? mediumModel : undefined,
+      },
+    });
+    nextBehaviors = [
+      { resultText: "owner waiting", blockPrompt: true },
+      { resultText: "fallback nested answer" },
+    ];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Coordinate with medium", modelTier: "medium" },
+        undefined,
+        undefined,
+        ctx,
+      );
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+
+    const nestedResult = await findDelegationTool(firstSession).execute(
+      "nested-call",
+      { prompt: "Use missing small", modelTier: "small" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(nestedResult.details).toEqual({ id: "id000002", status: "completed" });
+    expect(createAgentSessionCalls[0]).toMatchObject({
+      model: mediumModel,
+      thinkingLevel: "low",
+    });
+    expect(createAgentSessionCalls[1]).toMatchObject({
+      model: mediumModel,
+      thinkingLevel: "low",
+    });
+
+    firstSession.releasePrompt();
+    await topLevel;
+  });
+
+  test("missing, invalid, and unresolved modelTier mappings fall back to inherited model", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    pi.setThinkingLevel("xhigh");
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          medium: "not-a-model-spec",
+          small: "test/missing-model:low",
+        },
+      },
+    });
+    const inheritedModel = { name: "inherited model" };
+    const findCalls: string[] = [];
+    const ctx = createContext({
+      cwd,
+      model: inheritedModel,
+      modelRegistry: {
+        id: "registry",
+        find(provider: string, model: string) {
+          findCalls.push(`${provider}/${model}`);
+          return undefined;
+        },
+      },
+    });
+    nextBehaviors = [
+      { resultText: "top-level waiting", blockPrompt: true },
+      { resultText: "invalid mapping answer" },
+      { resultText: "unresolved mapping answer" },
+    ];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Coordinate" }, undefined, undefined, ctx);
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+    const nestedTool = findDelegationTool(firstSession);
+
+    const invalidMapping = await nestedTool.execute(
+      "nested-call-1",
+      { prompt: "Uses default medium" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const unresolvedMapping = await nestedTool.execute(
+      "nested-call-2",
+      { prompt: "Uses missing small", modelTier: "small" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(invalidMapping.details).toEqual({ id: "id000002", status: "completed" });
+    expect(unresolvedMapping.details).toEqual({ id: "id000003", status: "completed" });
+    expect(createAgentSessionCalls[1]).toMatchObject({
+      model: inheritedModel,
+      thinkingLevel: "xhigh",
+    });
+    expect(createAgentSessionCalls[2]).toMatchObject({
+      model: inheritedModel,
+      thinkingLevel: "xhigh",
+    });
+    expect(findCalls).toEqual(["test/missing-model"]);
+
+    firstSession.releasePrompt();
+    await topLevel;
+  });
+
+  test("unsupported modelTier values are rejected before creating a session", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+
+    await expect(
+      pi.tools
+        .get("spawn_subagent")!
+        .execute(
+          "call",
+          { prompt: "Bad tier", modelTier: "large" },
+          undefined,
+          undefined,
+          createContext(),
+        ),
+    ).rejects.toThrow('modelTier must be "medium" or "small".');
+    expect(createdSessions).toHaveLength(0);
+    expect(createAgentSessionCalls).toHaveLength(0);
+  });
+
+  test("foreground spawn with an already-aborted signal stops before creating a session", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const abortController = new AbortController();
+    abortController.abort();
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Already stopped" },
+        abortController.signal,
+        undefined,
+        createContext(),
+      );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "Subagent stopped before it started." }],
+      details: { status: "stopped" },
+    });
+    expect(createdSessions).toHaveLength(0);
+    expect(createAgentSessionCalls).toHaveLength(0);
+  });
+
+  test("delegated spawn rejects calls after its owning session is no longer active", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [{ resultText: "owner complete" }];
+
+    await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Owner", background: true },
+        undefined,
+        undefined,
+        createContext(),
+      );
+    const ownerSession = await waitForCreatedSession(0);
+    await pi.tools
+      .get("get_subagent_result")!
+      .execute("call", { id: "id000001", wait: true }, undefined, undefined, createContext());
+
+    const result = await findDelegationTool(ownerSession).execute(
+      "nested-call",
+      { prompt: "Too late" },
+      undefined,
+      undefined,
+      createContext(),
+    );
+
+    expect(result).toEqual({
+      content: [
+        {
+          type: "text",
+          text: "Cannot spawn delegated task because the calling session is no longer active.",
+        },
+      ],
+      details: { status: "error" },
+    });
+    expect(createdSessions).toHaveLength(1);
+    expect(createAgentSessionCalls).toHaveLength(1);
+  });
+
+  test("owner abort propagates to active nested sessions", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [
+      { resultText: "top-level partial", blockPrompt: true },
+      { resultText: "nested partial", blockPrompt: true },
+    ];
+    const abortController = new AbortController();
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Coordinate long work" },
+        abortController.signal,
+        undefined,
+        createContext(),
+      );
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+    const nested = findDelegationTool(firstSession).execute(
+      "nested-call",
+      { prompt: "Long nested check" },
+      undefined,
+      undefined,
+      createContext(),
+    );
+    const nestedSession = await waitForCreatedSession(1);
+    await nestedSession.promptStarted;
+
+    abortController.abort();
+    const [topLevelResult, nestedResult] = await Promise.all([topLevel, nested]);
+
+    expect(firstSession.aborted).toBe(true);
+    expect(nestedSession.aborted).toBe(true);
+    expect(topLevelResult.details).toEqual({ id: "id000001", status: "stopped" });
+    expect(nestedResult.details).toEqual({ id: "id000002", status: "stopped" });
+  });
+
+  test("session shutdown aborts and clears active nested sessions", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [
+      { resultText: "top-level partial", blockPrompt: true },
+      { resultText: "nested partial", blockPrompt: true },
+    ];
+
+    const topLevel = pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Coordinate long work" }, undefined, undefined, createContext());
+    const firstSession = await waitForCreatedSession(0);
+    await firstSession.promptStarted;
+    const nested = findDelegationTool(firstSession).execute(
+      "nested-call",
+      { prompt: "Long nested check" },
+      undefined,
+      undefined,
+      createContext(),
+    );
+    const nestedSession = await waitForCreatedSession(1);
+    await nestedSession.promptStarted;
+
+    await pi.events.get("session_shutdown")![0]({}, createContext());
+    await Promise.all([topLevel, nested]);
+
+    expect(firstSession.aborted).toBe(true);
+    expect(nestedSession.aborted).toBe(true);
+    expect(firstSession.disposed).toBe(true);
+    expect(nestedSession.disposed).toBe(true);
+    expect(
+      await pi.tools
+        .get("list_subagents")!
+        .execute("call", {}, undefined, undefined, createContext()),
+    ).toEqual({
+      content: [{ type: "text", text: "No subagents in this session." }],
+      details: { count: 0 },
+    });
+  });
+
+  test("session shutdown clears records even when session disposal fails", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [
+      { resultText: "partial", blockPrompt: true, disposeError: new Error("dispose boom") },
+    ];
+    await pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Long", background: true }, undefined, undefined, createContext());
+    await createdSessions[0].promptStarted;
+
+    await pi.events.get("session_shutdown")![0]({}, createContext());
+
+    expect(createdSessions[0].aborted).toBe(true);
+    expect(createdSessions[0].disposed).toBe(true);
+    expect(
+      await pi.tools
+        .get("list_subagents")!
+        .execute("call", {}, undefined, undefined, createContext()),
+    ).toEqual({
+      content: [{ type: "text", text: "No subagents in this session." }],
+      details: { count: 0 },
+    });
   });
 
   test("foreground spawn reports errors and removes completed records", async () => {
