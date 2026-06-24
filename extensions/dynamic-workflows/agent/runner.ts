@@ -15,6 +15,11 @@ import {
   type InvestigationToolset,
   isolatedAgentToolNames,
 } from "../../../lib/investigation-tools";
+import {
+  formatModelSpecWithThinking,
+  parseModelSpec,
+  type ThinkingLevel,
+} from "../../../lib/model-spec";
 import { getLatestAssistantMessageText } from "../../../lib/session-messages";
 import type { JsonSchema, WorkflowAgent, WorkflowAgentOptions } from "../runtime/runtime";
 import { createWorkflowAgentTranscript, writeWorkflowAgentTranscript } from "./transcript";
@@ -79,38 +84,40 @@ async function runWorkflowSubagent(
     ...(structuredOutputTool ? [structuredOutputTool] : []),
   ];
 
-  const thinkingLevel = pi.getThinkingLevel();
-  const sessionModel = ctx.model;
-  const sessionModelId = currentModelId(sessionModel);
+  const selection = resolveWorkflowSubagentModel(ctx, options.model, pi.getThinkingLevel());
+  const runnerOptions: WorkflowAgentRunnerOptions =
+    selection.normalizedModel === undefined
+      ? options
+      : { ...options, model: selection.normalizedModel };
   const { session } = await createAgentSession({
     cwd: ctx.cwd,
     agentDir,
     sessionManager: SessionManager.inMemory(ctx.cwd),
     settingsManager: SettingsManager.create(ctx.cwd, agentDir),
     modelRegistry: ctx.modelRegistry,
-    model: sessionModel,
-    thinkingLevel,
+    model: selection.model,
+    thinkingLevel: selection.thinkingLevel,
     tools,
     customTools,
     resourceLoader: loader,
   });
 
-  const sessionName = `workflow#${options.label ?? "agent"}`;
-  const sessionPrompt = buildWorkflowSubagentPrompt(prompt, options);
+  const sessionName = `workflow#${runnerOptions.label ?? "agent"}`;
+  const sessionPrompt = buildWorkflowSubagentPrompt(prompt, runnerOptions);
   const startedAt = new Date();
   session.setSessionName(sessionName);
 
   const collector = collectAssistantText(session);
   const abort = () => session.abort().catch(() => {});
-  options.signal?.addEventListener("abort", abort, { once: true });
+  runnerOptions.signal?.addEventListener("abort", abort, { once: true });
   let outcome: WorkflowSubagentOutcome;
   let transcriptError: unknown;
 
   try {
-    outcome = await runPromptAndCollectResult(session, sessionPrompt, collector, options);
+    outcome = await runPromptAndCollectResult(session, sessionPrompt, collector, runnerOptions);
   } catch (error) {
     outcome = {
-      status: options.signal?.aborted ? "cancelled" : "failed",
+      status: runnerOptions.signal?.aborted ? "cancelled" : "failed",
       error,
     };
   }
@@ -118,13 +125,13 @@ async function runWorkflowSubagent(
   try {
     await persistWorkflowSubagentTranscript({
       ctx,
-      options,
+      options: runnerOptions,
       prompt,
       sessionPrompt,
       sessionName,
       session,
-      thinkingLevel,
-      model: sessionModelId,
+      thinkingLevel: selection.thinkingLevel,
+      model: selection.modelId,
       outcome,
       startedAt,
       completedAt: new Date(),
@@ -132,7 +139,7 @@ async function runWorkflowSubagent(
   } catch (error) {
     transcriptError = error;
   } finally {
-    options.signal?.removeEventListener("abort", abort);
+    runnerOptions.signal?.removeEventListener("abort", abort);
     collector.unsubscribe();
     session.dispose?.();
   }
@@ -217,6 +224,46 @@ async function persistWorkflowSubagentTranscript(input: {
   );
 }
 
+type WorkflowSubagentModelSelection = {
+  model: WorkflowRunnerContext["model"];
+  thinkingLevel: ThinkingLevel;
+  modelId?: string;
+  normalizedModel?: string;
+};
+
+function resolveWorkflowSubagentModel(
+  ctx: WorkflowRunnerContext,
+  requestedModel: string | undefined,
+  parentThinkingLevel: ThinkingLevel,
+): WorkflowSubagentModelSelection {
+  if (requestedModel === undefined) {
+    const model = ctx.model;
+    return {
+      model,
+      thinkingLevel: parentThinkingLevel,
+      modelId: currentModelId(model),
+    };
+  }
+
+  const spec = parseModelSpec(requestedModel);
+  if (spec === undefined) {
+    throw new Error("workflow agent model must use provider/model or provider/model:effort.");
+  }
+
+  const normalizedModel = formatModelSpecWithThinking(spec);
+  const model = ctx.modelRegistry.find(spec.provider, spec.model);
+  if (model === undefined) {
+    throw new Error(`workflow agent model not found: ${normalizedModel}`);
+  }
+
+  return {
+    model,
+    thinkingLevel: spec.thinkingLevel ?? parentThinkingLevel,
+    modelId: currentModelId(model) ?? `${spec.provider}/${spec.model}`,
+    normalizedModel,
+  };
+}
+
 function currentModelId(model: WorkflowRunnerContext["model"]): string | undefined {
   if (!model || typeof model !== "object") return undefined;
   const candidate = model as { provider?: unknown; id?: unknown };
@@ -254,6 +301,7 @@ function buildWorkflowSubagentPrompt(prompt: string, options: WorkflowAgentRunne
     options.phase ? `Workflow phase: ${options.phase}` : undefined,
     options.label ? `Workflow agent label: ${options.label}` : undefined,
     options.agentType ? `Workflow agent type: ${options.agentType}` : undefined,
+    options.model ? `Workflow agent model: ${options.model}` : undefined,
   ].filter((line): line is string => line !== undefined);
 
   const structuredOutputInstruction = options.schema

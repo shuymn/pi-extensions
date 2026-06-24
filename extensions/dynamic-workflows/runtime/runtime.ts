@@ -1,4 +1,5 @@
 import vm from "node:vm";
+import { formatModelSpecWithThinking, parseModelSpec } from "../../../lib/model-spec";
 import { createWorkflowAgentJournalKey, type WorkflowAgentJournalKey } from "../journal/key";
 import {
   createWorkflowJournalAgentId,
@@ -23,6 +24,7 @@ export type WorkflowAgentOptions = {
   phase?: string;
   schema?: JsonSchema;
   agentType?: string;
+  model?: string;
   signal?: AbortSignal;
   transcript?: WorkflowAgentTranscriptTarget;
 };
@@ -37,6 +39,7 @@ export type WorkflowAgentRuntimeEvent = {
   label: string;
   phase?: string;
   prompt: string;
+  model?: string;
   journalKey: WorkflowAgentJournalKey;
   journalAgentId: WorkflowJournalAgentId;
 };
@@ -180,6 +183,7 @@ export async function runWorkflow(
       label,
       phase: assignedPhase,
       agentType: agentOptions.agentType,
+      model: agentOptions.model,
       cwd: options.cwd,
     });
     const journalAgentId = options.journalAgentIdFactory?.() ?? createWorkflowJournalAgentId();
@@ -188,6 +192,7 @@ export async function runWorkflow(
       label,
       ...(assignedPhase === undefined ? {} : { phase: assignedPhase }),
       prompt: taskPrompt,
+      ...(agentOptions.model === undefined ? {} : { model: agentOptions.model }),
       journalKey,
       journalAgentId,
     };
@@ -690,6 +695,7 @@ function normalizeAgentOptions(value: unknown): WorkflowAgentOptions {
     schema:
       value.schema === undefined ? undefined : requirePlainObject(value.schema, "agent schema"),
     agentType: optionalString(value.agentType, "agent type"),
+    model: optionalModelSpec(value.model),
   };
 }
 
@@ -708,11 +714,22 @@ function requirePlainObject(value: unknown, label: string): Record<string, unkno
   return value;
 }
 
+function optionalModelSpec(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  const spec = parseModelSpec(value);
+  if (spec === undefined) {
+    throw new WorkflowContractError(
+      "agent option `model` must use provider/model or provider/model:effort.",
+    );
+  }
+  return formatModelSpecWithThinking(spec);
+}
+
 function rejectUnsupportedAgentExecutionSelectors(value: Record<string, unknown>): void {
-  const unsupported = ["model", "thinkingLevel", "isolation"].find((key) => key in value);
+  const unsupported = ["thinkingLevel", "effort", "isolation"].find((key) => key in value);
   if (unsupported === undefined) return;
   throw new WorkflowContractError(
-    `agent option \`${unsupported}\` is unsupported; workflow agent() cannot select per-agent model, thinking level, or isolation.`,
+    `agent option \`${unsupported}\` is unsupported; use \`model: "provider/model[:effort]"\` for workflow agent model and effort selection.`,
   );
 }
 

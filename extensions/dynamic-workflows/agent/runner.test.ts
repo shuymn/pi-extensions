@@ -268,12 +268,6 @@ describe("workflow subagent runner", () => {
       ],
     });
     expect(transcript.metadata.sessionPrompt).toContain("Workflow agent label: inspect src");
-    expect(transcript.metadata.sessionPrompt).not.toContain("Requested model hint");
-    expect(transcript.metadata.sessionPrompt).not.toContain("Requested thinking level hint");
-    expect(transcript.metadata.sessionPrompt).not.toContain("Requested isolation hint");
-    expect(transcript.metadata).not.toHaveProperty("requestedModel");
-    expect(transcript.metadata).not.toHaveProperty("requestedThinkingLevel");
-    expect(transcript.metadata).not.toHaveProperty("isolation");
     expect(transcript.metadata.startedAt).toEqual(expect.any(String));
     expect(transcript.metadata.completedAt).toEqual(expect.any(String));
   });
@@ -313,6 +307,56 @@ describe("workflow subagent runner", () => {
       readFileSync(join(transcriptsDir, "0001-inspect-src.json"), "utf8"),
     );
     expect(transcript.metadata.model).toBe("session-model");
+  });
+
+  test("uses requested provider/model:effort instead of the parent session model", async () => {
+    const { createWorkflowAgentRunner } = await loadRunnerModule();
+    const transcriptsDir = tempTranscriptsDir();
+    const selectedModel = { provider: "openai", id: "gpt-5" };
+    const findCalls: Array<{ provider: string; model: string }> = [];
+    const ctx = {
+      cwd: "/repo",
+      modelRegistry: {
+        id: "registry",
+        find(provider: string, model: string) {
+          findCalls.push({ provider, model });
+          return selectedModel;
+        },
+      },
+      model: { provider: "anthropic", id: "claude-parent" },
+      getSystemPrompt: () => "parent system prompt",
+    };
+
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      ctx as never,
+      createFakeInvestigationToolset() as never,
+    );
+    await runner("Inspect src", {
+      label: "inspect src",
+      model: " openai/gpt-5:LOW ",
+      transcript: {
+        transcriptId: "0001-inspect-src",
+        runId: "wf_transcript_12345678",
+        taskId: "task_transcript_12345678",
+        transcriptsDir,
+      },
+    });
+
+    expect(findCalls).toEqual([{ provider: "openai", model: "gpt-5" }]);
+    expect(createAgentSessionCalls[0]).toMatchObject({
+      model: selectedModel,
+      thinkingLevel: "low",
+    });
+    expect(createdSessions[0].lastPrompt).toContain("Workflow agent model: openai/gpt-5:low");
+    const transcript = JSON.parse(
+      readFileSync(join(transcriptsDir, "0001-inspect-src.json"), "utf8"),
+    );
+    expect(transcript.metadata).toMatchObject({
+      model: "openai/gpt-5",
+      thinkingLevel: "low",
+    });
+    expect(transcript.metadata.sessionPrompt).toContain("Workflow agent model: openai/gpt-5:low");
   });
 
   test("returns successful results when transcript persistence fails", async () => {

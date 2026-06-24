@@ -10,6 +10,7 @@ export type WorkflowAgentJournalKeyInput = {
   label?: string;
   phase?: string;
   agentType?: string;
+  model?: string;
   cwd: string;
 };
 
@@ -20,6 +21,7 @@ export type WorkflowAgentJournalKeyPreimage = {
   label: string | null;
   phase: string | null;
   agentType: string | null;
+  model?: string;
   cwd: string;
 };
 
@@ -41,6 +43,7 @@ export function createWorkflowAgentJournalKeyPreimage(
     label: normalizeOptionalString(input.label),
     phase: normalizeOptionalString(input.phase),
     agentType: normalizeOptionalString(input.agentType),
+    ...(input.model === undefined ? {} : { model: input.model }),
     cwd: input.cwd,
   };
 }
