@@ -1,5 +1,5 @@
-import type { TodoItem, TodoState } from "./state";
-import { isActiveTodoStatus } from "./state";
+import type { TodoGoal, TodoItem, TodoState } from "./state";
+import { isActiveTodoGoalStatus, isActiveTodoStatus } from "./state";
 
 const ACTIVE_ORDER: Record<TodoItem["status"], number> = {
   in_progress: 0,
@@ -7,6 +7,10 @@ const ACTIVE_ORDER: Record<TodoItem["status"], number> = {
   completed: 2,
   cancelled: 3,
 };
+
+export function activeGoal(state: TodoState): TodoGoal | undefined {
+  return state.goal && isActiveTodoGoalStatus(state.goal.status) ? state.goal : undefined;
+}
 
 export function activeTodos(state: TodoState): TodoItem[] {
   return state.items.filter((item) => isActiveTodoStatus(item.status));

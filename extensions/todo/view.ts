@@ -6,7 +6,7 @@ import {
   widgetLinesToText,
   widgetStatusIcon,
 } from "../../lib/widget-view";
-import { activeTodos, completedCount, orderedTodos } from "./selectors";
+import { activeGoal, activeTodos, completedCount, orderedTodos } from "./selectors";
 import type { TodoItem, TodoState } from "./state";
 
 export type { WidgetLine } from "../../lib/widget-view";
@@ -32,20 +32,29 @@ export function renderWidgetLines(
   state: TodoState,
   options: { width?: number; maxLines?: number } = {},
 ): WidgetLine[] | undefined {
-  if (activeTodos(state).length === 0) return undefined;
+  const goal = activeGoal(state);
+  if (!goal && activeTodos(state).length === 0) return undefined;
 
   const width = options.width ?? 80;
   const maxLines = options.maxLines ?? 12;
   if (maxLines <= 0) return [];
 
-  const done = completedCount(state);
-  const headerColor = state.items.some((item) => item.status === "in_progress") ? "accent" : "dim";
-  const lines: WidgetLine[] = [
-    { text: `● Todos ${done}/${state.items.length}`, color: headerColor },
-  ];
+  const lines: WidgetLine[] = [];
+  if (goal) {
+    lines.push({ text: `● Goal: ${goal.objective}`, color: "accent" });
+  } else {
+    const done = completedCount(state);
+    const hasInProgress = state.items.some((item) => item.status === "in_progress");
+    lines.push({
+      text: `● Todos ${done}/${state.items.length}`,
+      color: hasInProgress ? "accent" : "dim",
+    });
+  }
+
+  const itemCapacity = Math.max(0, maxLines - 1);
+  if (itemCapacity <= 0) return truncateWidgetLines(lines, width);
 
   const items = orderedTodos(state);
-  const itemCapacity = Math.max(0, maxLines - 1);
   const shownCount = items.length > itemCapacity ? Math.max(0, itemCapacity - 1) : itemCapacity;
   const shown = items.slice(0, shownCount);
   const hidden = items.length - shown.length;

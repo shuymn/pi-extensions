@@ -8,7 +8,7 @@ import {
 } from "../review/events";
 import { nextActionText, renderTodoReminder } from "./prompt";
 import { replayTodoState, TOOL_NAME } from "./replay";
-import { inProgressTodo, pendingTodos } from "./selectors";
+import { activeGoal, activeTodos, inProgressTodo, pendingTodos } from "./selectors";
 import {
   applyTodoMutation,
   cloneTodoState,
@@ -28,6 +28,17 @@ const REVIEW_WORKFLOW_SUPPRESSION_BY_STATUS = {
   failed: false,
   cancelled: false,
 } satisfies Record<ReviewWorkflowLifecycleStatus, boolean>;
+
+function appendGoalSummary(lines: string[], state: TodoState): void {
+  if (!state.goal) return;
+  lines.push("", `Goal [${state.goal.status}]: ${state.goal.objective}`);
+  if (state.goal.status === "active") {
+    lines.push(
+      ...state.goal.doneWhen.map((condition) => `- Done when: ${condition}`),
+      "Evaluate the goal before final response; satisfy_goal, abandon_goal, or clear_goal when appropriate.",
+    );
+  }
+}
 
 function formatToolResult(state: TodoState, op: TodoOperation): string {
   const lines: string[] = [];
@@ -49,6 +60,10 @@ function formatToolResult(state: TodoState, op: TodoOperation): string {
       }
       if (op.autoCleared) {
         lines.push("All todos are closed; todo list was automatically cleared.");
+      } else if (op.goalBlockedAutoClear) {
+        lines.push(
+          "All todos are closed, but an active goal remains. Evaluate the goal before final response.",
+        );
       }
       break;
     }
@@ -57,11 +72,26 @@ function formatToolResult(state: TodoState, op: TodoOperation): string {
       break;
     case "clear":
       lines.push(`Cleared ${op.count} todo${op.count === 1 ? "" : "s"}.`);
+      if (op.clearedGoal) lines.push("Cleared the goal.");
+      break;
+    case "set_goal":
+      lines.push(`${op.replaced ? "Replaced" : "Set"} goal: ${op.objective}.`);
+      break;
+    case "satisfy_goal":
+      lines.push(`Satisfied goal: ${op.objective}.`);
+      break;
+    case "abandon_goal":
+      lines.push(`Abandoned goal: ${op.objective}.`);
+      break;
+    case "clear_goal":
+      lines.push(`Cleared goal: ${op.objective}.`);
       break;
     case "error":
       lines.push(`Todo error: ${op.message}`);
       break;
   }
+
+  appendGoalSummary(lines, state);
 
   if (state.items.length > 0) {
     lines.push("", ...state.items.map((item) => `#${item.id} [${item.status}] ${item.title}`));
@@ -92,6 +122,7 @@ export default function (pi: ExtensionAPI) {
   let hasSeenMultipleActiveTodos = false;
 
   function shouldShowTodoWidget(): boolean {
+    if (activeGoal(state)) return true;
     let activeCount = 0;
     for (const item of state.items) {
       if (item.status !== "pending" && item.status !== "in_progress") continue;
@@ -108,7 +139,7 @@ export default function (pi: ExtensionAPI) {
   function refreshWidget(ctx: WidgetContext): void {
     const hasUI = ctx.hasUI !== false;
     if (hasUI) currentUiCtx = ctx;
-    if (state.items.length === 0) hasSeenMultipleActiveTodos = false;
+    if (!activeGoal(state) && activeTodos(state).length === 0) hasSeenMultipleActiveTodos = false;
     if (!hasUI) {
       refreshTodoWidget(ctx, state, { suppress: true });
       return;
@@ -147,14 +178,16 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       "Use todo for non-trivial multi-step coding tasks, user-provided task lists, or work that includes investigation, implementation, and verification.",
       "Skip todo for single trivial tasks and purely conversational requests.",
+      "Use set_goal for a persistent objective with explicit doneWhen conditions; keep todo items as concrete, verifiable work units under that goal.",
       "For non-trivial work, think through the approach and create todos that reflect the planned order before starting tool-heavy implementation.",
       "When creating todos, pass the full consecutive list in todo create items instead of calling todo create repeatedly.",
       "Break broad goals into verifiable work units; avoid a single todo that merely restates the user's whole request.",
       "Update, split, or cancel todos when investigation reveals the original plan is wrong or incomplete.",
       "Before starting implementation, create todos or mark one existing todo in_progress.",
       "Keep at most one todo in_progress. Mark the current todo completed immediately when its work is done.",
-      "After completing a todo, pick the next pending todo and mark it in_progress before continuing.",
-      "Before final response, ensure no todo is in_progress; if pending todos remain, explicitly report what remains.",
+      "After completing a todo, pick the next pending todo and mark it in_progress before continuing, or evaluate the active goal if no pending todos remain.",
+      "Before final response, ensure no todo is in_progress; if an active goal remains, satisfy_goal, abandon_goal, clear_goal, or explicitly report why it remains.",
+      "Before final response, if pending todos remain, explicitly report what remains.",
     ],
     parameters: Type.Object({
       action: StringEnum(TODO_ACTIONS, {
@@ -184,6 +217,20 @@ export default function (pi: ExtensionAPI) {
       activeForm: Type.Optional(
         Type.String({
           description: "Short current-work wording for the active todo.",
+        }),
+      ),
+      objective: Type.Optional(
+        Type.String({ description: "Persistent goal objective for set_goal." }),
+      ),
+      doneWhen: Type.Optional(
+        Type.Array(Type.String({ description: "Goal completion condition." }), {
+          description: "Required non-empty completion conditions when action is set_goal.",
+          minItems: 1,
+        }),
+      ),
+      verification: Type.Optional(
+        Type.Array(Type.String({ description: "Goal verification evidence or planned check." }), {
+          description: "Optional goal verification evidence for set_goal or satisfy_goal.",
         }),
       ),
     }),

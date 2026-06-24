@@ -13,6 +13,18 @@ const second: TodoState = {
     { id: 2, title: "B", status: "pending", createdAt: 2, updatedAt: 2 },
   ],
 };
+const withGoal: TodoState = {
+  nextId: 2,
+  goal: {
+    objective: "Ship goal support",
+    doneWhen: ["Goal replays"],
+    verification: ["Replay test"],
+    status: "active",
+    createdAt: 1,
+    updatedAt: 2,
+  },
+  items: [{ id: 1, title: "A", status: "completed", createdAt: 1, updatedAt: 2 }],
+};
 
 function toolResult(state: unknown, toolName = "todo") {
   return {
@@ -45,7 +57,19 @@ describe("todo replay", () => {
     expect(restored).toEqual(second);
   });
 
-  test("ignores snapshots with duplicate ids or stale nextId", () => {
+  test("restores valid goal snapshots and clones goal arrays", () => {
+    const restored = replayTodoState({
+      getBranch: () => [toolResult(first), toolResult(withGoal)],
+    });
+    expect(restored).toEqual(withGoal);
+    expect(restored).not.toBe(withGoal);
+    restored.goal!.doneWhen.push("mutated");
+    restored.goal!.verification!.push("mutated");
+    expect(withGoal.goal!.doneWhen).toEqual(["Goal replays"]);
+    expect(withGoal.goal!.verification).toEqual(["Replay test"]);
+  });
+
+  test("ignores snapshots with duplicate ids, stale nextId, or malformed goals", () => {
     const duplicateIds: TodoState = {
       nextId: 3,
       items: [
@@ -60,9 +84,24 @@ describe("todo replay", () => {
         { id: 2, title: "B", status: "pending", createdAt: 2, updatedAt: 2 },
       ],
     };
+    const malformedGoal = {
+      ...first,
+      goal: {
+        objective: "Broken",
+        doneWhen: [],
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    };
 
     const restored = replayTodoState({
-      getBranch: () => [toolResult(first), toolResult(duplicateIds), toolResult(staleNextId)],
+      getBranch: () => [
+        toolResult(first),
+        toolResult(duplicateIds),
+        toolResult(staleNextId),
+        toolResult(malformedGoal),
+      ],
     });
     expect(restored).toEqual(first);
   });

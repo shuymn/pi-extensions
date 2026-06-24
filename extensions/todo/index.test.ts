@@ -63,12 +63,22 @@ describe("todo extension", () => {
     expect([...pi.getEventHandlers("session_compact")]).toHaveLength(1);
     expect([...pi.getEventHandlers("context")]).toHaveLength(1);
     const guidelines = pi.tools.get("todo")!.promptGuidelines!.join("\n");
+    expect(guidelines).toContain("set_goal");
+    expect(guidelines).toContain("persistent objective");
     expect(guidelines).toContain("Before starting implementation");
     expect(guidelines).toContain("planned order");
     expect(guidelines).toContain("verifiable work units");
     expect(guidelines).toContain("Update, split, or cancel todos");
 
     const parameters = pi.tools.get("todo")!.parameters;
+    expect(parameters.properties.action.enum).toContain("set_goal");
+    expect(parameters.properties.action.enum).toContain("satisfy_goal");
+    expect(parameters.properties.action.enum).toContain("abandon_goal");
+    expect(parameters.properties.action.enum).toContain("clear_goal");
+    expect(parameters.properties.objective.description).toContain("Persistent goal objective");
+    expect(parameters.properties.doneWhen.type).toBe("array");
+    expect(parameters.properties.doneWhen.minItems).toBe(1);
+    expect(parameters.properties.verification.type).toBe("array");
     const items = parameters.properties.items;
     expect(items.type).toBe("array");
     expect(items.minItems).toBe(1);
@@ -145,6 +155,183 @@ describe("todo extension", () => {
     expect(ui.widgets.at(-1)?.lines?.join("\n")).toContain("Doing B");
   });
 
+  test("tool exposes goal actions through details and concise result text", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi<ToolDefinition>();
+    extension(pi as never);
+    const ui = createFakeUi();
+    const ctx = { hasUI: true, ui };
+    const tool = pi.tools.get("todo")!;
+
+    const setGoal = await tool.execute(
+      "call",
+      {
+        action: "set_goal",
+        objective: "Ship goal support",
+        doneWhen: ["Goal is visible", "Tests pass"],
+        verification: ["bun test extensions/todo/index.test.ts"],
+      },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(setGoal.content[0].text).toContain("Set goal: Ship goal support.");
+    expect(setGoal.content[0].text).toContain("Goal [active]: Ship goal support");
+    expect(setGoal.content[0].text).toContain("- Done when: Goal is visible");
+    expect(setGoal.details.state.goal).toMatchObject({
+      objective: "Ship goal support",
+      doneWhen: ["Goal is visible", "Tests pass"],
+      verification: ["bun test extensions/todo/index.test.ts"],
+      status: "active",
+    });
+
+    const satisfied = await tool.execute(
+      "call",
+      { action: "satisfy_goal", verification: ["Observed"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(satisfied.content[0].text).toContain("Satisfied goal: Ship goal support.");
+    expect(satisfied.details.state.goal.status).toBe("satisfied");
+    expect(satisfied.details.state.goal.verification).toEqual(["Observed"]);
+
+    const cleared = await tool.execute("call", { action: "clear_goal" }, undefined, undefined, ctx);
+    expect(cleared.content[0].text).toContain("Cleared goal: Ship goal support.");
+    expect(cleared.details.state.goal).toBeUndefined();
+  });
+
+  test("active goal blocks final todo auto-clear and prompts goal evaluation", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi<ToolDefinition>();
+    extension(pi as never);
+    const ui = createFakeUi();
+    const ctx = { hasUI: true, ui };
+    const tool = pi.tools.get("todo")!;
+
+    await tool.execute(
+      "call",
+      { action: "set_goal", objective: "Finish", doneWhen: ["Todo done"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await tool.execute(
+      "call",
+      { action: "create", items: [{ title: "A" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const completed = await tool.execute(
+      "call",
+      { action: "update", id: 1, status: "completed" },
+      undefined,
+      undefined,
+      ctx,
+    );
+
+    expect(completed.content[0].text).toContain("Completed #1: A.");
+    expect(completed.content[0].text).toContain(
+      "All todos are closed, but an active goal remains. Evaluate the goal before final response.",
+    );
+    expect(completed.content[0].text).not.toContain("todo list was automatically cleared");
+    expect(completed.details.op).toMatchObject({ goalBlockedAutoClear: true });
+    expect(completed.details.state.goal.status).toBe("active");
+    expect(completed.details.state.items[0].status).toBe("completed");
+  });
+
+  test("goal resolution hides terminal-only reminders and resets widget threshold", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi<ToolDefinition>();
+    extension(pi as never);
+    const ui = createFakeUi();
+    const ctx = { hasUI: true, ui };
+    const tool = pi.tools.get("todo")!;
+
+    await tool.execute(
+      "call",
+      { action: "create", items: [{ title: "A" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await tool.execute(
+      "call",
+      { action: "create", items: [{ title: "B" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(ui.widgets.at(-1)).toMatchObject({ key: "todo" });
+
+    await tool.execute(
+      "call",
+      { action: "set_goal", objective: "Finish", doneWhen: ["Todos done"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await tool.execute(
+      "call",
+      { action: "update", id: 1, status: "completed" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await tool.execute(
+      "call",
+      { action: "update", id: 2, status: "completed" },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await tool.execute("call", { action: "satisfy_goal" }, undefined, undefined, ctx);
+
+    expect(ui.widgets.at(-1)).toEqual({ key: "todo", lines: undefined });
+    await expect(
+      pi.getEventHandlers("context")[0]({ messages: [{ role: "user", content: "x" }] }),
+    ).resolves.toBeUndefined();
+
+    await tool.execute(
+      "call",
+      { action: "create", items: [{ title: "C" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(ui.widgets.at(-1)).toEqual({ key: "todo", lines: undefined });
+  });
+
+  test("clear action reports when it clears an active goal", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi<ToolDefinition>();
+    extension(pi as never);
+    const ui = createFakeUi();
+    const ctx = { hasUI: true, ui };
+    const tool = pi.tools.get("todo")!;
+
+    await tool.execute(
+      "call",
+      { action: "set_goal", objective: "Finish", doneWhen: ["Done"] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    await tool.execute(
+      "call",
+      { action: "create", items: [{ title: "A" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    const cleared = await tool.execute("call", { action: "clear" }, undefined, undefined, ctx);
+
+    expect(cleared.content[0].text).toContain("Cleared 1 todo.");
+    expect(cleared.content[0].text).toContain("Cleared the goal.");
+    expect(cleared.details.state).toEqual({ items: [], nextId: 1 });
+  });
+
   test("session lifecycle replays branch state and context injects reminder", async () => {
     const extension = await loadExtension();
     const pi = createFakePi<ToolDefinition>();
@@ -189,6 +376,58 @@ describe("todo extension", () => {
     })) as { messages: Array<{ content: unknown }> };
     expect(result.messages).toHaveLength(2);
     expect(JSON.stringify(result.messages[1].content)).toContain("Replay me");
+  });
+
+  test("session lifecycle replays goal state and renders reminder and widget", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi<ToolDefinition>();
+    extension(pi as never);
+    const ui = createFakeUi();
+    const snapshot = {
+      nextId: 1,
+      goal: {
+        objective: "Replay goal",
+        doneWhen: ["Goal appears after replay"],
+        verification: ["Lifecycle test"],
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      items: [],
+    };
+
+    await pi.getEventHandlers("session_start")[0](
+      {},
+      {
+        hasUI: true,
+        ui,
+        sessionManager: {
+          getBranch: () => [
+            {
+              type: "message",
+              message: {
+                role: "toolResult",
+                toolName: "todo",
+                details: { state: snapshot },
+              },
+            },
+          ],
+        },
+      },
+    );
+
+    expect(ui.widgets.at(-1)).toMatchObject({
+      key: "todo",
+      options: { placement: "aboveEditor" },
+    });
+    expect(ui.widgets.at(-1)?.lines?.join("\n")).toContain("Goal: Replay goal");
+
+    const result = (await pi.getEventHandlers("context")[0]({
+      messages: [{ role: "user", content: "x" }],
+    })) as { messages: Array<{ content: unknown }> };
+    expect(result.messages).toHaveLength(2);
+    expect(JSON.stringify(result.messages[1].content)).toContain("Goal: Replay goal");
+    expect(JSON.stringify(result.messages[1].content)).toContain("Goal appears after replay");
   });
 
   test("widget stays hidden for one active todo, appears after two, and remains after returning to one", async () => {

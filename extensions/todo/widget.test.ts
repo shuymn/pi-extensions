@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import type { TodoItem, TodoState } from "./state";
 import { renderWidgetLines, renderWidgetText, statusIcon } from "./view";
 
@@ -55,7 +56,7 @@ describe("todo widget", () => {
     expect(renderWidgetText({ items: [], nextId: 1 })).toBeUndefined();
   });
 
-  test("returns undefined when only terminal todos remain", () => {
+  test("returns undefined when only terminal todos remain without an active goal", () => {
     const terminalCases = [
       terminalState(["completed"]),
       terminalState(["cancelled"]),
@@ -66,6 +67,35 @@ describe("todo widget", () => {
       expect(renderWidgetText(state)).toBeUndefined();
       expect(renderWidgetLines(state)).toBeUndefined();
     }
+  });
+
+  test("renders active goal even without active todos", () => {
+    const goalOnly: TodoState = {
+      nextId: 1,
+      goal: {
+        objective: "Ship goal support",
+        doneWhen: ["Widget shows goal"],
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      items: [],
+    };
+    expect(renderWidgetText(goalOnly)).toEqual(["● Goal: Ship goal support"]);
+
+    const terminalWithGoal: TodoState = {
+      ...terminalState(["completed"]),
+      goal: {
+        objective: "Evaluate completion",
+        doneWhen: ["Todos complete"],
+        status: "active",
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    };
+    const lines = renderWidgetLines(terminalWithGoal)!;
+    expect(lines[0]).toMatchObject({ text: "● Goal: Evaluate completion", color: "accent" });
+    expect(lines.some((line) => line.text.includes("✓ completed") && line.dim)).toBe(true);
   });
 
   test("has icons and color policy for every status", () => {
@@ -84,6 +114,26 @@ describe("todo widget", () => {
     const lines = renderWidgetText(state, { width: 16, maxLines: 3 })!;
     expect(lines.every((line) => line.length <= 16)).toBe(true);
     expect(lines.at(-1)).toContain("+3 more");
+  });
+
+  test("truncates active goal header to width", () => {
+    const lines = renderWidgetText(
+      {
+        nextId: 1,
+        goal: {
+          objective: "Very long goal objective that should be truncated",
+          doneWhen: ["Done"],
+          status: "active",
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        items: [],
+      },
+      { width: 20 },
+    )!;
+
+    expect(lines).toHaveLength(1);
+    expect(stripVTControlCharacters(lines[0]!).length).toBeLessThanOrEqual(20);
   });
 
   test("honors zero max lines", () => {
