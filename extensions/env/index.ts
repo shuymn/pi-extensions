@@ -1,4 +1,8 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  SessionEntry,
+  SessionStartEvent,
+} from "@earendil-works/pi-coding-agent";
 
 import { formatModelSpecWithThinking, type ModelSpec, parseModelSpec } from "../../lib/model-spec";
 import { projectSettingsPath, readExtensionSettings } from "../../lib/settings";
@@ -8,6 +12,14 @@ export const ENV_SETTINGS_KEY = "env";
 export const PI_MODEL_ENV = "PI_MODEL";
 
 type EnvSettings = Partial<Record<string, unknown>>;
+type SessionBranchEntry = Pick<SessionEntry, "type">;
+
+const CONVERSATION_BEARING_ENTRY_TYPES = new Set([
+  "message",
+  "custom_message",
+  "branch_summary",
+  "compaction",
+]);
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
@@ -31,9 +43,19 @@ export function resolveEnvModelSelection(settings: EnvSettings = {}): ModelSpec 
   return parseModelSpec(readPiModelValue(settings));
 }
 
+function isFreshSessionStart(event: Pick<SessionStartEvent, "reason">): boolean {
+  return event.reason === "startup" || event.reason === "new";
+}
+
+function hasConversationBearingEntries(branch: readonly SessionBranchEntry[]): boolean {
+  return branch.some((entry) => CONVERSATION_BEARING_ENTRY_TYPES.has(entry.type));
+}
+
 export default function envExtension(pi: ExtensionAPI): void {
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     if (hasCliModelArg()) return;
+    if (!isFreshSessionStart(event)) return;
+    if (hasConversationBearingEntries(ctx.sessionManager.getBranch())) return;
 
     const settings = readExtensionSettings<EnvSettings>(ENV_SETTINGS_KEY, {
       projectPath: projectSettingsPath(ctx.cwd),
