@@ -74,12 +74,24 @@ describe("workflow agent journal key", () => {
       { phase: "Verify" },
       { agentType: "verifier" },
       { model: "openai/gpt-5:medium" },
+      { toolPolicy: "readOnly" },
       { cwd: "/other" },
     ];
 
     for (const variant of variants) {
       expect(createWorkflowAgentJournalKey({ ...baseInput, ...variant })).not.toBe(baseKey);
     }
+  });
+
+  test("omits toolPolicy from the preimage when unset to preserve default-policy keys", () => {
+    expect(createWorkflowAgentJournalKeyPreimage(baseInput)).not.toHaveProperty("toolPolicy");
+    expect(
+      createWorkflowAgentJournalKeyPreimage({ ...baseInput, toolPolicy: "readOnly" }),
+    ).toMatchObject({ toolPolicy: "readOnly" });
+    // A read-only agent must not collide with the same call under default policy.
+    expect(createWorkflowAgentJournalKey({ ...baseInput, toolPolicy: "readOnly" })).not.toBe(
+      createWorkflowAgentJournalKey(baseInput),
+    );
   });
 
   test("records model selections", () => {

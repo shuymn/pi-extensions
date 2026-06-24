@@ -8,6 +8,7 @@ const loaderInstances: any[] = [];
 const createdSessions: any[] = [];
 let nextResultText = "workflow subagent result";
 let nextPromptError: Error | undefined;
+let nextBashExecuteError: Error | undefined;
 let nextStructuredOutput: unknown;
 const tempDirs: string[] = [];
 
@@ -96,10 +97,27 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
     createAgentSessionCalls.push(options);
     return { session: createSession() };
   },
+  createBashToolDefinition: (_cwd: string, options: any) => ({
+    name: "bash",
+    label: "bash",
+    description: "sandboxed bash test tool",
+    parameters: { type: "object", properties: { command: { type: "string" } } },
+    operations: options?.operations,
+    execute: async () => {
+      if (nextBashExecuteError) throw nextBashExecuteError;
+      return { content: [{ type: "text", text: "bash result" }], details: undefined };
+    },
+  }),
+  // Required because runner.ts transitively imports lib/protected-bash, which
+  // value-imports createLocalBashOperations from this module.
+  createLocalBashOperations: () => ({ exec: async () => ({ exitCode: 0, output: "" }) }),
 }));
 
 function createPi() {
-  return { getThinkingLevel: () => "high" };
+  return {
+    getThinkingLevel: () => "high",
+    exec: async () => ({ code: 0, stdout: "", stderr: "" }),
+  };
 }
 
 function createContext() {
@@ -127,6 +145,14 @@ const WORKFLOW_TOOL_NAMES = [
   "bash",
   "edit",
   "write",
+  ...INVESTIGATION_TOOL_NAMES,
+];
+const READ_ONLY_WORKFLOW_TOOL_NAMES = [
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
   ...INVESTIGATION_TOOL_NAMES,
 ];
 const EXCLUDED_WORKFLOW_TOOL_NAMES = [
@@ -169,6 +195,7 @@ afterEach(() => {
   createdSessions.splice(0);
   nextResultText = "workflow subagent result";
   nextPromptError = undefined;
+  nextBashExecuteError = undefined;
   nextStructuredOutput = undefined;
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -211,6 +238,84 @@ describe("workflow subagent runner", () => {
     expect(loaderInstances[0].options.noSkills).toBe(true);
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("parent system prompt");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("Working directory: /repo");
+  });
+
+  test("read-only tool policy drops edit/write and shadows bash with a sandboxed tool", async () => {
+    const { createWorkflowAgentRunner } = await loadRunnerModule();
+    nextResultText = "inspected";
+
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
+    const result = await runner("Inspect without mutating", {
+      label: "inspect",
+      phase: "Investigate",
+      toolPolicy: "readOnly",
+    });
+
+    expect(result).toBe("inspected");
+    expect(createAgentSessionCalls[0].tools).toEqual(READ_ONLY_WORKFLOW_TOOL_NAMES);
+    for (const mutating of ["edit", "write"]) {
+      expect(createAgentSessionCalls[0].tools).not.toContain(mutating);
+    }
+    // The read-only bash tool is mounted as a custom tool so it shadows the
+    // built-in bash inside the in-memory session.
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash"]);
+    expect(createAgentSessionCalls[0].customTools.at(-1)).toMatchObject({ name: "bash" });
+  });
+
+  test("read-only bash surfaces sandbox errors as tool output", async () => {
+    const { createWorkflowAgentRunner } = await loadRunnerModule();
+    nextBashExecuteError = new Error("sandbox unavailable");
+
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
+    await runner("Inspect without mutating", {
+      label: "inspect",
+      phase: "Investigate",
+      toolPolicy: "readOnly",
+    });
+
+    const bashTool = createAgentSessionCalls[0].customTools.find(
+      (tool: { name: string }) => tool.name === "bash",
+    );
+    expect(bashTool).toBeDefined();
+    await expect(bashTool.execute("call", {}, undefined, undefined, undefined)).resolves.toEqual({
+      content: [{ type: "text", text: "sandbox unavailable" }],
+      details: undefined,
+    });
+  });
+
+  test("read-only tool policy keeps structured_output available alongside the sandboxed bash", async () => {
+    const { createWorkflowAgentRunner } = await loadRunnerModule();
+    nextStructuredOutput = { verdict: "pass" };
+
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
+    const result = await runner("Return a verdict", {
+      label: "verdict",
+      toolPolicy: "readOnly",
+      schema: { type: "object", properties: { verdict: { type: "string" } } },
+    });
+
+    expect(result).toEqual({ verdict: "pass" });
+    expect(createAgentSessionCalls[0].tools).toEqual([
+      ...READ_ONLY_WORKFLOW_TOOL_NAMES,
+      "structured_output",
+    ]);
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash", "structured_output"]);
   });
 
   test("persists subagent transcripts with minimal metadata", async () => {

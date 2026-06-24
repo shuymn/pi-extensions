@@ -11,6 +11,7 @@ export type WorkflowAgentJournalKeyInput = {
   phase?: string;
   agentType?: string;
   model?: string;
+  toolPolicy?: string;
   cwd: string;
 };
 
@@ -22,6 +23,7 @@ export type WorkflowAgentJournalKeyPreimage = {
   phase: string | null;
   agentType: string | null;
   model?: string;
+  toolPolicy?: string;
   cwd: string;
 };
 
@@ -44,6 +46,9 @@ export function createWorkflowAgentJournalKeyPreimage(
     phase: normalizeOptionalString(input.phase),
     agentType: normalizeOptionalString(input.agentType),
     ...(input.model === undefined ? {} : { model: input.model }),
+    // Omit toolPolicy when unset so default-policy keys stay byte-identical to
+    // pre-toolPolicy runs and existing replay caches remain valid.
+    ...(input.toolPolicy === undefined ? {} : { toolPolicy: input.toolPolicy }),
     cwd: input.cwd,
   };
 }

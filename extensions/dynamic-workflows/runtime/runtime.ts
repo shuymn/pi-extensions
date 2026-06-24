@@ -11,6 +11,14 @@ import { parseWorkflowScript, type WorkflowMeta } from "./parser";
 
 export type JsonSchema = Record<string, unknown>;
 
+/**
+ * Per-agent execution tool policy. `readOnly` drops file-mutation tools
+ * (edit/write) and runs bash through an OS-sandboxed, repo-write-denying shell
+ * so investigation agents cannot mutate the workspace. Unset means the default
+ * full coding toolset.
+ */
+export type WorkflowAgentToolPolicy = "readOnly";
+
 export type WorkflowAgentTranscriptTarget = {
   transcriptId: string;
   runId: string;
@@ -25,6 +33,7 @@ export type WorkflowAgentOptions = {
   schema?: JsonSchema;
   agentType?: string;
   model?: string;
+  toolPolicy?: WorkflowAgentToolPolicy;
   signal?: AbortSignal;
   transcript?: WorkflowAgentTranscriptTarget;
 };
@@ -184,6 +193,7 @@ export async function runWorkflow(
       phase: assignedPhase,
       agentType: agentOptions.agentType,
       model: agentOptions.model,
+      ...(agentOptions.toolPolicy === undefined ? {} : { toolPolicy: agentOptions.toolPolicy }),
       cwd: options.cwd,
     });
     const journalAgentId = options.journalAgentIdFactory?.() ?? createWorkflowJournalAgentId();
@@ -696,7 +706,16 @@ function normalizeAgentOptions(value: unknown): WorkflowAgentOptions {
       value.schema === undefined ? undefined : requirePlainObject(value.schema, "agent schema"),
     agentType: optionalString(value.agentType, "agent type"),
     model: optionalModelSpec(value.model),
+    toolPolicy: optionalToolPolicy(value.toolPolicy),
   };
+}
+
+function optionalToolPolicy(value: unknown): WorkflowAgentToolPolicy | undefined {
+  if (value === undefined) return undefined;
+  if (value !== "readOnly") {
+    throw new WorkflowContractError('agent option `toolPolicy` must be "readOnly" when provided.');
+  }
+  return value;
 }
 
 function requireString(value: unknown, label: string): string {

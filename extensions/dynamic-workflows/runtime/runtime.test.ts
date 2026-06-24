@@ -226,6 +226,81 @@ describe("dynamic workflow runtime", () => {
     expect(result.result).toBe("selected");
   });
 
+  test("passes a readOnly tool policy through agent options and the journal key", async () => {
+    const agentOptions: unknown[] = [];
+    const queuedEvents: Array<{ journalKey: string }> = [];
+
+    const result = await runWorkflow(
+      `
+        export const meta = {
+          name: "read_only_policy",
+          description: "Exercise the per-agent read-only tool policy",
+          phases: [{ title: "Investigate" }],
+        };
+
+        phase("Investigate");
+        return await agent("Inspect without mutating", {
+          label: "inspect",
+          toolPolicy: "readOnly",
+        });
+      `,
+      {
+        cwd: "/repo",
+        agent: (_prompt, options) => {
+          agentOptions.push(options);
+          return "inspected";
+        },
+        onAgentQueued: (event) => queuedEvents.push(event),
+      },
+    );
+
+    const expectedKey = createWorkflowAgentJournalKey({
+      prompt: "Inspect without mutating",
+      label: "inspect",
+      phase: "Investigate",
+      toolPolicy: "readOnly",
+      cwd: "/repo",
+    });
+    expect(agentOptions[0]).toMatchObject({ label: "inspect", toolPolicy: "readOnly" });
+    expect(queuedEvents[0]).toMatchObject({ journalKey: expectedKey });
+    // A read-only agent must not reuse the default-policy journal key.
+    expect(queuedEvents[0]?.journalKey).not.toBe(
+      createWorkflowAgentJournalKey({
+        prompt: "Inspect without mutating",
+        label: "inspect",
+        phase: "Investigate",
+        cwd: "/repo",
+      }),
+    );
+    expect(result.result).toBe("inspected");
+  });
+
+  test("rejects an unsupported toolPolicy value before spawning an agent", async () => {
+    const calls: string[] = [];
+
+    await expect(
+      runWorkflow(
+        `
+          export const meta = {
+            name: "invalid_tool_policy",
+            description: "Reject invalid tool policy",
+            phases: [{ title: "Run" }],
+          };
+
+          return await agent("bad", { toolPolicy: "readWrite" });
+        `,
+        {
+          cwd: "/repo",
+          agent: (prompt) => {
+            calls.push(prompt);
+            return "unexpected";
+          },
+        },
+      ),
+    ).rejects.toThrow('agent option `toolPolicy` must be "readOnly"');
+    expect(calls).toEqual([]);
+  });
+
   test.each([
     { option: "thinkingLevel", source: `{ thinkingLevel: "high" }` },
     { option: "effort", source: `{ effort: "high" }` },

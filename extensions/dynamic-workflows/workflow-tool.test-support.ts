@@ -90,6 +90,15 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
     createAgentSessionCalls.push(options);
     return { session: createSession() };
   },
+  // The default subagent runner transitively imports lib/protected-bash, which
+  // value-imports createLocalBashOperations from this module.
+  createBashToolDefinition: (_cwd: string, options: any) => ({
+    name: "bash",
+    label: "bash",
+    operations: options?.operations,
+    execute: async () => ({ content: [{ type: "text", text: "bash result" }], details: undefined }),
+  }),
+  createLocalBashOperations: () => ({ exec: async () => ({ exitCode: 0, output: "" }) }),
 }));
 mock.module("@earendil-works/pi-tui", () => ({
   Key: { enter: { name: "enter" }, escape: { name: "escape" } },

@@ -2,6 +2,7 @@ import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
+  createBashToolDefinition,
   DefaultResourceLoader,
   type ExtensionAPI,
   type ExtensionContext,
@@ -20,13 +21,14 @@ import {
   parseModelSpec,
   type ThinkingLevel,
 } from "../../../lib/model-spec";
+import { createProtectedBashOperations, type ExecFn } from "../../../lib/protected-bash";
 import { getLatestAssistantMessageText } from "../../../lib/session-messages";
 import type { JsonSchema, WorkflowAgent, WorkflowAgentOptions } from "../runtime/runtime";
 import { createWorkflowAgentTranscript, writeWorkflowAgentTranscript } from "./transcript";
 
 type WorkflowInvestigationToolset = Pick<InvestigationToolset, "tools" | "toolNames">;
 
-type WorkflowRunnerPi = Pick<ExtensionAPI, "getThinkingLevel">;
+type WorkflowRunnerPi = Pick<ExtensionAPI, "getThinkingLevel" | "exec">;
 type WorkflowRunnerContext = Pick<
   ExtensionContext,
   "cwd" | "modelRegistry" | "model" | "getSystemPrompt"
@@ -73,14 +75,21 @@ async function runWorkflowSubagent(
   });
   await loader.reload();
 
+  const readOnly = options.toolPolicy === "readOnly";
   const structuredOutputTool = options.schema
     ? createStructuredOutputTool(options.schema)
     : undefined;
+  // Under the read-only policy, drop edit/write from the allowlist and shadow
+  // the built-in bash with an OS-sandboxed, repo-write-denying bash so the
+  // subagent cannot mutate the workspace through any tool.
+  const readOnlyBashTool = readOnly ? createReadOnlyBashTool(pi, ctx.cwd) : undefined;
   const tools = isolatedAgentToolNames(investigationToolset, {
+    readOnly,
     extraTools: structuredOutputTool ? [structuredOutputTool.name] : [],
   });
   const customTools = [
     ...investigationToolset.tools,
+    ...(readOnlyBashTool ? [readOnlyBashTool] : []),
     ...(structuredOutputTool ? [structuredOutputTool] : []),
   ];
 
@@ -330,6 +339,40 @@ function collectAssistantText(session: AgentSession): {
     getText: () => current.trim() || getLatestAssistantMessageText(session.messages)?.trim() || "",
     unsubscribe,
   };
+}
+
+/**
+ * Build a bash tool that shadows the built-in bash inside the read-only
+ * subagent session. Commands run through the OS sandbox with repo writes denied
+ * and a before/after fingerprint check (see lib/protected-bash). Sandbox or
+ * fingerprint failures are surfaced as tool output instead of crashing the
+ * session, so the agent learns the command was refused rather than silently
+ * running unsandboxed.
+ */
+function createReadOnlyBashTool(pi: WorkflowRunnerPi, cwd: string): ToolDefinition {
+  const execFn: ExecFn = (command, args, options) =>
+    pi.exec(command, args, {
+      cwd: options?.cwd ?? cwd,
+      ...(options?.timeout === undefined ? {} : { timeout: options.timeout }),
+    });
+  const protectedBashDef = createBashToolDefinition(cwd, {
+    operations: createProtectedBashOperations(execFn, cwd),
+  }) as ToolDefinition;
+  return {
+    ...protectedBashDef,
+    name: "bash",
+    label: "bash",
+    async execute(toolCallId, params, signal, onUpdate, toolCtx) {
+      try {
+        return await protectedBashDef.execute(toolCallId, params, signal, onUpdate, toolCtx);
+      } catch (error) {
+        return {
+          content: [{ type: "text" as const, text: errorMessage(error) }],
+          details: undefined,
+        };
+      }
+    },
+  } as ToolDefinition;
 }
 
 function createStructuredOutputTool(schema: JsonSchema): ToolDefinition {
