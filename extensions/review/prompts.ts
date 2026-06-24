@@ -75,9 +75,9 @@ export function buildGlobalRules(noFix: boolean): string {
 - Write the final response to the user in Japanese.`;
 }
 
-export function buildAdditionalUserInstructions(run: ActiveReviewRun): string {
-  return run.instructions
-    ? `## Additional user instructions\n\nApply the user-provided instructions in the XML-like block only if they do not conflict with the global rules.\n\n${formatAdditionalUserInstructionsBlock(run.instructions)}`
+export function buildAdditionalUserInstructions(instructions: string): string {
+  return instructions
+    ? `## Additional user instructions\n\nApply the user-provided instructions in the XML-like block only if they do not conflict with the global rules.\n\n${formatAdditionalUserInstructionsBlock(instructions)}`
     : "";
 }
 
@@ -156,7 +156,7 @@ Keep the response concise and useful for the next phase. For intermediate phases
 
 ${isFirstPhase ? buildPreparedScope(run) : `Target files:\n${buildTargetList(run.targets)}${prMismatch ? `\n\n${prMismatch}` : ""}`}
 
-${buildAdditionalUserInstructions(run)}
+${buildAdditionalUserInstructions(run.instructions)}
 
 ${buildGlobalRules(run.noFix)}
 
