@@ -13,6 +13,10 @@ mock.module("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: async () => {
     throw new Error("createAgentSession should not run during registration");
   },
+  // index.ts transitively imports the workflow agent runner, which imports
+  // lib/protected-bash; that module value-imports createLocalBashOperations.
+  createBashToolDefinition: () => ({ name: "bash", label: "bash", execute: async () => ({}) }),
+  createLocalBashOperations: () => ({ exec: async () => ({ exitCode: 0, output: "" }) }),
 }));
 mock.module("@earendil-works/pi-tui", () => ({
   Key: { up: "up", down: "down", enter: "enter", escape: "escape" },

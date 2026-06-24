@@ -29,7 +29,8 @@ describe("dynamic workflow tool contract", () => {
     expect(tool.description).toContain("deterministic JavaScript workflow");
     expect(tool.promptSnippet).toContain("Use workflow");
     expect(guidelines).toContain("explicitly asks");
-    expect(guidelines).toContain("not authorization by itself");
+    expect(guidelines).toContain("not authorization by themselves");
+    expect(guidelines).toContain("extension-packaged workflow meta.name");
     expect(guidelines).toContain("parallel() takes functions");
     expect(guidelines).toContain("do not use TypeScript");
     for (const example of [...acceptedPhaseExamples, ...rejectedPhaseExamples]) {
@@ -38,8 +39,9 @@ describe("dynamic workflow tool contract", () => {
     expect(guidelines).not.toContain("description?:");
     expect(guidelines).toContain("agent(prompt, { schema, label }) returns the parsed object");
     expect(guidelines).toContain(
-      "Supported options are label, phase, schema, agentType, and model",
+      "Supported options are label, phase, schema, agentType, model, and toolPolicy",
     );
+    expect(guidelines).toContain('pass toolPolicy: "readOnly" to run a read-only phase');
     expect(guidelines).toContain("Use model as provider/model or provider/model:effort");
     expect(guidelines).toContain(
       "when :effort is omitted, the child inherits the parent session effort",
@@ -55,6 +57,7 @@ describe("dynamic workflow tool contract", () => {
     for (const example of acceptedPhaseExamples) {
       expect(properties.script.description).toContain(example);
     }
+    expect(properties.name.description).toContain("extension-packaged workflows/*.js");
     expect(properties.script.description).toContain("with `title`, not strings or `name`");
     expect(properties.script.description).not.toContain("description?:");
   });

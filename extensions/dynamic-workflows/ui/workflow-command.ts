@@ -6,7 +6,7 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { resolveWorkflowRoot } from "../run/root";
 import { workflowCatalogForCwd, workflowCatalogForRoot } from "../saved/catalog";
-import type { SavedWorkflow } from "../saved/resolver";
+import type { SavedWorkflow, SavedWorkflowRootInput } from "../saved/resolver";
 
 export type WorkflowCommandLaunchInput = {
   workflow: SavedWorkflow;
@@ -25,8 +25,8 @@ export type WorkflowCommandLauncher = (
 ) => Promise<WorkflowCommandLaunchResult | undefined>;
 
 export type WorkflowAdditionalRootsProvider =
-  | readonly string[]
-  | ((ctx: ExtensionCommandContext | undefined) => readonly string[]);
+  | readonly SavedWorkflowRootInput[]
+  | ((ctx: ExtensionCommandContext | undefined) => readonly SavedWorkflowRootInput[]);
 
 export type WorkflowCommandOptions = {
   launchWorkflow: WorkflowCommandLauncher;
@@ -168,7 +168,7 @@ export async function registerDirectSavedWorkflowCommandsForRoot(
   options: WorkflowCommandOptions,
   registeredDirectNames = new Set<string>(),
 ): Promise<DirectWorkflowCommandRegistrationReport> {
-  const catalog = workflowCatalogForCwd(workflowRoot);
+  const catalog = workflowCatalogForRoot(workflowRoot);
   const workflows = await catalog.listProjectSaved();
   const takenCommandNames = new Set([
     ...BUILTIN_SLASH_COMMAND_NAMES,
@@ -348,6 +348,8 @@ function workflowRootsForCwd(
   additionalWorkflowRoots: WorkflowAdditionalRootsProvider | undefined,
   ctx: ExtensionCommandContext | undefined,
 ): string[] {
+  // Autocomplete only needs names/descriptions, so it can pass bare paths back
+  // through the catalog instead of preserving provenance descriptors here.
   return workflowCatalogForCwd(cwd, workflowAdditionalRoots(additionalWorkflowRoots, ctx)).roots
     .roots;
 }
@@ -355,7 +357,7 @@ function workflowRootsForCwd(
 function workflowAdditionalRoots(
   provider: WorkflowAdditionalRootsProvider | undefined,
   ctx: ExtensionCommandContext | undefined,
-): string[] {
+): SavedWorkflowRootInput[] {
   const roots = typeof provider === "function" ? provider(ctx) : provider;
   return [...(roots ?? [])];
 }

@@ -32,6 +32,7 @@ import {
   type WorkflowRunResult,
 } from "./runtime/runtime";
 import { workflowCatalogForRoot } from "./saved/catalog";
+import type { SavedWorkflowRootInput } from "./saved/resolver";
 import { createWorkflowCallComponent, createWorkflowResultComponent } from "./ui/render-tool";
 import { refreshWorkflowWidget } from "./ui/workflow-widget";
 
@@ -55,7 +56,7 @@ const workflowToolSchema = Type.Object({
   name: Type.Optional(
     Type.String({
       description:
-        "Saved workflow name resolved from project .pi/workflows/*.js or loaded skill-packaged workflows/*.js by static meta.name parsing. Used when scriptPath and script are omitted.",
+        "Saved workflow name resolved from project .pi/workflows/*.js, loaded skill-packaged workflows/*.js, or extension-packaged workflows/*.js by static meta.name parsing. Used when scriptPath and script are omitted.",
     }),
   ),
   args: Type.Optional(
@@ -132,8 +133,8 @@ type BackgroundTask = () => Promise<void>;
 export const defaultWorkflowRunControllerRegistry = new WorkflowRunControllerRegistry();
 
 export type WorkflowAdditionalRootsProvider =
-  | readonly string[]
-  | ((ctx: ExtensionContext | undefined) => readonly string[]);
+  | readonly SavedWorkflowRootInput[]
+  | ((ctx: ExtensionContext | undefined) => readonly SavedWorkflowRootInput[]);
 
 export type WorkflowToolOptions = {
   agent?: WorkflowAgent;
@@ -200,8 +201,8 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "Use workflow for explicit dynamic workflow or multi-agent fan-out requests. Provide one raw deterministic JavaScript script with export const meta first, then orchestrate with agent(), parallel(), pipeline(), phase(), and log().",
     promptGuidelines: [
       "Use workflow only when the user explicitly asks for a workflow, dynamic workflow, fan-out, or multi-agent orchestration, or when a loaded skill explicitly instructs you to use it.",
-      "For workflow, a skill-packaged workflows/*.js file is discoverable but is not authorization by itself; the loaded skill instructions must explicitly say to launch workflow, /workflow, or workflow({ name }).",
-      "For workflow, select the script source with precedence scriptPath > script > name. Pass raw JavaScript in script, a cwd-relative or absolute file in scriptPath, or a project saved / skill-packaged workflow meta.name in name.",
+      "For workflow, packaged workflows/*.js files (skill or extension) are discoverable but are not authorization by themselves; the user must explicitly ask for workflow-style orchestration or loaded skill instructions must explicitly say to launch workflow, /workflow, or workflow({ name }).",
+      "For workflow, select the script source with precedence scriptPath > script > name. Pass raw JavaScript in script, a cwd-relative or absolute file in scriptPath, or a project saved / skill-packaged / extension-packaged workflow meta.name in name.",
       "For workflow, do not wrap raw script in Markdown fences, although the tool will defensively strip one surrounding fence.",
       "For workflow, the first statement after comments/whitespace must be `export const meta = { name, description, phases }`; keep meta a plain literal object.",
       `For workflow, \`meta.phases\` entries must use the accepted contract \`${PHASE_TITLE_EXAMPLE}\`, or provide a description as \`${PHASE_DESCRIPTION_EXAMPLE}\`; never use \`${PHASE_STRING_REJECTED_EXAMPLE}\` or \`${PHASE_NAME_REJECTED_EXAMPLE}\`.`,
@@ -211,82 +212,18 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent(...)))`, never `await parallel(items.map(item => agent(...)))`.",
       "For workflow, pipeline(items, ...stages) runs each item through all stages independently; do not assume a global barrier between stages.",
       "For workflow, include short unique agent labels such as { label: 'repo inventory' } so progress and errors are readable.",
-      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided. Supported options are label, phase, schema, agentType, and model. Use model as provider/model or provider/model:effort; when :effort is omitted, the child inherits the parent session effort; thinkingLevel, effort, and isolation are unsupported and fail fast.",
+      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided. Supported options are label, phase, schema, agentType, model, and toolPolicy. Use model as provider/model or provider/model:effort; when :effort is omitted, the child inherits the parent session effort; thinkingLevel, effort, and isolation are unsupported and fail fast.",
+      'For workflow, pass toolPolicy: "readOnly" to run a read-only phase: the child agent loses edit and write tools and its bash is restricted to read-only operations. "readOnly" is the only accepted value; any other value fails fast.',
       "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted or a hard runtime/contract error is reached.",
       "For workflow, return a compact JSON-serializable value. Use a final synthesis agent when combining several subagent results.",
     ],
     parameters: workflowToolSchema,
     prepareArguments: normalizeWorkflowToolInput,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      if (signal?.aborted) throw new Error("workflow launch was aborted.");
-
-      const input = normalizeWorkflowToolInput(params);
-      const cwd = options.cwd ?? ctx.cwd;
-      const effectiveCtx = workflowToolContextWithCwd(ctx, cwd);
-      const agent =
-        options.agent ?? options.agentFactory?.(effectiveCtx) ?? createUnconfiguredAgent();
-      const workflowRoot = options.workflowRoot ?? resolveWorkflowRoot(cwd);
-      const workflowCatalog = workflowCatalogForRoot(
-        workflowRoot,
-        workflowAdditionalRoots(options.additionalWorkflowRoots, effectiveCtx),
-      );
-      const resumePaths =
-        input.resumeFromRunId === undefined
-          ? undefined
-          : getWorkflowRunPaths(workflowRoot, input.resumeFromRunId);
-      const script = await readWorkflowScriptForLaunch(input, {
-        cwd,
-        workflowCatalog,
-        resumePaths,
-      });
-      const replayCache =
-        resumePaths === undefined
-          ? undefined
-          : await loadWorkflowReplayCache(resumePaths.journalPath);
-      const parsed = parseWorkflowScript(script);
-      if (!executableScriptCallsAgent(parsed.executableScript)) {
-        throw new Error("workflow scripts must call agent() at least once.");
-      }
-
-      const runId = options.runIdFactory?.() ?? createWorkflowRunId();
-      const taskId = options.taskIdFactory?.() ?? createTaskId();
-      const paths = getWorkflowRunPaths(workflowRoot, runId);
-      const state = createInitialWorkflowRunState({
-        runId,
-        taskId,
-        sessionId: getSessionId(effectiveCtx),
-        cwd,
-        workflowName: parsed.meta.name,
-        description: parsed.meta.description,
-        phases: parsed.meta.phases,
-        scriptPath: paths.scriptPath,
-      });
-      const store = new WorkflowRunStore(workflowRoot);
-      const createdPaths = await store.createRun({ state, script });
-      const controllerRegistry = options.controllerRegistry ?? defaultWorkflowRunControllerRegistry;
-      const controller = controllerRegistry.register(runId);
-
-      scheduleBackgroundWorkflow({
-        store,
-        paths: createdPaths,
-        script,
-        args: input.args,
-        cwd,
-        agent,
-        meta: parsed.meta,
-        state,
-        options,
-        controller,
-        ctx: effectiveCtx,
-        replayCache,
-        resumeFromRunId: input.resumeFromRunId,
-      });
-      refreshWorkflowWidget(effectiveCtx, state);
-
-      const details = createLaunchDetails(parsed.meta, state, createdPaths, input.resumeFromRunId);
+      const result = await launchWorkflowRun(options, ctx, params as WorkflowToolInput, signal);
       return textResult(
-        `Workflow ${parsed.meta.name} launched in background as ${runId}. Artifacts: ${createdPaths.runDir}`,
-        details,
+        `Workflow ${result.workflowName} launched in background as ${result.runId}. Artifacts: ${result.artifactDir}`,
+        result.details,
       );
     },
     renderCall(_args, theme) {
@@ -296,6 +233,131 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       return createWorkflowResultComponent(result, theme);
     },
   } as ToolDefinition;
+}
+
+/**
+ * Structured result of launching a workflow run. Mirrors the identifiers and
+ * `details` returned by the `workflow` LLM Tool so a programmatic caller and the
+ * tool observe identical run artifacts and notification semantics.
+ */
+export type WorkflowLaunchResult = {
+  runId: string;
+  taskId: string;
+  workflowName: string;
+  artifactDir: string;
+  outputPath: string;
+  resumeFromRunId?: string;
+  details: WorkflowToolDetails;
+};
+
+/**
+ * A bound programmatic launcher. Sibling extensions prepare safe structured
+ * `args` (e.g. review Target Scope, research options) and launch a packaged
+ * workflow by resolved name/script through this bridge without duplicating
+ * dynamic-workflow scheduling, storage, widget, or completion-notification
+ * logic. The bridge is intentionally generic: it knows nothing about review or
+ * research semantics.
+ */
+export type WorkflowLaunchBridge = (
+  input: WorkflowToolInput,
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+) => Promise<WorkflowLaunchResult>;
+
+/**
+ * Launch a workflow run programmatically with the same scheduling, run-artifact
+ * creation, widget refresh, and completion-notification behavior as the
+ * `workflow` LLM Tool. Returns once initial run artifacts are written and the
+ * run is scheduled in the background; it does not await completion.
+ */
+export async function launchWorkflowRun(
+  options: WorkflowToolOptions,
+  ctx: ExtensionContext,
+  rawInput: WorkflowToolInput,
+  signal?: AbortSignal,
+): Promise<WorkflowLaunchResult> {
+  if (signal?.aborted) throw new Error("workflow launch was aborted.");
+
+  const input = normalizeWorkflowToolInput(rawInput);
+  const cwd = options.cwd ?? ctx.cwd;
+  const effectiveCtx = workflowToolContextWithCwd(ctx, cwd);
+  const agent = options.agent ?? options.agentFactory?.(effectiveCtx) ?? createUnconfiguredAgent();
+  const workflowRoot = options.workflowRoot ?? resolveWorkflowRoot(cwd);
+  const workflowCatalog = workflowCatalogForRoot(
+    workflowRoot,
+    workflowAdditionalRoots(options.additionalWorkflowRoots, effectiveCtx),
+  );
+  const resumePaths =
+    input.resumeFromRunId === undefined
+      ? undefined
+      : getWorkflowRunPaths(workflowRoot, input.resumeFromRunId);
+  const script = await readWorkflowScriptForLaunch(input, {
+    cwd,
+    workflowCatalog,
+    resumePaths,
+  });
+  const replayCache =
+    resumePaths === undefined ? undefined : await loadWorkflowReplayCache(resumePaths.journalPath);
+  const parsed = parseWorkflowScript(script);
+  if (!executableScriptCallsAgent(parsed.executableScript)) {
+    throw new Error("workflow scripts must call agent() at least once.");
+  }
+
+  const runId = options.runIdFactory?.() ?? createWorkflowRunId();
+  const taskId = options.taskIdFactory?.() ?? createTaskId();
+  const paths = getWorkflowRunPaths(workflowRoot, runId);
+  const state = createInitialWorkflowRunState({
+    runId,
+    taskId,
+    sessionId: getSessionId(effectiveCtx),
+    cwd,
+    workflowName: parsed.meta.name,
+    description: parsed.meta.description,
+    phases: parsed.meta.phases,
+    scriptPath: paths.scriptPath,
+  });
+  const store = new WorkflowRunStore(workflowRoot);
+  const createdPaths = await store.createRun({ state, script });
+  const controllerRegistry = options.controllerRegistry ?? defaultWorkflowRunControllerRegistry;
+  const controller = controllerRegistry.register(runId);
+
+  scheduleBackgroundWorkflow({
+    store,
+    paths: createdPaths,
+    script,
+    args: input.args,
+    cwd,
+    agent,
+    meta: parsed.meta,
+    state,
+    options,
+    controller,
+    ctx: effectiveCtx,
+    replayCache,
+    resumeFromRunId: input.resumeFromRunId,
+  });
+  refreshWorkflowWidget(effectiveCtx, state);
+
+  const details = createLaunchDetails(parsed.meta, state, createdPaths, input.resumeFromRunId);
+  return {
+    runId,
+    taskId,
+    workflowName: parsed.meta.name,
+    artifactDir: createdPaths.runDir,
+    outputPath: createdPaths.outputPath,
+    ...(input.resumeFromRunId === undefined ? {} : { resumeFromRunId: input.resumeFromRunId }),
+    details,
+  };
+}
+
+/**
+ * Build a launcher bound to the given options. dynamic-workflows constructs this
+ * from the same options it uses for the `workflow` tool, so packaged-preset
+ * callers share its agent runner, controller registry, completion notifier, and
+ * packaged/skill roots.
+ */
+export function createWorkflowLaunchBridge(options: WorkflowToolOptions): WorkflowLaunchBridge {
+  return (input, ctx, signal) => launchWorkflowRun(options, ctx, input, signal);
 }
 
 type ScheduleBackgroundWorkflowInput = {
@@ -707,7 +769,7 @@ function createUnconfiguredAgent(): WorkflowAgent {
 function workflowAdditionalRoots(
   provider: WorkflowAdditionalRootsProvider | undefined,
   ctx: ExtensionContext | undefined,
-): string[] {
+): SavedWorkflowRootInput[] {
   const roots = typeof provider === "function" ? provider(ctx) : provider;
   return [...(roots ?? [])];
 }

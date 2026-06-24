@@ -452,6 +452,7 @@ describe("/workflow command", () => {
       path: "/repo/.pi/workflows/tool-workflow.js",
       fileName: "tool-workflow.js",
       script: "export const meta = {};",
+      source: "project",
     };
     const signal = new AbortController().signal;
     const ctx = { signal };

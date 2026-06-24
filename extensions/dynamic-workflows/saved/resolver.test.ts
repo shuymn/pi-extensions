@@ -55,6 +55,7 @@ describe("saved workflow resolver", () => {
         path,
         fileName: "repo-review.js",
         script: expect.stringContaining("saved workflow discovery must not execute"),
+        source: "project",
       },
     ]);
   });
@@ -93,7 +94,11 @@ return await agent("project");`,
 return await agent("skill");`,
     );
 
-    const workflows = await listSavedWorkflows([projectRoot, skillWorkflowRoot]);
+    const roots = [
+      { path: projectRoot, source: "project" as const },
+      { path: skillWorkflowRoot, source: "skill" as const },
+    ];
+    const workflows = await listSavedWorkflows(roots);
 
     expect(workflows.map((workflow) => workflow.name).sort()).toEqual([
       "deep_research",
@@ -101,24 +106,22 @@ return await agent("skill");`,
       "shadowed",
       "shadowed",
     ]);
-    await expect(
-      resolveSavedWorkflow([projectRoot, skillWorkflowRoot], "deep_research"),
-    ).resolves.toMatchObject({
+    expect(workflows.find((workflow) => workflow.path === skillPath)?.source).toBe("skill");
+    await expect(resolveSavedWorkflow(roots, "deep_research")).resolves.toMatchObject({
       name: "deep_research",
       path: skillPath,
+      source: "skill",
     });
-    await expect(
-      resolveSavedWorkflow([projectRoot, skillWorkflowRoot], "repo_review"),
-    ).resolves.toMatchObject({
+    await expect(resolveSavedWorkflow(roots, "repo_review")).resolves.toMatchObject({
       name: "repo_review",
       path: projectPath,
+      source: "project",
     });
-    await expect(
-      resolveSavedWorkflow([projectRoot, skillWorkflowRoot], "shadowed"),
-    ).resolves.toMatchObject({
+    await expect(resolveSavedWorkflow(roots, "shadowed")).resolves.toMatchObject({
       name: "shadowed",
       description: "Project override",
       path: projectShadowPath,
+      source: "project",
     });
   });
 
@@ -149,5 +152,68 @@ return await agent("skill");`,
     await expect(resolveSavedWorkflow(root, "duplicate")).rejects.toThrow(
       "multiple saved workflows named",
     );
+  });
+
+  test("tags discovered workflows with their root provenance", async () => {
+    const projectRoot = tempWorkflowRoot();
+    const extensionRoot = mkdtempSync(join(tmpdir(), "pi-extension-packaged-workflows-"));
+    tempDirs.push(extensionRoot);
+    writeSavedWorkflow(
+      projectRoot,
+      "project-only.js",
+      `export const meta = { name: "project_only", phases: [{ title: "Run" }] };\nreturn await agent("p");`,
+    );
+    writeSavedWorkflow(
+      extensionRoot,
+      "extension-only.js",
+      `export const meta = { name: "extension_only", phases: [{ title: "Run" }] };\nreturn await agent("e");`,
+    );
+
+    const roots = [
+      { path: projectRoot, source: "project" as const },
+      { path: extensionRoot, source: "extension" as const },
+    ];
+    const workflows = await listSavedWorkflows(roots);
+
+    expect(workflows.map((workflow) => [workflow.name, workflow.source])).toEqual([
+      ["extension_only", "extension"],
+      ["project_only", "project"],
+    ]);
+    await expect(resolveSavedWorkflow(roots, "extension_only")).resolves.toMatchObject({
+      name: "extension_only",
+      source: "extension",
+    });
+  });
+
+  test("lets a project workflow override an extension-packaged workflow by meta.name", async () => {
+    const projectRoot = tempWorkflowRoot();
+    const extensionRoot = mkdtempSync(join(tmpdir(), "pi-extension-packaged-workflows-"));
+    tempDirs.push(extensionRoot);
+    const projectPath = writeSavedWorkflow(
+      projectRoot,
+      "research-flow.js",
+      `export const meta = { name: "research_flow", description: "Project override", phases: [{ title: "Run" }] };\nreturn await agent("project");`,
+    );
+    writeSavedWorkflow(
+      extensionRoot,
+      "research-flow.js",
+      `export const meta = { name: "research_flow", description: "Extension default", phases: [{ title: "Run" }] };\nreturn await agent("extension");`,
+    );
+
+    // Project root is listed first, so it wins by meta.name.
+    await expect(
+      resolveSavedWorkflow(
+        [
+          { path: projectRoot, source: "project" },
+          { path: extensionRoot, source: "extension" },
+        ],
+        "research_flow",
+      ),
+    ).resolves.toMatchObject({
+      name: "research_flow",
+      description: "Project override",
+      path: projectPath,
+      source: "project",
+    });
   });
 });

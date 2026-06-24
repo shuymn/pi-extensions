@@ -2,18 +2,21 @@ import { basename, join } from "node:path";
 import { resolveWorkflowRoot } from "../run/root";
 import {
   listSavedWorkflows,
-  mergeSavedWorkflowRoots,
+  normalizeSavedWorkflowRootDescriptors,
   resolveSavedWorkflow,
   type SavedWorkflow,
+  type SavedWorkflowRootInput,
+  type WorkflowRootDescriptor,
 } from "./resolver";
 
 export type WorkflowCatalogRoots = {
   projectRoot: string;
   roots: string[];
+  rootDescriptors: WorkflowRootDescriptor[];
 };
 
 export type WorkflowCatalogOptions = {
-  additionalWorkflowRoots?: readonly string[];
+  additionalWorkflowRoots?: readonly SavedWorkflowRootInput[];
 };
 
 export type WorkflowCatalogDirectCommandPolicy = {
@@ -34,23 +37,22 @@ export class WorkflowCatalog {
   readonly roots: WorkflowCatalogRoots;
 
   constructor(cwd: string, options: WorkflowCatalogOptions = {}) {
-    const projectRoot = resolveWorkflowRoot(cwd);
-    this.roots = {
-      projectRoot,
-      roots: mergeSavedWorkflowRoots(projectRoot, options.additionalWorkflowRoots ?? []),
-    };
+    this.roots = buildWorkflowCatalogRoots(
+      resolveWorkflowRoot(cwd),
+      options.additionalWorkflowRoots ?? [],
+    );
   }
 
   async list(): Promise<SavedWorkflow[]> {
-    return await listSavedWorkflows(this.roots.roots);
+    return await listSavedWorkflows(this.roots.rootDescriptors);
   }
 
   async listProjectSaved(): Promise<SavedWorkflow[]> {
-    return await listSavedWorkflows(this.roots.projectRoot);
+    return await listSavedWorkflows([{ path: this.roots.projectRoot, source: "project" }]);
   }
 
   async resolve(name: string): Promise<SavedWorkflow> {
-    return await resolveSavedWorkflow(this.roots.roots, name);
+    return await resolveSavedWorkflow(this.roots.rootDescriptors, name);
   }
 
   completionCandidates(prefix: string, workflows: readonly SavedWorkflow[]) {
@@ -120,24 +122,48 @@ export class WorkflowCatalog {
 
 export function workflowCatalogForCwd(
   cwd: string,
-  additionalWorkflowRoots: readonly string[] = [],
+  additionalWorkflowRoots: readonly SavedWorkflowRootInput[] = [],
 ): WorkflowCatalog {
   return new WorkflowCatalog(cwd, { additionalWorkflowRoots });
 }
 
 export function workflowCatalogForRoot(
   projectRoot: string,
-  additionalWorkflowRoots: readonly string[] = [],
+  additionalWorkflowRoots: readonly SavedWorkflowRootInput[] = [],
 ): WorkflowCatalog {
   const catalog = Object.create(WorkflowCatalog.prototype) as WorkflowCatalog;
   Object.defineProperty(catalog, "roots", {
-    value: {
-      projectRoot,
-      roots: mergeSavedWorkflowRoots(projectRoot, additionalWorkflowRoots),
-    },
+    value: buildWorkflowCatalogRoots(projectRoot, additionalWorkflowRoots),
     enumerable: true,
   });
   return catalog;
+}
+
+/**
+ * Build the ordered catalog roots. The project root is always first so a
+ * project `.pi/workflows/<name>.js` overrides a skill- or extension-packaged
+ * workflow with the same `meta.name`. Bare additional-root strings default to
+ * the `skill` source because historically only skill-packaged roots were passed
+ * as additional roots; extension-packaged roots must be passed as explicit
+ * descriptors. The low-level resolver's bare-root default remains `project`;
+ * this catalog function is the provenance boundary for additional roots.
+ */
+function buildWorkflowCatalogRoots(
+  projectRoot: string,
+  additionalWorkflowRoots: readonly SavedWorkflowRootInput[],
+): WorkflowCatalogRoots {
+  const rootDescriptors = normalizeSavedWorkflowRootDescriptors([
+    { path: projectRoot, source: "project" },
+    ...additionalWorkflowRoots.map(
+      (input): WorkflowRootDescriptor =>
+        typeof input === "string" ? { path: input, source: "skill" } : input,
+    ),
+  ]);
+  return {
+    projectRoot,
+    roots: rootDescriptors.map((descriptor) => descriptor.path),
+    rootDescriptors,
+  };
 }
 
 function assertSafeSavedWorkflowFileName(name: string): void {

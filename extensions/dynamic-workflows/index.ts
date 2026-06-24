@@ -3,6 +3,8 @@ import { toCliExec } from "../../lib/cli";
 import { createInvestigationToolset } from "../../lib/investigation-tools";
 import { createWorkflowAgentRunner } from "./agent/runner";
 import { WorkflowRunControllerRegistry } from "./run/controllers";
+import { extensionPackagedWorkflowRootDescriptors } from "./saved/packaged";
+import type { SavedWorkflowRootInput } from "./saved/resolver";
 import { skillPackagedWorkflowRootsFromSystemPromptOptions } from "./saved/skill-packaged";
 import { registerUltracodePolicyCommand } from "./ui/ultracode-command";
 import {
@@ -24,6 +26,14 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
     );
     return rootsFromContext.length > 0 ? rootsFromContext : loadedSkillWorkflowRoots;
   };
+  // Skill-packaged roots first, then extension-packaged roots; the project root
+  // is prepended inside the catalog and always wins by meta.name. Discovery here
+  // is not authorization: packaged workflows still require explicit user or
+  // skill instruction to launch.
+  const additionalWorkflowRoots = (ctx?: unknown): SavedWorkflowRootInput[] => [
+    ...skillWorkflowRoots(ctx),
+    ...extensionPackagedWorkflowRootDescriptors(),
+  ];
 
   pi.on("before_agent_start", (event) => {
     loadedSkillWorkflowRoots = skillPackagedWorkflowRootsFromSystemPromptOptions(
@@ -35,7 +45,7 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
     agentFactory: (ctx) => createWorkflowAgentRunner(pi, ctx, investigationToolset),
     controllerRegistry,
     completionNotifier: createWorkflowCompletionNotifier(pi),
-    additionalWorkflowRoots: skillWorkflowRoots,
+    additionalWorkflowRoots,
   });
 
   const launchWorkflow = createWorkflowToolCommandLauncher(workflowTool);
@@ -43,7 +53,7 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   registerWorkflowsCommand(pi, {
     controls: createWorkflowControllerMonitorControlSeams(controllerRegistry),
   });
-  registerWorkflowCommand(pi, { launchWorkflow, additionalWorkflowRoots: skillWorkflowRoots });
+  registerWorkflowCommand(pi, { launchWorkflow, additionalWorkflowRoots });
   registerUltracodePolicyCommand(pi);
   registerDirectSavedWorkflowCommands(pi, { launchWorkflow });
   pi.registerTool(workflowTool);
