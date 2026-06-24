@@ -37,9 +37,15 @@ describe("dynamic workflow tool contract", () => {
     }
     expect(guidelines).not.toContain("description?:");
     expect(guidelines).toContain("agent(prompt, { schema, label }) returns the parsed object");
-    expect(guidelines).toContain("Supported options are label, phase, schema, and agentType");
     expect(guidelines).toContain(
-      "model, thinkingLevel, and isolation are unsupported and fail fast",
+      "Supported options are label, phase, schema, agentType, and model",
+    );
+    expect(guidelines).toContain("Use model as provider/model or provider/model:effort");
+    expect(guidelines).toContain(
+      "when :effort is omitted, the child inherits the parent session effort",
+    );
+    expect(guidelines).toContain(
+      "thinkingLevel, effort, and isolation are unsupported and fail fast",
     );
     expect(guidelines).toContain("hard runtime/contract error");
     const properties = (tool.parameters as any).properties;

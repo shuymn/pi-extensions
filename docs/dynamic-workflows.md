@@ -24,8 +24,9 @@ Workflow scripts can call `agent(prompt, options)` to delegate work to a Pi suba
 - `phase` — explicit phase label for this agent call; otherwise the current `phase()` is used.
 - `schema` — JSON schema for structured output. When provided, the subagent must finish with the structured output tool and `agent()` returns the parsed object.
 - `agentType` — English role metadata for prompts, journals, and transcripts.
+- `model` — optional child-agent model selection using the shared `provider/model` or `provider/model:effort` notation, for example `openai/gpt-5:high`. When effort is omitted, the child keeps the parent session's current effort.
 
-`model`, `thinkingLevel`, and `isolation` are intentionally unsupported. Passing any of them to `agent()` fails fast instead of becoming a no-op hint. Workflows cannot select per-agent models, per-agent thinking levels, or git worktree isolation in this slice.
+`thinkingLevel`, `effort`, and `isolation` are intentionally unsupported as separate options. Passing any of them to `agent()` fails fast instead of becoming a no-op hint. Use the `model` notation above for per-agent model and effort selection.
 
 The `budget` global and `tokenBudget` launch option are estimate-based guards derived from serialized agent result size. They are not actual model-token accounting, and workflow outputs do not report real tool-call counts.
 

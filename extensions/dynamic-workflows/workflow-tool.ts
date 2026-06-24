@@ -211,7 +211,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
       "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent(...)))`, never `await parallel(items.map(item => agent(...)))`.",
       "For workflow, pipeline(items, ...stages) runs each item through all stages independently; do not assume a global barrier between stages.",
       "For workflow, include short unique agent labels such as { label: 'repo inventory' } so progress and errors are readable.",
-      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided. Supported options are label, phase, schema, and agentType; model, thinkingLevel, and isolation are unsupported and fail fast.",
+      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided. Supported options are label, phase, schema, agentType, and model. Use model as provider/model or provider/model:effort; when :effort is omitted, the child inherits the parent session effort; thinkingLevel, effort, and isolation are unsupported and fail fast.",
       "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted or a hard runtime/contract error is reached.",
       "For workflow, return a compact JSON-serializable value. Use a final synthesis agent when combining several subagent results.",
     ],

@@ -176,9 +176,59 @@ describe("dynamic workflow runtime", () => {
     expect(result.result).toEqual({ verdict: "pass" });
   });
 
+  test("passes normalized provider/model:effort selections through agent options and journal keys", async () => {
+    const agentOptions: unknown[] = [];
+    const queuedEvents: Array<{ model?: string; journalKey: string }> = [];
+
+    const result = await runWorkflow(
+      `
+        export const meta = {
+          name: "model_selection",
+          description: "Exercise per-agent model selection",
+          phases: [{ title: "Assess" }],
+        };
+
+        phase("Assess");
+        return await agent("Use a specific model", {
+          label: "specific model",
+          agentType: "reviewer",
+          model: " openai/gpt-5:HIGH ",
+        });
+      `,
+      {
+        cwd: "/repo",
+        agent: (_prompt, options) => {
+          agentOptions.push(options);
+          return "selected";
+        },
+        onAgentQueued: (event) => queuedEvents.push(event),
+      },
+    );
+
+    const expectedKey = createWorkflowAgentJournalKey({
+      prompt: "Use a specific model",
+      label: "specific model",
+      phase: "Assess",
+      agentType: "reviewer",
+      model: "openai/gpt-5:high",
+      cwd: "/repo",
+    });
+    expect(agentOptions[0]).toMatchObject({
+      label: "specific model",
+      phase: "Assess",
+      agentType: "reviewer",
+      model: "openai/gpt-5:high",
+    });
+    expect(queuedEvents[0]).toMatchObject({
+      model: "openai/gpt-5:high",
+      journalKey: expectedKey,
+    });
+    expect(result.result).toBe("selected");
+  });
+
   test.each([
-    { option: "model", source: `{ model: "anthropic/claude" }` },
     { option: "thinkingLevel", source: `{ thinkingLevel: "high" }` },
+    { option: "effort", source: `{ effort: "high" }` },
     { option: "isolation", source: `{ isolation: "worktree" }` },
   ])("rejects unsupported agent execution selector $option", async ({ option, source }) => {
     const calls: string[] = [];
@@ -206,6 +256,32 @@ describe("dynamic workflow runtime", () => {
     expect(calls).toEqual([]);
   });
 
+  test("rejects invalid agent model notation before spawning an agent", async () => {
+    const calls: string[] = [];
+
+    await expect(
+      runWorkflow(
+        `
+          export const meta = {
+            name: "invalid_agent_model",
+            description: "Reject invalid model notation",
+            phases: [{ title: "Run" }],
+          };
+
+          return await agent("bad", { model: "gpt-5" });
+        `,
+        {
+          cwd: "/repo",
+          agent: (prompt) => {
+            calls.push(prompt);
+            return "unexpected";
+          },
+        },
+      ),
+    ).rejects.toThrow("agent option `model` must use provider/model");
+    expect(calls).toEqual([]);
+  });
+
   test("unsupported agent execution selectors hard-stop parallel branches", async () => {
     await expect(
       runWorkflow(
@@ -216,11 +292,11 @@ describe("dynamic workflow runtime", () => {
             phases: [{ title: "Run" }],
           };
 
-          return await parallel([() => agent("bad", { model: "anthropic/claude" })]);
+          return await parallel([() => agent("bad", { thinkingLevel: "high" })]);
         `,
         { cwd: "/repo", agent: () => "unexpected" },
       ),
-    ).rejects.toThrow("agent option `model` is unsupported");
+    ).rejects.toThrow("agent option `thinkingLevel` is unsupported");
   });
 
   test("emits stable journal keys for effective agent calls", async () => {

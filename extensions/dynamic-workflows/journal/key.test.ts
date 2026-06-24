@@ -73,6 +73,7 @@ describe("workflow agent journal key", () => {
       { label: "correctness" },
       { phase: "Verify" },
       { agentType: "verifier" },
+      { model: "openai/gpt-5:medium" },
       { cwd: "/other" },
     ];
 
@@ -81,15 +82,16 @@ describe("workflow agent journal key", () => {
     }
   });
 
-  test("ignores unsupported execution selector metadata", () => {
-    const withUnsupportedSelectors = {
+  test("records model selections", () => {
+    const withModel = {
       ...baseInput,
-      model: "openai/gpt-5",
-      thinkingLevel: "medium",
-      isolation: "worktree",
+      model: "openai/gpt-5:medium",
     };
 
-    expect(createWorkflowAgentJournalKey(withUnsupportedSelectors)).toBe(
+    expect(createWorkflowAgentJournalKeyPreimage(withModel)).toMatchObject({
+      model: "openai/gpt-5:medium",
+    });
+    expect(createWorkflowAgentJournalKey(withModel)).not.toBe(
       createWorkflowAgentJournalKey(baseInput),
     );
   });
