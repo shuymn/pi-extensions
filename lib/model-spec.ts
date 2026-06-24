@@ -39,6 +39,11 @@ export function parseModelSpec(value: unknown): ModelSpec | undefined {
   return { provider, model, ...(thinkingLevel ? { thinkingLevel } : {}) };
 }
 
+export function parseModelSpecList(value: unknown): ModelSpec[] {
+  const entries = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
+  return entries.map(parseModelSpec).filter((entry): entry is ModelSpec => entry !== undefined);
+}
+
 export function formatModelSpec(spec: Pick<ModelSpec, "provider" | "model">): string {
   return `${spec.provider}/${spec.model}`;
 }

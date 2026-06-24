@@ -20,13 +20,14 @@ import {
   type InvestigationToolset,
   isolatedAgentToolNames,
 } from "../../lib/investigation-tools";
-import { parseModelSpec, type ThinkingLevel } from "../../lib/model-spec";
+import { shouldFallbackForError } from "../../lib/model-fallback";
+import { formatModelSpec, parseModelSpecList, type ThinkingLevel } from "../../lib/model-spec";
 import {
   createProtectedBashOperations,
   type ExecFn,
   resetSandboxState,
 } from "../../lib/protected-bash";
-import { getLatestAssistantMessageText } from "../../lib/session-messages";
+import { getLatestAssistantError, getLatestAssistantMessageText } from "../../lib/session-messages";
 import { projectSettingsPath, readExtensionSettings } from "../../lib/settings";
 
 type SubagentStatus = "running" | "stopping" | "completed" | "error" | "stopped";
@@ -74,6 +75,7 @@ type RunSubagentOptions = {
   investigationToolset: InvestigationToolset;
   onTextUpdate?: (text: string) => void;
   onSessionCreated?: (session: AgentSession) => void;
+  onSessionDisposed?: (session: AgentSession) => void;
 };
 
 type SubagentModelSelection = {
@@ -226,28 +228,55 @@ function readModelTierSpec(cwd: string, tier: ModelTier): unknown {
   return tiers[tier];
 }
 
-function resolveSubagentModel(
+function modelKey(model: SubagentModelSelection["model"]): string | undefined {
+  if (!model) return undefined;
+  const { provider, id } = model;
+  if (typeof provider !== "string" || typeof id !== "string") return undefined;
+  return formatModelSpec({ provider, model: id });
+}
+
+function sameModelSelection(left: SubagentModelSelection, right: SubagentModelSelection): boolean {
+  if (left.thinkingLevel !== right.thinkingLevel) return false;
+  if (left.model === right.model) return true;
+
+  const leftKey = modelKey(left.model);
+  const rightKey = modelKey(right.model);
+  return leftKey !== undefined && leftKey === rightKey;
+}
+
+function appendModelCandidate(
+  candidates: SubagentModelSelection[],
+  candidate: SubagentModelSelection,
+): void {
+  if (!candidates.some((existing) => sameModelSelection(existing, candidate))) {
+    candidates.push(candidate);
+  }
+}
+
+function resolveSubagentModelCandidates(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   modelTier: ModelTier | undefined,
   fallback?: SubagentModelSelection,
-): SubagentModelSelection {
+): SubagentModelSelection[] {
   const inherited = fallback ?? {
     model: ctx.model,
     thinkingLevel: pi.getThinkingLevel(),
   };
-  if (modelTier === undefined) return inherited;
+  if (modelTier === undefined) return [inherited];
 
-  const spec = parseModelSpec(readModelTierSpec(ctx.cwd, modelTier));
-  if (spec === undefined) return inherited;
+  const candidates: SubagentModelSelection[] = [];
+  for (const spec of parseModelSpecList(readModelTierSpec(ctx.cwd, modelTier))) {
+    const model = ctx.modelRegistry.find(spec.provider, spec.model);
+    if (model === undefined) continue;
+    appendModelCandidate(candidates, {
+      model,
+      thinkingLevel: spec.thinkingLevel ?? inherited.thinkingLevel,
+    });
+  }
 
-  const model = ctx.modelRegistry.find(spec.provider, spec.model);
-  if (model === undefined) return inherited;
-
-  return {
-    model,
-    thinkingLevel: spec.thinkingLevel ?? inherited.thinkingLevel,
-  };
+  appendModelCandidate(candidates, inherited);
+  return candidates;
 }
 
 function createSpawnSubagentParameters(runtime: SpawnToolRuntime) {
@@ -280,7 +309,7 @@ function createSpawnSubagentParameters(runtime: SpawnToolRuntime) {
     modelTier: Type.Optional(
       StringEnum(MODEL_TIERS, {
         description:
-          'Optional model tier for delegated work. Top-level calls inherit the current model unless set; delegated calls from an isolated session default to "medium" when omitted. Use "small" only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples; verify results before relying on them. Configure mappings under subagents.modelTiers in settings; missing or invalid mappings fall back to the current model.',
+          'Optional model tier for delegated work. Top-level calls inherit the current model unless set; delegated calls from an isolated session default to "medium" when omitted. Use "small" only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples; verify results before relying on them. Configure mappings under subagents.modelTiers in settings as a model string, comma-separated string, or array; missing, invalid, unresolved, or exhausted mappings fall back to the current model.',
       }),
     ),
   });
@@ -348,11 +377,12 @@ function createSpawnSubagentToolDefinition(
   } as ToolDefinition;
 }
 
-async function runSubagent(
+async function runSubagentAttempt(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   options: RunSubagentOptions,
-): Promise<{ session: AgentSession; result: string }> {
+  modelSelection: SubagentModelSelection,
+): Promise<{ session: AgentSession; result: string; errorMessage?: string }> {
   if (options.abortSignal.aborted) throw new Error("Subagent stopped before it started.");
 
   const agentDir = getAgentDir();
@@ -384,7 +414,6 @@ async function runSubagent(
       timeout: opts?.timeout,
     });
 
-  const modelSelection = resolveSubagentModel(pi, ctx, options.modelTier, options.modelFallback);
   const nestedSpawnTool = canDelegate
     ? createSpawnSubagentToolDefinition(pi, () => ctx, options.investigationToolset, {
         callerDelegationDepth: options.delegationDepth,
@@ -432,11 +461,44 @@ async function runSubagent(
     }
 
     await session.prompt(options.prompt);
-    return { session, result: collector.getText() || "No output." };
+    return {
+      session,
+      result: collector.getText() || "No output.",
+      errorMessage: getLatestAssistantError(session.messages),
+    };
   } finally {
     options.abortSignal.removeEventListener("abort", abort);
     collector.unsubscribe();
   }
+}
+
+async function runSubagent(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  options: RunSubagentOptions,
+): Promise<{ session: AgentSession; result: string }> {
+  const modelCandidates = resolveSubagentModelCandidates(
+    pi,
+    ctx,
+    options.modelTier,
+    options.modelFallback,
+  );
+  for (let index = 0; index < modelCandidates.length; index += 1) {
+    const attempt = await runSubagentAttempt(pi, ctx, options, modelCandidates[index]);
+    if (attempt.errorMessage === undefined)
+      return { session: attempt.session, result: attempt.result };
+
+    if (!shouldFallbackForError(attempt.errorMessage) || index === modelCandidates.length - 1) {
+      throw new Error(attempt.errorMessage);
+    }
+
+    try {
+      attempt.session.dispose?.();
+    } catch {}
+    options.onSessionDisposed?.(attempt.session);
+  }
+
+  throw new Error("Subagent failed.");
 }
 
 function disposeRecordSession(record: SubagentRecord): void {
@@ -531,6 +593,9 @@ async function executeSpawnSubagent(
               ),
         onSessionCreated: (session) => {
           record.session = session;
+        },
+        onSessionDisposed: (session) => {
+          if (record.session === session) record.session = undefined;
         },
       });
       record.session = session;

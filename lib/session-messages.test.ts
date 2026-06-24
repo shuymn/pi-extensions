@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
-import { getLatestAssistantMessageText, latestAssistantWasAborted } from "./session-messages";
+import {
+  getLatestAssistantError,
+  getLatestAssistantMessageText,
+  latestAssistantWasAborted,
+} from "./session-messages";
 
 describe("session message helpers", () => {
   test("returns string content from the latest assistant message", () => {
@@ -95,5 +99,24 @@ describe("session message helpers", () => {
     ).toBe(true);
 
     expect(latestAssistantWasAborted(undefined)).toBe(false);
+  });
+
+  test("returns the error message only when the latest assistant message failed", () => {
+    expect(
+      getLatestAssistantError([
+        { role: "assistant", content: "old", stopReason: "error", errorMessage: "old boom" },
+        { role: "assistant", content: "latest", stopReason: "error", errorMessage: "boom" },
+      ]),
+    ).toBe("boom");
+
+    expect(
+      getLatestAssistantError([{ role: "assistant", content: "latest", stopReason: "end_turn" }]),
+    ).toBeUndefined();
+
+    expect(
+      getLatestAssistantError([{ role: "assistant", content: "latest", stopReason: "error" }]),
+    ).toBeUndefined();
+
+    expect(getLatestAssistantError(undefined)).toBeUndefined();
   });
 });

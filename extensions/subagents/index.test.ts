@@ -20,6 +20,8 @@ type Subscriber = (event: any) => void;
 type SessionBehavior = {
   resultText?: string;
   promptError?: Error;
+  promptStopReason?: string;
+  promptErrorMessage?: string;
   blockPrompt?: boolean;
   initialMessages?: Array<{ role: string; content: unknown }>;
   disposeError?: Error;
@@ -177,6 +179,10 @@ function createSession(behavior: SessionBehavior) {
       session.messages.push({
         role: "assistant",
         content: [{ type: "text", text: behavior.resultText ?? "subagent result" }],
+        ...(behavior.promptStopReason ? { stopReason: behavior.promptStopReason } : {}),
+        ...(behavior.promptErrorMessage !== undefined
+          ? { errorMessage: behavior.promptErrorMessage }
+          : {}),
       });
     },
     async abort() {
@@ -769,6 +775,265 @@ describe("subagents extension", () => {
       model: mediumModel,
       thinkingLevel: "low",
     });
+  });
+
+  test("modelTier arrays fall back on retryable runtime errors", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    pi.setThinkingLevel("high");
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          medium: ["test/first-model:low", "test/second-model:minimal"],
+        },
+      },
+    });
+    const firstModel = { name: "first model" };
+    const secondModel = { name: "second model" };
+    const ctx = createContext({
+      cwd,
+      modelRegistry: {
+        id: "registry",
+        find(provider: string, model: string) {
+          if (provider === "test" && model === "first-model") return firstModel;
+          if (provider === "test" && model === "second-model") return secondModel;
+          return undefined;
+        },
+      },
+    });
+    nextBehaviors = [
+      {
+        resultText: "first failed",
+        promptStopReason: "error",
+        promptErrorMessage: "429 rate limit",
+      },
+      { resultText: "second answer" },
+    ];
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Use configured fallback", modelTier: "medium" },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "second answer" }],
+      details: { id: "id000001", status: "completed" },
+    });
+    expect(createAgentSessionCalls).toHaveLength(2);
+    expect(createAgentSessionCalls[0]).toMatchObject({
+      model: firstModel,
+      thinkingLevel: "low",
+    });
+    expect(createAgentSessionCalls[1]).toMatchObject({
+      model: secondModel,
+      thinkingLevel: "minimal",
+    });
+    expect(createdSessions[0].disposed).toBe(true);
+    expect(createdSessions[1].disposed).toBe(true);
+  });
+
+  test("modelTier comma-separated mappings fall back to inherited model after candidates are exhausted", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    pi.setThinkingLevel("xhigh");
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          small: "test/first-small:minimal, test/second-small:low",
+        },
+      },
+    });
+    const inheritedModel = { name: "inherited model" };
+    const firstModel = { name: "first small" };
+    const secondModel = { name: "second small" };
+    const ctx = createContext({
+      cwd,
+      model: inheritedModel,
+      modelRegistry: {
+        id: "registry",
+        find(provider: string, model: string) {
+          if (provider === "test" && model === "first-small") return firstModel;
+          if (provider === "test" && model === "second-small") return secondModel;
+          return undefined;
+        },
+      },
+    });
+    nextBehaviors = [
+      {
+        resultText: "first failed",
+        promptStopReason: "error",
+        promptErrorMessage: "503 service unavailable",
+      },
+      {
+        resultText: "second failed",
+        promptStopReason: "error",
+        promptErrorMessage: "model unavailable",
+      },
+      { resultText: "inherited answer" },
+    ];
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Use comma-separated fallback", modelTier: "small" },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+    expect(result.details).toEqual({ id: "id000001", status: "completed" });
+    expect(result.content[0].text).toBe("inherited answer");
+    expect(createAgentSessionCalls).toHaveLength(3);
+    expect(createAgentSessionCalls[0]).toMatchObject({
+      model: firstModel,
+      thinkingLevel: "minimal",
+    });
+    expect(createAgentSessionCalls[1]).toMatchObject({
+      model: secondModel,
+      thinkingLevel: "low",
+    });
+    expect(createAgentSessionCalls[2]).toMatchObject({
+      model: inheritedModel,
+      thinkingLevel: "xhigh",
+    });
+    expect(createdSessions[0].disposed).toBe(true);
+    expect(createdSessions[1].disposed).toBe(true);
+    expect(createdSessions[2].disposed).toBe(true);
+  });
+
+  test("modelTier runtime fallback stops on non-retryable errors", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          medium: ["test/first-model", "test/second-model"],
+        },
+      },
+    });
+    const firstModel = { name: "first model" };
+    const secondModel = { name: "second model" };
+    const ctx = createContext({
+      cwd,
+      modelRegistry: {
+        id: "registry",
+        find(provider: string, model: string) {
+          if (provider === "test" && model === "first-model") return firstModel;
+          if (provider === "test" && model === "second-model") return secondModel;
+          return undefined;
+        },
+      },
+    });
+    nextBehaviors = [
+      {
+        resultText: "first failed",
+        promptStopReason: "error",
+        promptErrorMessage: "401 invalid api key",
+      },
+    ];
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Do not fallback", modelTier: "medium" },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "Subagent error: 401 invalid api key" }],
+      details: { id: "id000001", status: "error" },
+    });
+    expect(createAgentSessionCalls).toHaveLength(1);
+    expect(createAgentSessionCalls[0]).toMatchObject({ model: firstModel });
+    expect(createdSessions[0].disposed).toBe(true);
+  });
+
+  test("modelTier retry does not repeat the inherited model", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    const cwd = tempProjectSettings({
+      subagents: {
+        modelTiers: {
+          medium: "test/inherited-model",
+        },
+      },
+    });
+    const inheritedModel = {
+      provider: "test",
+      id: "inherited-model",
+      name: "inherited model",
+    };
+    const ctx = createContext({
+      cwd,
+      model: inheritedModel,
+      modelRegistry: {
+        id: "registry",
+        find: (provider: string, model: string) =>
+          provider === "test" && model === "inherited-model" ? inheritedModel : undefined,
+      },
+    });
+    nextBehaviors = [
+      {
+        resultText: "same model failed",
+        promptStopReason: "error",
+        promptErrorMessage: "429 rate limit",
+      },
+    ];
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute(
+        "call",
+        { prompt: "Do not retry the same model", modelTier: "medium" },
+        undefined,
+        undefined,
+        ctx,
+      );
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "Subagent error: 429 rate limit" }],
+      details: { id: "id000001", status: "error" },
+    });
+    expect(createAgentSessionCalls).toHaveLength(1);
+    expect(createAgentSessionCalls[0]).toMatchObject({ model: inheritedModel });
+    expect(createdSessions[0].disposed).toBe(true);
+  });
+
+  test("empty error messages are treated as failed subagent attempts", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi();
+    extension(pi as never);
+    nextBehaviors = [
+      {
+        resultText: "empty error failed",
+        promptStopReason: "error",
+        promptErrorMessage: "",
+      },
+    ];
+
+    const result = await pi.tools
+      .get("spawn_subagent")!
+      .execute("call", { prompt: "Fail with empty error" }, undefined, undefined, createContext());
+
+    expect(result).toEqual({
+      content: [{ type: "text", text: "Subagent error: " }],
+      details: { id: "id000001", status: "error" },
+    });
+    expect(createAgentSessionCalls).toHaveLength(1);
+    expect(createdSessions[0].disposed).toBe(true);
   });
 
   test("nested modelTier fallback keeps the owning session model selection", async () => {
