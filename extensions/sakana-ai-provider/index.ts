@@ -4,11 +4,11 @@ import {
   type AssistantMessageEventStream,
   type Context,
   createAssistantMessageEventStream,
-  getApiProvider,
   type Model,
   type OpenAIResponsesCompat,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
+import { getApiProvider } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
 
 export const SAKANA_AI_PROVIDER_ID = "sakana-ai";
