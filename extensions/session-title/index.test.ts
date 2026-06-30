@@ -8,7 +8,7 @@ let completeImpl: (...args: unknown[]) => Promise<unknown> = async () => ({
   content: [{ type: "text", text: "Generated Title" }],
 });
 
-mock.module("@earendil-works/pi-ai", () => ({
+mock.module("@earendil-works/pi-ai/compat", () => ({
   complete: (...args: unknown[]) => completeImpl(...args),
 }));
 
