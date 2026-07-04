@@ -1,4 +1,5 @@
 import type { ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 
 import { terminatingTextResult } from "../../lib/structured-tool";
@@ -40,7 +41,7 @@ const COMPACT_TOOL_PARAMETERS = Type.Object({
   stopAfterCompaction: Type.Optional(
     Type.Boolean({
       description:
-        "When true, compact and stop instead of automatically triggering a follow-up turn. Use only when no continuation is needed.",
+        "When true, compact and stop instead of automatically triggering a follow-up turn. This is not a substitute for a final response when all user-requested work is complete.",
     }),
   ),
 });
@@ -59,6 +60,63 @@ type CompactToolDetails =
       accepted: false;
       status: "pending" | "compacting";
     };
+
+type ThemeLike = {
+  fg(name: string, text: string): string;
+  bold(text: string): string;
+};
+
+type CompactToolRenderResult = {
+  content?: Array<{ type: string; text?: string }>;
+  details?: unknown;
+};
+
+const TOOL_RENDER_PREVIEW_MAX_CHARS = 240;
+
+function optionalTextPreview(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim().replace(/\s+/g, " ");
+  if (!text) return undefined;
+  if (text.length <= TOOL_RENDER_PREVIEW_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_RENDER_PREVIEW_MAX_CHARS - 1)}…`;
+}
+
+function renderCompactCall(args: unknown, theme: ThemeLike): Text {
+  const params = (args ?? {}) as Partial<CompactToolParams>;
+  const customInstructionLine = optionalTextPreview(params.customInstructions);
+  const title = theme.fg("toolTitle", theme.bold(COMPACT_TOOL_NAME));
+  const lines = customInstructionLine ? [title, theme.fg("dim", customInstructionLine)] : [title];
+  return new Text(lines.join("\n"), 0, 0);
+}
+
+function fallbackResultText(result: CompactToolRenderResult): string {
+  const first = result.content?.[0];
+  return first?.type === "text" ? (first.text ?? "") : "";
+}
+
+function isCompactToolDetails(value: unknown): value is CompactToolDetails {
+  if (!value || typeof value !== "object") return false;
+  const details = value as { accepted?: unknown; status?: unknown };
+  if (details.accepted === true) return details.status === "scheduled";
+  if (details.accepted === false)
+    return details.status === "pending" || details.status === "compacting";
+  return false;
+}
+
+function renderCompactResult(
+  result: CompactToolRenderResult,
+  _options: unknown,
+  theme: ThemeLike,
+): Text {
+  const details = result.details;
+  if (!isCompactToolDetails(details)) return new Text(fallbackResultText(result), 0, 0);
+
+  if (!details.accepted) {
+    return new Text(theme.fg("warning", compactPendingMessage(details.status)), 0, 0);
+  }
+
+  return new Text("", 0, 0);
+}
 
 function appendTransientWarning(messages: ContextEvent["messages"]): ContextEvent["messages"] {
   return [
@@ -123,13 +181,16 @@ export default function compactExtension(pi: ExtensionAPI) {
       "Request Pi context compaction at a semantic checkpoint. The request is scheduled and runs after the current tool result lands at turn_end.",
     promptSnippet: "Request Pi context compaction at a semantic checkpoint",
     promptGuidelines: [
-      `Use ${COMPACT_TOOL_NAME} only when context usage is high and the current atomic step is complete.`,
+      `Use ${COMPACT_TOOL_NAME} only when context usage is high, unfinished user-requested work remains, and the current atomic step is complete.`,
       `Call ${COMPACT_TOOL_NAME} as the only tool; do not combine it with other tool calls in the same response.`,
+      `Do not use ${COMPACT_TOOL_NAME} when all user-requested work is complete and only a final response or completion report remains.`,
       `Do not use ${COMPACT_TOOL_NAME} as a general summarization tool or as a substitute for answering the user.`,
-      "By default, compaction will trigger a follow-up turn to continue unfinished work; set stopAfterCompaction only when no continuation is needed.",
+      "By default, compaction will trigger a follow-up turn to continue unfinished work; stopAfterCompaction is only for rare cases where compaction is explicitly needed without a follow-up.",
     ],
     parameters: COMPACT_TOOL_PARAMETERS,
     executionMode: "sequential",
+    renderCall: renderCompactCall,
+    renderResult: renderCompactResult,
     async execute(_toolCallId, params: CompactToolParams, _signal, _onUpdate, ctx) {
       const result = scheduleCompactRequest(state, params);
       if (!result.accepted) {

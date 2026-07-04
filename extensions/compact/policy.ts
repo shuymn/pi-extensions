@@ -160,8 +160,9 @@ export function buildCompactWarningMessage(): string {
   return [
     "Context usage is high and Pi's built-in auto-compaction threshold is approaching.",
     "Do not start a broad new task.",
-    `If the current atomic step is complete, call \`${COMPACT_TOOL_NAME}\` as the only tool.`,
-    `If not, finish the smallest safe step, then call \`${COMPACT_TOOL_NAME}\`.`,
+    "If all user-requested work is complete and your only remaining action is a final response or completion report, do not compact; answer the user instead.",
+    `If unfinished user-requested work remains and the current atomic step is complete, call \`${COMPACT_TOOL_NAME}\` as the only tool.`,
+    `If unfinished work remains but the current step is not complete, finish the smallest safe step, then call \`${COMPACT_TOOL_NAME}\`.`,
   ].join(" ");
 }
 

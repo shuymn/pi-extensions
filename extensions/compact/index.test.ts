@@ -8,6 +8,15 @@ import { createFakeUi } from "../../tests/support/fake-ui";
 import compactExtension from "./index";
 import { COMPACT_TOOL_NAME } from "./policy";
 
+type Theme = {
+  fg(name: string, text: string): string;
+  bold(text: string): string;
+};
+
+type RenderComponent = {
+  render(width: number): string[];
+};
+
 type ToolDefinition = {
   name: string;
   label?: string;
@@ -16,6 +25,8 @@ type ToolDefinition = {
   promptGuidelines?: string[];
   parameters?: any;
   executionMode?: string;
+  renderCall?: (args: unknown, theme: Theme) => RenderComponent;
+  renderResult?: (result: unknown, options: unknown, theme: Theme) => RenderComponent;
   execute: (
     toolCallId: string,
     params: any,
@@ -23,6 +34,11 @@ type ToolDefinition = {
     onUpdate?: unknown,
     ctx?: any,
   ) => Promise<any>;
+};
+
+const theme: Theme = {
+  fg: (_name, text) => text,
+  bold: (text) => text,
 };
 
 type CompactOptions = {
@@ -75,6 +91,13 @@ async function expectWarningInjectedOnce(contextHandler: any, ctx: any): Promise
   expect(await contextHandler({ messages: [] }, ctx)).toBeUndefined();
 }
 
+function renderedText(component: RenderComponent): string {
+  return component
+    .render(400)
+    .map((line) => line.trimEnd())
+    .join("\n");
+}
+
 describe("compact extension", () => {
   let tempDir: string;
 
@@ -100,12 +123,75 @@ describe("compact extension", () => {
     expect(tool.label).toBe("Compact Context");
     expect(tool.description).toContain("semantic checkpoint");
     expect(tool.promptSnippet).toContain("semantic checkpoint");
-    expect(tool.promptGuidelines!.join("\n")).toContain("as the only tool");
-    expect(tool.promptGuidelines!.join("\n")).toContain("stopAfterCompaction");
+    const guidelines = tool.promptGuidelines!.join("\n");
+    expect(guidelines).toContain("as the only tool");
+    expect(guidelines).toContain("unfinished user-requested work remains");
+    expect(guidelines).toContain("final response or completion report remains");
+    expect(guidelines).toContain("stopAfterCompaction");
     expect(tool.executionMode).toBe("sequential");
     expect(tool.parameters.properties.customInstructions).toBeDefined();
     expect(tool.parameters.properties.continuationPrompt).toBeDefined();
     expect(tool.parameters.properties.stopAfterCompaction).toBeDefined();
+    expect(tool.parameters.properties.stopAfterCompaction.description).toContain(
+      "not a substitute for a final response",
+    );
+    expect(tool.renderCall).toBeDefined();
+    expect(tool.renderResult).toBeDefined();
+  });
+
+  test("renders compact_context parameters in tool call without duplicating result details", () => {
+    const pi = createFakePi<ToolDefinition>();
+    compactExtension(pi as never);
+    const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
+    const params = {
+      customInstructions: "  Focus on changed\nfiles.  ",
+      continuationPrompt: "  Resume verification.  ",
+      stopAfterCompaction: true,
+    };
+    const scheduledResult = {
+      content: [],
+      details: {
+        accepted: true,
+        status: "scheduled",
+        customInstructions: "Focus on changed files.",
+        continuationPrompt: "Resume verification.",
+        stopAfterCompaction: true,
+      },
+    };
+    const taggedTheme: Theme = {
+      fg: (name, text) => `<${name}>${text}</${name}>`,
+      bold: (text) => text,
+    };
+
+    expect(renderedText(tool.renderCall!({}, theme))).toBe("compact_context");
+
+    const callText = renderedText(tool.renderCall!(params, theme));
+    expect(callText).toBe("compact_context\nFocus on changed files.");
+
+    const taggedCallText = renderedText(tool.renderCall!(params, taggedTheme));
+    expect(taggedCallText).toBe(
+      "<toolTitle>compact_context</toolTitle>\n<dim>Focus on changed files.</dim>",
+    );
+    expect(taggedCallText).not.toContain("<muted>");
+
+    const resultText = renderedText(tool.renderResult!(scheduledResult, undefined, theme));
+    expect(resultText).toBe("");
+    expect(renderedText(tool.renderResult!(scheduledResult, undefined, taggedTheme))).toBe("");
+
+    expect(
+      renderedText(
+        tool.renderResult!({ content: [{ type: "text", text: "raw fallback" }] }, undefined, theme),
+      ),
+    ).toContain("raw fallback");
+    expect(
+      renderedText(
+        tool.renderResult!(
+          { content: [], details: { accepted: false, status: "pending" } },
+          undefined,
+          theme,
+        ),
+      ),
+    ).toContain("already scheduled");
   });
 
   test("context hook appends a transient warning once per high-usage cycle", async () => {

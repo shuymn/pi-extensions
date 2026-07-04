@@ -221,11 +221,13 @@ describe("compact policy", () => {
     });
   });
 
-  test("builds warning text that directs the model to the compact_context tool", () => {
+  test("builds warning text that only directs compaction for unfinished work", () => {
     const warning = buildCompactWarningMessage();
 
     expect(warning).toContain(COMPACT_TOOL_NAME);
     expect(warning).toContain("Pi's built-in auto-compaction threshold is approaching");
+    expect(warning).toContain("do not compact; answer the user instead");
+    expect(warning).toContain("unfinished user-requested work remains");
     expect(warning).toContain("as the only tool");
   });
 });
