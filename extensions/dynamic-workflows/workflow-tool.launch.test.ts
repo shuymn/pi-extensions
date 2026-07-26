@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { CliExec } from "../../lib/cli";
 import { createWorkflowAgentJournalKey } from "./journal/key";
+import { WorkflowRunControllerRegistry } from "./run/controllers";
+import { extensionPackagedWorkflowRootDescriptors } from "./saved/packaged";
+import type { SavedWorkflow } from "./saved/resolver";
+import { createWorkflowToolCommandLauncher } from "./ui/workflow-command";
 import {
   createAgentSessionCalls,
   loaderInstances,
@@ -422,6 +427,378 @@ describe("dynamic workflow tool launch", () => {
         },
       ],
     });
+  });
+
+  test("aborts launch preparation when the parent signal stops mid-launch", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const registry = new WorkflowRunControllerRegistry();
+    const parent = new AbortController();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    const tool = createWorkflowTool({
+      workflowRoot,
+      controllerRegistry: registry,
+      runIdFactory: () => "wf_parent_abort_12345678",
+      taskIdFactory: () => "task_parent_abort_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      additionalWorkflowRoots: () => {
+        parent.abort("parent stopped");
+        return [];
+      },
+      agent: () => "unused",
+    });
+
+    await expect(
+      tool.execute(
+        "call",
+        {
+          script: `
+            export const meta = { name: "parent_abort", phases: [{ title: "Run" }] };
+            return await agent("work", { label: "work" });
+          `,
+        },
+        parent.signal,
+        undefined,
+        { cwd: "/repo" } as never,
+      ),
+    ).rejects.toThrow("workflow launch was aborted.");
+
+    expect(backgroundTasks).toEqual([]);
+    expect(registry.activeRunIds()).toEqual([]);
+    expect(existsSync(workflowRoot)).toBe(false);
+  });
+
+  test("tracks launch preparation so shutdown cannot miss or outlive the launch", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const registry = new WorkflowRunControllerRegistry();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    let shutdown: Promise<void> | undefined;
+    const tool = createWorkflowTool({
+      workflowRoot,
+      controllerRegistry: registry,
+      runIdFactory: () => "wf_shutdown_launch_12345678",
+      taskIdFactory: () => "task_shutdown_launch_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      additionalWorkflowRoots: () => {
+        shutdown = registry.shutdown((runId) => `shutdown during launch: ${runId}`);
+        return [];
+      },
+      agent: () => "unused",
+    });
+
+    await expect(
+      tool.execute(
+        "call",
+        {
+          script: `
+            export const meta = { name: "shutdown_launch", phases: [{ title: "Run" }] };
+            return await agent("work", { label: "work" });
+          `,
+        },
+        undefined,
+        undefined,
+        { cwd: "/repo" } as never,
+      ),
+    ).rejects.toThrow("shutdown during launch: wf_shutdown_launch_12345678");
+
+    await shutdown;
+    expect(backgroundTasks).toEqual([]);
+    expect(registry.activeRunIds()).toEqual([]);
+    expect(existsSync(workflowRoot)).toBe(false);
+    expect(() => registry.register("wf_after_shutdown_12345678")).toThrow("shutting down");
+  });
+
+  test("turns a synchronous background scheduler failure into terminal failed artifacts", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const registry = new WorkflowRunControllerRegistry();
+    const lifecycleStatuses: string[] = [];
+    const completionStatuses: string[] = [];
+    let rejectedTask: (() => Promise<void>) | undefined;
+    const tool = createWorkflowTool({
+      workflowRoot,
+      controllerRegistry: registry,
+      runIdFactory: () => "wf_scheduler_throw_12345678",
+      taskIdFactory: () => "task_scheduler_throw_12345678",
+      backgroundScheduler: (task) => {
+        rejectedTask = task;
+        throw new Error("scheduler failed synchronously");
+      },
+      lifecycleNotifier: (notification) => lifecycleStatuses.push(notification.status),
+      completionNotifier: (notification) => completionStatuses.push(notification.status),
+      agent: () => "must not run",
+    });
+
+    await expect(
+      tool.execute(
+        "call",
+        {
+          script: `
+            export const meta = { name: "scheduler_throw", phases: [{ title: "Run" }] };
+            return await agent("work", { label: "work" });
+          `,
+        },
+        undefined,
+        undefined,
+        { cwd: "/repo" } as never,
+      ),
+    ).rejects.toThrow("scheduler failed synchronously");
+
+    const runDir = join(workflowRoot, "wf_scheduler_throw_12345678");
+    expect(JSON.parse(readFileSync(join(runDir, "manifest.json"), "utf8"))).toMatchObject({
+      status: "failed",
+      failures: [{ message: "scheduler failed synchronously" }],
+      outputPath: join(runDir, "output.json"),
+    });
+    expect(JSON.parse(readFileSync(join(runDir, "output.json"), "utf8"))).toMatchObject({
+      status: "failed",
+      error: "scheduler failed synchronously",
+    });
+    expect(lifecycleStatuses).toEqual(["started", "failed"]);
+    expect(completionStatuses).toEqual(["failed"]);
+    expect(registry.activeRunIds()).toEqual([]);
+
+    await rejectedTask?.();
+    expect(lifecycleStatuses).toEqual(["started", "failed"]);
+    expect(completionStatuses).toEqual(["failed"]);
+  });
+
+  test("keeps an earlier stop reason when the scheduler stops the run before throwing", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const registry = new WorkflowRunControllerRegistry();
+    const lifecycleStatuses: string[] = [];
+    const tool = createWorkflowTool({
+      workflowRoot,
+      controllerRegistry: registry,
+      runIdFactory: () => "wf_scheduler_stop_12345678",
+      taskIdFactory: () => "task_scheduler_stop_12345678",
+      backgroundScheduler: () => {
+        registry.stop("wf_scheduler_stop_12345678", "scheduler stopped first");
+        throw new Error("scheduler threw later");
+      },
+      lifecycleNotifier: (notification) => lifecycleStatuses.push(notification.status),
+      agent: () => "must not run",
+    });
+
+    await expect(
+      tool.execute(
+        "call",
+        {
+          script: `
+            export const meta = { name: "scheduler_stop", phases: [{ title: "Run" }] };
+            return await agent("work", { label: "work" });
+          `,
+        },
+        undefined,
+        undefined,
+        { cwd: "/repo" } as never,
+      ),
+    ).rejects.toThrow("scheduler threw later");
+
+    const runDir = join(workflowRoot, "wf_scheduler_stop_12345678");
+    expect(JSON.parse(readFileSync(join(runDir, "output.json"), "utf8"))).toMatchObject({
+      status: "cancelled",
+      reason: "scheduler stopped first",
+    });
+    expect(lifecycleStatuses).toEqual(["started", "cancelled"]);
+  });
+
+  test("host-authorizes canonical packaged review_flow PR fixes after a clean matching preflight", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    const agentLabels: string[] = [];
+    const execCalls: Array<{ command: string; args: string[]; options: unknown }> = [];
+    const head = "0123456789abcdef0123456789abcdef01234567";
+    const exec: CliExec = async (command, args, options) => {
+      execCalls.push({ command, args, options });
+      if (command === "gh") {
+        return {
+          code: 0,
+          stdout: JSON.stringify(
+            args.includes("files,headRefOid")
+              ? { headRefOid: head, files: [{ path: "src/auth.ts" }] }
+              : { headRefOid: head },
+          ),
+          stderr: "",
+        };
+      }
+      if (args[0] === "rev-parse") return { code: 0, stdout: `${head}\n`, stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const tool = createWorkflowTool({
+      workflowRoot,
+      cwd: "/repo",
+      exec,
+      additionalWorkflowRoots: extensionPackagedWorkflowRootDescriptors(),
+      runIdFactory: () => "wf_review_authorized_12345678",
+      taskIdFactory: () => "task_review_authorized_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      agent: (_prompt, options) => {
+        const label = options.label ?? "";
+        agentLabels.push(label);
+        if (label === "recon") {
+          return {
+            targetFiles: ["src/auth.ts"],
+            scopeSummary: "PR auth change",
+            riskAreas: ["auth"],
+          };
+        }
+        if (label.startsWith("gapfill")) {
+          return {
+            continueHunt: false,
+            followUpHuntFocus: [],
+            findings: [],
+            coverageGaps: [],
+            rationale: "complete",
+          };
+        }
+        if (label.startsWith("hunt") || label.startsWith("validate") || label === "dedupe") {
+          return { findings: [], coverageGaps: [], notes: "none" };
+        }
+        if (label === "trace") {
+          return {
+            findings: [
+              {
+                path: "src/auth.ts",
+                issue: "issue",
+                evidence: "evidence",
+                impact: "impact",
+                suggestedFix: "fix",
+                confidence: "high",
+              },
+            ],
+            coverageGaps: [],
+            notes: "traced",
+          };
+        }
+        if (label === "fix") return { changes: [], notes: "none" };
+        if (label === "verify") return { checks: [], notes: "none" };
+        if (label === "summary") return { report: "done", findings: [], skipped: [] };
+        return {};
+      },
+    });
+
+    await tool.execute(
+      "call",
+      { name: "review_flow", args: { pr: "42", maxGapfillLoops: 0 } },
+      undefined,
+      undefined,
+      { cwd: "/repo" } as never,
+    );
+
+    expect(execCalls.map(({ command, args }) => [command, ...args])).toEqual([
+      ["gh", "pr", "view", "42", "--json", "files,headRefOid"],
+      ["git", "rev-parse", "HEAD"],
+      ["git", "status", "--porcelain"],
+    ]);
+    await backgroundTasks[0]!();
+    expect(execCalls.slice(3).map(({ command, args }) => [command, ...args])).toEqual([
+      ["gh", "pr", "view", "42", "--json", "headRefOid"],
+      ["git", "rev-parse", "HEAD"],
+      ["git", "status", "--porcelain"],
+    ]);
+    expect(agentLabels).toContain("fix");
+    expect(agentLabels).toContain("verify");
+    expect(
+      JSON.parse(
+        readFileSync(join(workflowRoot, "wf_review_authorized_12345678", "output.json"), "utf8"),
+      ),
+    ).toMatchObject({ status: "completed", result: { noFix: false } });
+  });
+
+  test("preserves noncanonical saved-workflow provenance through the slash-command launcher", async () => {
+    const { createWorkflowTool } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+    const execCalls: string[] = [];
+    const projectOverride: SavedWorkflow = {
+      name: "review_flow",
+      phases: [{ title: "Run" }],
+      path: join(workflowRoot, "review-flow.js"),
+      fileName: "review-flow.js",
+      source: "project",
+      script: `
+        export const meta = { name: "review_flow", phases: [{ title: "Run" }] };
+        await agent("work", { label: "work" });
+        return {
+          authorized: !!(
+            trustedRuntimeContext &&
+            trustedRuntimeContext.reviewFlow &&
+            trustedRuntimeContext.reviewFlow.prMutationAuthorized === true
+          ),
+        };
+      `,
+    };
+    const tool = createWorkflowTool({
+      workflowRoot,
+      cwd: "/repo",
+      exec: async (command) => {
+        execCalls.push(command);
+        return { code: 0, stdout: "", stderr: "" };
+      },
+      additionalWorkflowRoots: extensionPackagedWorkflowRootDescriptors(),
+      runIdFactory: () => "wf_project_review_12345678",
+      taskIdFactory: () => "task_project_review_12345678",
+      backgroundScheduler: (task) => backgroundTasks.push(task),
+      agent: () => "ok",
+    });
+    const launcher = createWorkflowToolCommandLauncher(tool);
+
+    await launcher({ workflow: projectOverride, args: { pr: "42" } }, { cwd: "/repo" } as never);
+
+    expect(execCalls).toEqual([]);
+    await backgroundTasks[0]!();
+    expect(
+      JSON.parse(
+        readFileSync(join(workflowRoot, "wf_project_review_12345678", "output.json"), "utf8"),
+      ),
+    ).toMatchObject({ status: "completed", result: { authorized: false } });
+  });
+
+  test("continues scheduling when the initial workflow widget throws", async () => {
+    const { launchWorkflowRun } = await loadWorkflowToolModule();
+    const workflowRoot = tempWorkflowRoot();
+    const registry = new WorkflowRunControllerRegistry();
+    const backgroundTasks: Array<() => Promise<void>> = [];
+
+    await expect(
+      launchWorkflowRun(
+        {
+          workflowRoot,
+          controllerRegistry: registry,
+          runIdFactory: () => "wf_widget_throw_12345678",
+          taskIdFactory: () => "task_widget_throw_12345678",
+          backgroundScheduler: (task) => backgroundTasks.push(task),
+          agent: () => "unused",
+        },
+        {
+          cwd: "/repo",
+          ui: {
+            setWidget() {
+              throw new Error("widget failed");
+            },
+          },
+        } as never,
+        {
+          script: `
+            export const meta = { name: "widget_throw", phases: [{ title: "Run" }] };
+            return await agent("work", { label: "work" });
+          `,
+        },
+      ),
+    ).resolves.toMatchObject({ workflowName: "widget_throw" });
+
+    expect(backgroundTasks).toHaveLength(1);
+    await backgroundTasks[0]!();
+    const output = JSON.parse(
+      readFileSync(join(workflowRoot, "wf_widget_throw_12345678", "output.json"), "utf8"),
+    );
+    expect(output.status).toBe("completed");
+    expect(registry.activeRunIds()).toEqual([]);
+    await expect(registry.shutdown((runId) => `shutdown: ${runId}`)).resolves.toBeUndefined();
   });
 
   test("keeps a completed workflow completed when terminal artifact writes fail", async () => {

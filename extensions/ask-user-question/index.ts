@@ -52,6 +52,7 @@ Usage notes:
       "When resuming after a paused ask_user_question result, reuse details.pendingQuestions; do not regenerate all questions from memory.",
     ],
     parameters: AskUserQuestionParamsSchema as unknown as TSchema,
+    executionMode: "sequential",
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const validation = validateAskUserQuestionParams(params);

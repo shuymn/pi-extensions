@@ -68,6 +68,7 @@ function createSession() {
 }
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
+  CONFIG_DIR_NAME: ".pi",
   getAgentDir: () => "/agent-dir",
   DefaultResourceLoader: class {
     options: any;

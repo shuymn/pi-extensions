@@ -33,11 +33,12 @@ export const SAKANA_AI_THINKING_LEVEL_MAP = {
   medium: null,
   high: "high",
   xhigh: "xhigh",
+  max: "max",
 } satisfies ProviderModelConfig["thinkingLevelMap"];
 
 export const SAKANA_AI_OPENAI_RESPONSES_COMPAT = {
   supportsDeveloperRole: true,
-  sendSessionIdHeader: false,
+  sessionAffinityFormat: "openai-nosession",
   supportsLongCacheRetention: false,
 } satisfies OpenAIResponsesCompat;
 

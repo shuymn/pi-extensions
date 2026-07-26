@@ -170,10 +170,11 @@ export function parseGitWtCreatePath(stdout: string): string {
     .filter((line) => line.length > 0 && !(line.startsWith("{") || line.startsWith("[")));
 
   for (let index = lines.length - 1; index >= 0; index--) {
-    const line = lines[index]!;
-    if (isPlainPathLine(line)) return line;
+    const line = lines[index];
+    if (line !== undefined && isPlainPathLine(line)) return line;
   }
-  if (lines.length === 1) return lines[0]!;
+  const onlyLine = lines[0];
+  if (lines.length === 1 && onlyLine !== undefined) return onlyLine;
 
   throw new Error("git-wt の出力から worktree path を取得できませんでした。");
 }
@@ -267,8 +268,11 @@ export default function wtExtension(pi: ExtensionAPI, options: WtExtensionOption
         return;
       }
 
-      // SessionManager.forkFrom always returns a persisted session.
-      const forkedSessionFile = forkedSessionManager.getSessionFile()!;
+      const forkedSessionFile = forkedSessionManager.getSessionFile();
+      if (!forkedSessionFile) {
+        ctx.ui.notify("コピー先セッションが永続化されていないため切り替えできません。", "error");
+        return;
+      }
 
       const details: SessionMoveDetails = {
         fromCwd: ctx.cwd,

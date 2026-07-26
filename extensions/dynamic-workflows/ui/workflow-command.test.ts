@@ -464,7 +464,7 @@ describe("/workflow command", () => {
     expect(calls).toEqual([
       [
         "workflow-command",
-        { script: "export const meta = {};", args: { target: "src" } },
+        { name: "tool_workflow", args: { target: "src" } },
         signal,
         undefined,
         ctx,

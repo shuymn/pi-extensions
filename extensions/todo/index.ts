@@ -5,7 +5,7 @@ import {
   isReviewWorkflowLifecycleEvent,
   type ReviewWorkflowLifecycleStatus,
   reviewWorkflowEventName,
-} from "../review/events";
+} from "../dynamic-workflows/review-events";
 import { nextActionText, renderTodoReminder } from "./prompt";
 import { replayTodoState, TOOL_NAME } from "./replay";
 import { activeGoal, activeTodos, inProgressTodo, pendingTodos } from "./selectors";
@@ -118,7 +118,7 @@ function formatToolResult(state: TodoState, op: TodoOperation): string {
 export default function (pi: ExtensionAPI) {
   let state = cloneTodoState(EMPTY_TODO_STATE);
   let currentUiCtx: WidgetContext | undefined;
-  let suppressWidgetForReview = false;
+  const activeReviewRunIds = new Set<string>();
   let hasSeenMultipleActiveTodos = false;
 
   function shouldShowTodoWidget(): boolean {
@@ -145,7 +145,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const shouldShowWidget = shouldShowTodoWidget();
-    const suppressWidget = suppressWidgetForReview || !shouldShowWidget;
+    const suppressWidget = activeReviewRunIds.size > 0 || !shouldShowWidget;
     refreshTodoWidget(ctx, state, { suppress: suppressWidget });
   }
 
@@ -155,18 +155,17 @@ export default function (pi: ExtensionAPI) {
     refreshWidget(ctx);
   }
 
-  function setReviewWidgetSuppression(suppress: boolean): void {
-    suppressWidgetForReview = suppress;
-    if (currentUiCtx) refreshWidget(currentUiCtx);
-  }
-
   function handleReviewWorkflowLifecycle(
     data: unknown,
     status: ReviewWorkflowLifecycleStatus,
     suppress: boolean,
   ): void {
     if (!isReviewWorkflowLifecycleEvent(data, status)) return;
-    setReviewWidgetSuppression(suppress);
+    const runId =
+      typeof data.runId === "string" && data.runId ? data.runId : "__legacy-review-run__";
+    if (suppress) activeReviewRunIds.add(runId);
+    else activeReviewRunIds.delete(runId);
+    if (currentUiCtx) refreshWidget(currentUiCtx);
   }
 
   pi.registerTool({
@@ -256,7 +255,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_tree", async (_event, ctx) => replayAndRefresh(ctx));
   pi.on("session_compact", async (_event, ctx) => replayAndRefresh(ctx));
   pi.on("session_shutdown", async (_event, ctx) => {
-    suppressWidgetForReview = false;
+    activeReviewRunIds.clear();
     currentUiCtx = undefined;
     if ((ctx as { hasUI?: boolean } | undefined)?.hasUI === false) return;
     (

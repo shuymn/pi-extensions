@@ -235,8 +235,6 @@ type TavilyToolSpec<TParams extends object> = {
   name: string;
   label: string;
   description: string;
-  promptSnippet: string;
-  promptGuidelines?: string[];
   parameters: TSchema;
   buildArgs: (params: TParams) => string[];
   validate?: (params: TParams) => void;
@@ -248,8 +246,6 @@ type RegisteredTavilyToolSpec = {
   name: string;
   label: string;
   description: string;
-  promptSnippet: string;
-  promptGuidelines?: string[];
   parameters: TSchema;
   buildArgs: (params: unknown) => string[];
   validate?: (params: unknown) => void;
@@ -267,8 +263,6 @@ function defineTavilyToolSpec<TParams extends object>(
     name: spec.name,
     label: spec.label,
     description: spec.description,
-    promptSnippet: spec.promptSnippet,
-    promptGuidelines: spec.promptGuidelines,
     parameters: spec.parameters,
     buildArgs: (params) => spec.buildArgs(params as TParams),
     validate: validate ? (params) => validate(params as TParams) : undefined,
@@ -281,12 +275,6 @@ const searchSpec = defineTavilyToolSpec<SearchParams>({
   name: "tavily_search",
   label: "Tavily Search",
   description: "Search the web with LLM-optimized Tavily results via the tvly CLI.",
-  promptSnippet: "Search the web for current information, sources, news, or pages to inspect.",
-  promptGuidelines: [
-    "Use tavily_search when the user asks for current web information, recent news, source discovery, or external facts not available in the repository.",
-    "Keep tavily_search queries under 400 characters; split complex prompts into focused sub-queries.",
-    "Prefer tavily_search before tavily_extract when you do not already know the target URL.",
-  ],
   parameters: searchSchema,
   validate(params) {
     if (params.query.trim().length > 400) {
@@ -327,12 +315,6 @@ const extractSpec = defineTavilyToolSpec<ExtractParams>({
   name: "tavily_extract",
   label: "Tavily Extract",
   description: "Extract clean markdown/text content from one or more known URLs via the tvly CLI.",
-  promptSnippet:
-    "Extract readable content from specific URLs, including JS-rendered pages with advanced depth.",
-  promptGuidelines: [
-    "Use tavily_extract when you already have specific URLs and need page content, quotations, or details beyond search snippets.",
-    "Use tavily_extract query and chunksPerSource to target a specific part of long pages.",
-  ],
   parameters: extractSchema,
   validate(params) {
     if (params.chunksPerSource !== undefined && !params.query) {
@@ -363,11 +345,6 @@ const mapSpec = defineTavilyToolSpec<MapParams>({
   name: "tavily_map",
   label: "Tavily Map",
   description: "Discover URLs on a website without extracting page content via the tvly CLI.",
-  promptSnippet: "Map a website to discover relevant URLs before extracting or crawling.",
-  promptGuidelines: [
-    "Use tavily_map when you need URL discovery for a site; it is faster than crawl and does not extract content.",
-    "Prefer tavily_map then tavily_extract when only a few discovered pages are needed.",
-  ],
   parameters: mapSchema,
   buildArgs(params) {
     const args = ["map", params.url, "--json"];
@@ -395,12 +372,6 @@ const crawlSpec = defineTavilyToolSpec<CrawlParams>({
   name: "tavily_crawl",
   label: "Tavily Crawl",
   description: "Crawl a website and extract content from multiple pages via the tvly CLI.",
-  promptSnippet:
-    "Crawl site sections for bulk content extraction with depth, breadth, path, and semantic filters.",
-  promptGuidelines: [
-    "Use tavily_crawl for bulk extraction from a site section; use tavily_map first if you only need URL discovery.",
-    "Constrain tavily_crawl with instructions, selectPaths, excludePaths, maxDepth, and limit to avoid noisy or oversized results.",
-  ],
   parameters: crawlSchema,
   validate(params) {
     if (params.chunksPerSource !== undefined && !params.instructions) {
@@ -439,7 +410,6 @@ const authSpec = defineTavilyToolSpec<AuthParams>({
   name: "tavily_auth_status",
   label: "Tavily Auth Status",
   description: "Check whether the tvly CLI is installed and authenticated.",
-  promptSnippet: "Check Tavily CLI installation/authentication status when Tavily tools fail.",
   parameters: Type.Object({}),
   buildArgs() {
     return ["auth", "--json"];
@@ -459,8 +429,6 @@ export function createTavilyToolDefinitions(exec: CliExec): ToolDefinition[] {
       name: spec.name,
       label: spec.label,
       description: spec.description,
-      promptSnippet: spec.promptSnippet,
-      promptGuidelines: spec.promptGuidelines,
       parameters: spec.parameters,
       async execute(_toolCallId, params, signal, onUpdate) {
         spec.validate?.(params);

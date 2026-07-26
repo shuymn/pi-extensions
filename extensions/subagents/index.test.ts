@@ -199,6 +199,7 @@ function createSession(behavior: SessionBehavior) {
 }
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
+  CONFIG_DIR_NAME: ".pi",
   getAgentDir: () => "/agent-dir",
   createBashToolDefinition: (_cwd: string, _options?: unknown) => ({
     name: "bash",

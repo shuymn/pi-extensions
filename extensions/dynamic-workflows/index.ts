@@ -2,6 +2,11 @@ import type { BuildSystemPromptOptions, ExtensionAPI } from "@earendil-works/pi-
 import { toCliExec } from "../../lib/cli";
 import { createInvestigationToolset } from "../../lib/investigation-tools";
 import { createWorkflowAgentRunner } from "./agent/runner";
+import {
+  REVIEW_FLOW_WORKFLOW_NAME,
+  REVIEW_WORKFLOW_EVENT_NAME,
+  reviewWorkflowEventName,
+} from "./review-events";
 import { WorkflowRunControllerRegistry } from "./run/controllers";
 import { extensionPackagedWorkflowRootDescriptors } from "./saved/packaged";
 import type { SavedWorkflowRootInput } from "./saved/resolver";
@@ -14,11 +19,18 @@ import {
 } from "./ui/workflow-command";
 import { registerWorkflowsCommand } from "./ui/workflows-command";
 import { createWorkflowControllerMonitorControlSeams } from "./ui/workflows-controls";
-import { createWorkflowCompletionNotifier, createWorkflowTool } from "./workflow-tool";
+import {
+  createWorkflowCompletionNotifier,
+  createWorkflowTool,
+  type WorkflowLifecycleNotification,
+} from "./workflow-tool";
 
 export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   const controllerRegistry = new WorkflowRunControllerRegistry();
-  const investigationToolset = createInvestigationToolset({ exec: toCliExec(pi) });
+  const exec = toCliExec(pi);
+  const investigationToolset = createInvestigationToolset({ exec });
+  const completionNotifier = createWorkflowCompletionNotifier(pi);
+  let isShuttingDown = false;
   let loadedSkillWorkflowRoots: string[] = [];
   const skillWorkflowRoots = (ctx?: unknown) => {
     const rootsFromContext = skillPackagedWorkflowRootsFromSystemPromptOptions(
@@ -42,9 +54,13 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   });
 
   const workflowTool = createWorkflowTool({
+    exec,
     agentFactory: (ctx) => createWorkflowAgentRunner(pi, ctx, investigationToolset),
     controllerRegistry,
-    completionNotifier: createWorkflowCompletionNotifier(pi),
+    completionNotifier: (notification) => {
+      if (!isShuttingDown) completionNotifier(notification);
+    },
+    lifecycleNotifier: (notification) => emitReviewWorkflowLifecycle(pi, notification),
     additionalWorkflowRoots,
   });
 
@@ -59,12 +75,26 @@ export default function dynamicWorkflowsExtension(pi: ExtensionAPI): void {
   pi.registerTool(workflowTool);
 
   pi.on("session_shutdown", async () => {
-    const activeRunIds = controllerRegistry.activeRunIds();
-    for (const runId of activeRunIds) {
-      controllerRegistry.stop(runId, `session shutdown stopped workflow run: ${runId}`);
+    isShuttingDown = true;
+    try {
+      await controllerRegistry.shutdown(
+        (runId) => `session shutdown stopped workflow run: ${runId}`,
+      );
+      await investigationToolset.cleanup();
+    } finally {
+      isShuttingDown = false;
     }
-    await controllerRegistry.waitForRunCompletions(activeRunIds);
-    await investigationToolset.cleanup();
+  });
+}
+
+function emitReviewWorkflowLifecycle(
+  pi: Pick<ExtensionAPI, "events">,
+  notification: WorkflowLifecycleNotification,
+): void {
+  if (notification.workflowName !== REVIEW_FLOW_WORKFLOW_NAME) return;
+  pi.events.emit(reviewWorkflowEventName(notification.status), {
+    name: REVIEW_WORKFLOW_EVENT_NAME,
+    ...notification,
   });
 }
 

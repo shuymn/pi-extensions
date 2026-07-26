@@ -6,6 +6,7 @@ import type {
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { resolveWorkflowRoot } from "../run/root";
 import { workflowCatalogForCwd, workflowCatalogForRoot } from "../saved/catalog";
+import { preserveSavedWorkflowSelection } from "../saved/launch-selection";
 import type { SavedWorkflow, SavedWorkflowRootInput } from "../saved/resolver";
 
 export type WorkflowCommandLaunchInput = {
@@ -221,12 +222,16 @@ export function createWorkflowToolCommandLauncher(
   tool: Pick<ToolDefinition, "execute">,
 ): WorkflowCommandLauncher {
   return async ({ workflow, args }, ctx) => {
+    const input = preserveSavedWorkflowSelection(
+      {
+        name: workflow.name,
+        ...(args === undefined ? {} : { args }),
+      },
+      workflow,
+    );
     const result = await tool.execute(
       "workflow-command",
-      {
-        script: workflow.script,
-        ...(args === undefined ? {} : { args }),
-      } as never,
+      input as never,
       ctx.signal,
       undefined,
       ctx,

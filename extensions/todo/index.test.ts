@@ -1106,6 +1106,37 @@ describe("todo extension", () => {
     expect(ui.widgets.at(-1)).toEqual({ key: "todo", lines: undefined });
   });
 
+  test("keeps the widget suppressed until all concurrent review runs finish", async () => {
+    const extension = await loadExtension();
+    const pi = createFakePi<ToolDefinition>();
+    extension(pi as never);
+    const ui = createFakeUi();
+    const ctx = { hasUI: true, ui };
+    const tool = pi.tools.get("todo")!;
+
+    await tool.execute(
+      "call",
+      { action: "create", items: [{ title: "A" }, { title: "B" }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    pi.events.emit("workflow:started", { name: "review", status: "started", runId: "run-a" });
+    pi.events.emit("workflow:started", { name: "review", status: "started", runId: "run-b" });
+    pi.events.emit("workflow:completed", {
+      name: "review",
+      status: "completed",
+      runId: "run-a",
+    });
+    expect(ui.widgets.at(-1)).toEqual({ key: "todo", lines: undefined });
+
+    pi.events.emit("workflow:failed", { name: "review", status: "failed", runId: "run-b" });
+    expect(ui.widgets.at(-1)).toMatchObject({
+      key: "todo",
+      options: { placement: "aboveEditor" },
+    });
+  });
+
   test("review suppression ignores non-review workflow events and malformed review events", async () => {
     const extension = await loadExtension();
     const pi = createFakePi<ToolDefinition>();

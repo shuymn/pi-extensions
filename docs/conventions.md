@@ -10,9 +10,15 @@
 
 ## Slash Command 公開方針
 
-- 明示的に人が呼ぶ workflow（例: `/plan`, `/impl`, `/review`, `/research`, `/workflow`, `/workflows`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
-- `ExtensionCommandContext` が必要だが、恒久的な個別コマンドとして見せる必要がない runtime 操作は allowlist された `/invoke <operation> [JSON args]` 経由にする。
-- `/invoke` は Slash Command 用の router であり、LLM Tool を置き換えるものではない。既存 Tool を `/invoke` 配下へ移動しない。
+- 明示的に人が呼ぶ操作（例: `/plan`, `/impl`, `/workflow`, `/workflows`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
+- packaged review / research は専用 Slash Command を持たず、`/workflow review_flow` / `/workflow research_flow` で起動する。
+
+## Dynamic Tool Loading
+
+- Tavily、`workflow`、background subagent management の大型 tool 群は登録したまま inactive にし、`search_tools` から純加算で有効化する。
+- `ask_user_question`、`compact_context`、`todo`、`spawn_subagent`、`github_clone_workspace` は常時 active にする。
+- deferred LLM Tool は active-only の `promptSnippet` / `promptGuidelines` を持たず、必要な契約を `description` と parameter schema に置く。
+- bounded one-shot flow が設定した active tool allowlist へ loader を再追加しない。
 
 ## TUI component
 
@@ -48,7 +54,7 @@
 ## 進捗表示
 
 - 長期的に参照する進行状態・作業状態は `aboveEditor` widget で示す。
-- `todo` / `review` / plan・workflow 系の状態表示は `aboveEditor` を標準にする。
+- `todo` / plan / dynamic workflow 系の状態表示は `aboveEditor` を標準にする。
 - `belowEditor` widget は spinner、elapsed time、外部 CLI 実行中など短命・補助的な進捗表示に使う。
 - 外部 CLI など待ち時間が読みにくい処理は spinner と elapsed time を表示する。
 - 短い完了通知は `ctx.ui.notify()` でよい。

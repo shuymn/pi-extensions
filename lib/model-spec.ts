@@ -1,4 +1,12 @@
-export const THINKING_LEVEL_VALUES = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+export const THINKING_LEVEL_VALUES = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 
 const THINKING_LEVELS = new Set<string>(THINKING_LEVEL_VALUES);
 

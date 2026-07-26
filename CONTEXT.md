@@ -32,6 +32,14 @@ _Avoid_: Target, input
 A structured capability exposed to the agent so it can request a bounded action with typed parameters.
 _Avoid_: Tool, function
 
+**Deferred LLM Tool**:
+An **LLM Tool** that is registered but initially inactive, then activated additively through Tool Search when its capability is needed.
+_Avoid_: Hidden tool, unloaded tool
+
+**Tool Search**:
+The active **LLM Tool** that finds and enables matching **Deferred LLM Tools** without removing currently active tools.
+_Avoid_: Tool loader, dynamic tool
+
 **Slash Command**:
 A user-facing entry point invoked from pi's input with a slash-prefixed name.
 _Avoid_: Command, prompt command
@@ -75,5 +83,5 @@ Domain expert: No. Suppress the todo TUI Widget while the review Workflow is run
 Dev: Does a Research Task include the Research Sources collected later?
 Domain expert: No. The Research Task is the request being investigated; Research Sources are evidence collected while answering it.
 
-Dev: Can we call `review` a tool in docs?
-Domain expert: Be precise. `review` is a Pi Extension that exposes an LLM Tool and a Slash Command, and that starts a review Workflow Run.
+Dev: Can we call `review_flow` a tool in docs?
+Domain expert: No. `review_flow` is an extension-packaged Workflow selected through the deferred `workflow` LLM Tool or `/workflow` Slash Command; it has no standalone review Pi Extension, LLM Tool, or Slash Command.

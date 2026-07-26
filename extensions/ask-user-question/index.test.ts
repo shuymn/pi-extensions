@@ -37,6 +37,7 @@ type ToolDefinition = {
   promptSnippet: string;
   promptGuidelines: string[];
   parameters: unknown;
+  executionMode?: string;
   execute: (
     toolCallId: string,
     params: unknown,
@@ -150,6 +151,7 @@ describe("ask-user-question extension", () => {
 
     expect(tool.name).toBe("ask_user_question");
     expect(tool.label).toBe("Ask User Question");
+    expect(tool.executionMode).toBe("sequential");
     expect(tool.description).toContain("Chat about this");
     expect(tool.promptGuidelines).toContain(
       "Use ask_user_question when ambiguity materially affects implementation, architecture, scope, data loss, or user-visible behavior.",

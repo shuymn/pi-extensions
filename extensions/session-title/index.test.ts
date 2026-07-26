@@ -13,6 +13,7 @@ mock.module("@earendil-works/pi-ai/compat", () => ({
 }));
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
+  CONFIG_DIR_NAME: ".pi",
   getAgentDir: () => tempAgentDir,
 }));
 

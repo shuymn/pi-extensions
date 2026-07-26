@@ -31,6 +31,7 @@ type FakeContext = {
     notify: (message: string, level: "info" | "warning" | "error") => void;
   };
   shutdown: () => void;
+  isIdle: () => boolean;
 };
 
 const DEFAULT_TOOLS = [...COMMIT_SAFE_TOOLS, "edit", "write", "todo"];
@@ -105,7 +106,7 @@ function createFakePi(
   };
 }
 
-function createContext(hasUI = true): FakeContext {
+function createContext(hasUI = true, idle = true): FakeContext {
   const ctx: FakeContext = {
     hasUI,
     notifications: [],
@@ -118,6 +119,7 @@ function createContext(hasUI = true): FakeContext {
     shutdown() {
       ctx.shutdowns += 1;
     },
+    isIdle: () => idle,
   };
   return ctx;
 }
@@ -144,6 +146,11 @@ async function agentEnd(
   messages: unknown[] = [],
 ) {
   await pi.getEventHandlers("agent_end")[0]!({ messages }, ctx);
+  return ctx;
+}
+
+async function agentSettled(pi: ReturnType<typeof createFakePi>, ctx = createContext()) {
+  await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
   return ctx;
 }
 
@@ -198,6 +205,7 @@ describe("commit extension", () => {
     expect(pi.flagDefinitions.get(COMMIT_BASE_FLAG)).toMatchObject({ type: "string" });
     expect(pi.getEventHandlers("session_start")).toHaveLength(1);
     expect(pi.getEventHandlers("agent_end")).toHaveLength(1);
+    expect(pi.getEventHandlers("agent_settled")).toHaveLength(1);
   });
 
   test("is inert when --commit is not present", async () => {
@@ -282,6 +290,8 @@ describe("commit extension", () => {
     await agentEnd(pi, ctx, [
       expandedCommitSkillMessage("--english\n\nfocus staged files\n\nadditional note"),
     ]);
+    expect(ctx.shutdowns).toBe(0);
+    await agentSettled(pi, ctx);
     expect(ctx.shutdowns).toBe(1);
   });
 
@@ -337,7 +347,7 @@ describe("commit extension", () => {
     expect(ctx.shutdowns).toBe(1);
   });
 
-  test("launches only once and shuts down after the active commit agent run ends", async () => {
+  test("launches only once and shuts down after the active commit agent run settles", async () => {
     const pi = createFakePi({ flags: { [COMMIT_FLAG]: true } });
     commitExtension(pi as never);
     const ctx = createContext();
@@ -351,6 +361,10 @@ describe("commit extension", () => {
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
 
+    expect(ctx.shutdowns).toBe(0);
+    await agentSettled(pi, ctx);
+    await agentSettled(pi, ctx);
+
     expect(ctx.shutdowns).toBe(1);
     expect(pi.emittedEvents).toEqual([
       { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
@@ -358,7 +372,21 @@ describe("commit extension", () => {
     ]);
   });
 
-  test("ignores non-matching agent_end before the commit agent run ends", async () => {
+  test("waits for an idle settled event before shutting down", async () => {
+    const pi = createFakePi({ flags: { [COMMIT_FLAG]: true } });
+    commitExtension(pi as never);
+    const ctx = createContext();
+
+    await sessionStart(pi, ctx);
+    await agentEnd(pi, ctx, [{ role: "assistant", content: "provider failure" }]);
+    await agentSettled(pi, createContext(true, false));
+    expect(ctx.shutdowns).toBe(0);
+
+    await agentSettled(pi, ctx);
+    expect(ctx.shutdowns).toBe(1);
+  });
+
+  test("recognizes the active one-shot agent_end without transcript matching", async () => {
     const pi = createFakePi({ flags: { [COMMIT_FLAG]: true } });
     commitExtension(pi as never);
     const ctx = createContext();
@@ -373,6 +401,8 @@ describe("commit extension", () => {
 
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
 
+    expect(ctx.shutdowns).toBe(0);
+    await agentSettled(pi, ctx);
     expect(ctx.shutdowns).toBe(1);
     expect(pi.emittedEvents).toEqual([
       { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },

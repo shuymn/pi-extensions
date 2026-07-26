@@ -4,6 +4,8 @@
 
 Current safety note: workflow scripts are parsed and restricted, but execution still uses Node's VM in the Pi process. Do not treat workflow JavaScript as a CPU-safe plugin boundary until the remaining worker/subprocess isolation follow-up is complete.
 
+The `workflow` LLM Tool is registered but initially deferred by `tool-search`. The agent calls `search_tools` with a workflow, review, research, or orchestration query to activate it additively. The `/workflow` and `/workflows` Slash Commands remain directly available to users.
+
 ## Optional ultracode policy mode
 
 Workflow auto-use is off by default. To opt into broader workflow guidance for the current Pi session, run:
@@ -22,14 +24,17 @@ Workflow scripts can call `agent(prompt, options)` to delegate work to a Pi suba
 
 - `label` — short human-readable label for progress, journal, and transcript artifacts.
 - `phase` — explicit phase label for this agent call; otherwise the current `phase()` is used.
-- `schema` — JSON schema for structured output. When provided, the subagent must finish with the structured output tool and `agent()` returns the parsed object.
+- `schema` — JSON schema for structured output. When provided, the subagent must finish with the structured output tool and `agent()` returns the parsed object. The runtime validates both fresh and replayed results before returning them; malformed/unsupported schemas and non-conforming results are hard contract failures.
 - `agentType` — English role metadata for prompts, journals, and transcripts.
 - `model` — optional child-agent model selection using the shared `provider/model` or `provider/model:effort` notation, for example `openai/gpt-5:high`. When effort is omitted, the child keeps the parent session's current effort.
 - `toolPolicy` — optional per-agent execution policy. `"readOnly"` runs the phase without `edit`/`write` tools and replaces the built-in `bash` with a read-only protected bash, while structured output still works. `"readOnly"` is the only accepted value; any other value fails fast with a contract error. See [Per-agent read-only policy](#per-agent-read-only-policy).
+- `allowedTools` — optional list that further restricts the tools active for that agent. Names unavailable under the selected `toolPolicy` fail fast; `structured_output` remains available whenever `schema` is set.
 
 `thinkingLevel`, `effort`, and `isolation` are intentionally unsupported as separate options. Passing any of them to `agent()` fails fast instead of becoming a no-op hint. Use the `model` notation above for per-agent model and effort selection.
 
 The `budget` global and `tokenBudget` launch option are estimate-based guards derived from serialized agent result size. They are not actual model-token accounting, and workflow outputs do not report real tool-call counts.
+
+Ordinary agent execution failures remain recoverable data: `agent()` returns `null` and records the error, and ordinary `parallel()` / `pipeline()` branch failures likewise become `null`. Abort, runtime-limit, schema-validation, and workflow-contract failures are hard stops. A hard failure inside `parallel()` aborts queued/running sibling agents and waits for every sibling to settle before the workflow reaches a terminal state.
 
 ## Per-agent read-only policy
 
@@ -194,13 +199,16 @@ The bridge launches a workflow by resolved `name` (or `script` / `scriptPath`) p
 
 - A pre-aborted `signal` rejects with `workflow launch was aborted.`.
 - An unknown workflow `name` rejects.
-- The shared controller registry can cancel a launched run mid-flight; the run's `output.json` then records status `cancelled`.
+- Launch preparation is registered before asynchronous resolution/storage work, so parent abort and session shutdown cannot miss an in-flight launch.
+- A synchronous background-scheduler failure rejects the launch and converges the created manifest/output and lifecycle notifications to `failed` rather than leaving a queued orphan.
+- The shared controller registry can cancel a launched run mid-flight; the first stop reason wins, late agents inherit it, and the run's `output.json` records status `cancelled`.
+- Session shutdown closes the registry to new launches, stops active runs, and waits for launch/background completion—including completion retained after controller unregister—before cleanup.
 
-Sibling extensions inject the bridge (dependency injection) rather than importing live launch state. This keeps the run lifecycle owned in one place and keeps each sibling adapter unit-testable with a fake bridge.
+Programmatic callers can inject the bridge rather than importing live launch state. This keeps scheduling, persistence, cancellation, and notifications owned in one place.
 
 ## Packaged presets: research_flow and review_flow
 
-The `dynamic-workflows` extension ships two presets. They are experimental and additive: they coexist with, and do not replace, the authoritative `/research` + `deep_research` and `/review` commands.
+The `dynamic-workflows` extension ships the canonical review and research workflows as extension-packaged presets. There are no standalone `/review` or `/research` commands and no dedicated review/research LLM Tools. Launch the presets through `/workflow <name> [JSON args]` or the deferred `workflow` LLM Tool.
 
 ### research_flow
 
@@ -210,19 +218,30 @@ The `dynamic-workflows` extension ships two presets. They are experimental and a
 /workflow research_flow {"task":"Compare Bun and Node test runners","depth":"standard","profile":"technical"}
 ```
 
-Args are compatible with the research extension's params (`task`, `depth`, `profile`, `outputFormat`, `citationFormat`, `maxSources`) after light in-script defaulting. The Assess → Collect retry loop is bounded (at most 2 follow-up rounds) and enforced by the script through structured output, not by parsing prose. Phases use the Tavily `search` / `extract` / `map` / `crawl` tools; the high-cost `tavily_research` tool is intentionally not exposed, and retrieved web content is treated as untrusted data.
+Supported args are `task`, `depth`, `profile`, `outputFormat`, `citationFormat`, and `maxSources`, with light in-script defaulting. The Assess → Collect retry loop is bounded (at most 2 follow-up rounds) and enforced by the script through structured output, not by parsing prose. Phases use Tavily search/extract/map/crawl through isolated workflow agents. High-cost Tavily Research escalation is not included, and retrieved web content is treated as untrusted data.
 
 ### review_flow
 
-`review_flow` runs Recon → Hunt → Validate → Gapfill → Dedupe → Trace → Fix → Verify → Summary. Unlike `research_flow`, it is **not** launched directly with raw user args. The review extension's adapter (`extensions/review/review-flow.ts`) prepares the Target Scope (changed / staged / PR / explicit files, combined diff, and any no-fix reason) with the existing review helpers, then hands a fully prepared args payload to the launch bridge. The workflow script never collects git or `gh` scope itself.
+`review_flow` runs Recon → Hunt → Validate → Gapfill → Dedupe → Trace → Fix → Verify → Summary. It accepts raw args directly:
+
+```text
+/workflow review_flow {"files":["src/a.ts"],"noFix":true,"instructions":"Focus on auth boundaries"}
+/workflow review_flow {"pr":"owner/repo#42"}
+```
+
+Supported scope args are `files`, `pr`, `base`, and `staged`; precedence is files → PR → base → staged → working-tree changes. Optional `noFix` and `instructions` args control mutation and additional review focus. `huntLensCount` is a safe-integer concurrency ceiling from 1 through 5 (default 5), and `maxGapfillLoops` is a safe integer from 0 through 2 (default 2). Invalid explicit types/ranges, empty `files`, and unknown args fail before Recon; callers cannot override internal scope guidance, phase instructions, diff context, or safety rules. Recon uses read-only `git`/`gh` inspection to discover the exact Target Scope; in explicit-files mode, its normalized targets must exactly equal the requested file set.
 
 Key behaviors:
 
 - Investigation phases (Recon, Hunt, Validate, Gapfill, Dedupe, Trace, Summary) run with `toolPolicy: "readOnly"`.
-- Fix and Verify are the only mutating phases. They run only when no-fix is `false` and are skipped entirely in no-fix mode, so every executed phase is read-only under no-fix.
-- A pull-request head mismatch or a dirty worktree auto-downgrades the run to no-fix.
-- Hunt fans out parallel review lenses; the Gapfill → Hunt loop is bounded (at most 2 follow-up rounds) via structured output.
+- Fix and Verify are the only mutating phases. They run only when no-fix is `false` and Trace contains at least one surviving finding; otherwise both are skipped.
+- Pull-request mode fails closed: the host verifies that local HEAD matches the PR head and the worktree/index is clean at launch and again immediately before Fix; failed reauthorization skips Verify and downgrades the run to no-fix.
+- Recon target files and risk areas are trimmed, deduplicated, and deterministically assigned in full to 1–5 Hunt buckets; `huntLensCount` limits concurrency and never truncates focus. Gapfill follow-up focus uses the same routing without falling back to stale Recon focus.
+- The Gapfill → Hunt loop is bounded (at most 2 follow-up rounds). A continuation request after the budget or without valid focus becomes an authoritative coverage issue and forces no-fix.
+- Recoverable investigation-agent failures become explicit `workflowIssues`, mark failed lenses in the coverage map, and force no-fix. Schema/contract violations and failed Fix/Verify/Summary are terminal failures.
+- Summary receives authoritative `workflowIssues` and the complete target/risk/bucket/failed-lens coverage map; the returned result also carries them so prose cannot silently claim omitted coverage.
+- Generic workflow lifecycle notifications are mapped to review events. Todo suppression tracks active review run IDs, so one concurrent run finishing does not reveal the widget while another is active.
 
-### Why domain policy stays outside the runtime
+### Runtime and preset policy boundary
 
-The workflow runtime stays generic. Review and research domain logic — Target Scope preparation, no-fix gating, prompt and policy text, and source-collection rules — lives in the `review` and `research` extensions, not in `dynamic-workflows`. The runtime only provides discovery, provenance, the read-only policy seam, and the launch bridge. This keeps presets swappable and keeps the authoritative `/review` and `/research` commands as the source of truth until a preset reaches parity.
+The workflow runtime remains generic. Review and research policy now lives in the extension-packaged preset scripts: raw-arg normalization, Target Scope guidance, no-fix gating, phase prompts, source-collection rules, and bounded loops. The runtime provides discovery, provenance, isolated agents, read-only enforcement, scheduling, artifacts, cancellation, replay, lifecycle notifications, and the launch bridge.

@@ -318,6 +318,40 @@ describe("workflow subagent runner", () => {
     ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash", "structured_output"]);
   });
 
+  test("enforces an explicit read-only tool allowlist", async () => {
+    const { createWorkflowAgentRunner } = await loadRunnerModule();
+    nextStructuredOutput = { verdict: "pass" };
+    const runner = createWorkflowAgentRunner(
+      createPi() as never,
+      createContext() as never,
+      createFakeInvestigationToolset() as never,
+    );
+
+    await runner("Collect only with Tavily", {
+      label: "collect",
+      toolPolicy: "readOnly",
+      allowedTools: ["tavily_search", "tavily_extract", "tavily_map", "tavily_crawl"],
+      schema: { type: "object", properties: { verdict: { type: "string" } } },
+    });
+
+    expect(createAgentSessionCalls[0].tools).toEqual([
+      "tavily_search",
+      "tavily_extract",
+      "tavily_map",
+      "tavily_crawl",
+      "structured_output",
+    ]);
+    expect(
+      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
+    ).toEqual([
+      "tavily_search",
+      "tavily_extract",
+      "tavily_map",
+      "tavily_crawl",
+      "structured_output",
+    ]);
+  });
+
   test("persists subagent transcripts with minimal metadata", async () => {
     const { createWorkflowAgentRunner } = await loadRunnerModule();
     const transcriptsDir = tempTranscriptsDir();

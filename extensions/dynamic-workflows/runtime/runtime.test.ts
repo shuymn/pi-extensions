@@ -1,9 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { createWorkflowAgentJournalKey } from "../journal/key";
 import { buildWorkflowReplayCache } from "../journal/replay";
 import { runWorkflow } from "./runtime";
 
 describe("dynamic workflow runtime", () => {
+  test("uses only the TypeBox subpath explicitly supported by the Pi extension loader", () => {
+    const source = readFileSync(new URL("./runtime.ts", import.meta.url), "utf8");
+    expect(source).toContain('from "typebox/value"');
+    expect(source).not.toContain('from "typebox/format"');
+    expect(source).not.toContain('from "typebox/schema"');
+  });
+
   test("runs a workflow script with basic globals and a fake agent hook", async () => {
     const agentCalls: Array<{ prompt: string; options: unknown }> = [];
 
@@ -107,21 +115,12 @@ describe("dynamic workflow runtime", () => {
         }
 
         const agentValue = await agent("return a JSON object", { label: "json value" });
-        async function hostErrorEscape() {
-          try {
-            phase({});
-            return "unexpected";
-          } catch (error) {
-            return error.constructor?.constructor?.("return process")?.();
-          }
-        }
 
         return {
           phase: await probe(() => phase.constructor?.constructor?.("return process")?.()),
           process: await probe(() => process.constructor?.constructor?.("return process")?.()),
           args: await probe(() => args.constructor?.constructor?.("return process")?.()),
           agentValue: await probe(() => agentValue.constructor?.constructor?.("return process")?.()),
-          hostError: await probe(hostErrorEscape),
         };
       `,
       {
@@ -136,7 +135,6 @@ describe("dynamic workflow runtime", () => {
       process: "blocked",
       args: "blocked",
       agentValue: "blocked",
-      hostError: "blocked",
     });
   });
 
@@ -174,6 +172,260 @@ describe("dynamic workflow runtime", () => {
 
     expect(agentOptions).toEqual([{ label: "verdict", phase: "Assess", schema }]);
     expect(result.result).toEqual({ verdict: "pass" });
+  });
+
+  test("schema result validation failures hard-stop with contract error identity", async () => {
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "invalid_schema_result",
+          description: "Reject an invalid schema-backed result",
+          phases: [{ title: "Assess" }],
+        };
+
+        return await agent("Return a verdict", {
+          label: "verdict",
+          schema: {
+            type: "object",
+            properties: { verdict: { type: "string" } },
+            required: ["verdict"],
+          },
+        });
+      `,
+      { cwd: "/repo", agent: () => ({ wrong: true }) },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("result did not match its schema"),
+    });
+  });
+
+  test("rejects unsupported schema keywords instead of accepting them silently", async () => {
+    const calls: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "unsupported_schema",
+          description: "Reject unsupported schema validation",
+          phases: [{ title: "Assess" }],
+        };
+
+        return await agent("Return data", {
+          schema: { type: "string", unknownAssertion: true },
+        });
+      `,
+      {
+        cwd: "/repo",
+        agent: (prompt) => {
+          calls.push(prompt);
+          return "unexpected";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("unsupported keyword `unknownAssertion`"),
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("rejects malformed supported schema keywords before spawning an agent", async () => {
+    const calls: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "malformed_schema",
+          description: "Reject malformed schema validation",
+          phases: [{ title: "Assess" }],
+        };
+
+        return await agent("Return data", {
+          schema: { type: "array", minItems: -1 },
+        });
+      `,
+      {
+        cwd: "/repo",
+        agent: (prompt) => {
+          calls.push(prompt);
+          return [];
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("minItems must be a non-negative integer"),
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test("rejects non-JSON schema members instead of dropping them during normalization", async () => {
+    const calls: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "lossy_schema",
+          description: "Reject lossy schema normalization",
+          phases: [{ title: "Assess" }],
+        };
+
+        return await agent("Return data", {
+          schema: {
+            type: "object",
+            properties: { verdict: undefined },
+          },
+        });
+      `,
+      {
+        cwd: "/repo",
+        agent: (prompt) => {
+          calls.push(prompt);
+          return {};
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("must contain only JSON values"),
+    });
+    expect(calls).toEqual([]);
+  });
+
+  test.each([
+    {
+      name: "toJSON hooks",
+      setup: `
+        const schema = {
+          type: "string",
+          toJSON() {
+            log("toJSON hook executed");
+            return { type: "string" };
+          },
+        };
+      `,
+      expectedMessage: "toJSON hooks",
+    },
+    {
+      name: "accessors",
+      setup: `
+        const schema = { type: "object" };
+        Object.defineProperty(schema, "properties", {
+          enumerable: true,
+          get() {
+            log("accessor executed");
+            return {};
+          },
+        });
+      `,
+      expectedMessage: "accessors",
+    },
+    {
+      name: "inherited array toJSON hooks",
+      setup: `
+        Array.prototype.toJSON = function () {
+          log("array toJSON hook executed");
+          return [];
+        };
+        const schema = { type: "object", required: ["value"] };
+      `,
+      expectedMessage: "toJSON hooks",
+    },
+    {
+      name: "proxies",
+      setup: `
+        const target = { type: "string" };
+        const schema = new Proxy(target, {
+          ownKeys() {
+            log("proxy hook executed");
+            return Reflect.ownKeys(target);
+          },
+        });
+      `,
+      expectedMessage: "plain JSON objects",
+    },
+    {
+      name: "non-plain objects",
+      setup: `const schema = { type: "object", default: new Map() };`,
+      expectedMessage: "plain JSON objects",
+    },
+    {
+      name: "custom prototypes",
+      setup: `
+        const schema = Object.create(Object.create(null));
+        schema.type = "string";
+      `,
+      expectedMessage: "plain JSON objects",
+    },
+  ])("rejects schema $name without executing object hooks", async ({ setup, expectedMessage }) => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "strict_schema_objects",
+          description: "Reject non-JSON schema object graphs",
+          phases: [{ title: "Assess" }],
+        };
+
+        ${setup}
+        return await agent("Return data", { schema });
+      `,
+      {
+        cwd: "/repo",
+        onLog: (message) => logs.push(message),
+        agent: (prompt) => {
+          calls.push(prompt);
+          return "unexpected";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining(expectedMessage),
+    });
+    expect(logs).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test.each([
+    "undefined",
+    "() => true",
+    "Symbol('x')",
+    "1n",
+    "NaN",
+    "Infinity",
+  ])("rejects non-JSON schema primitive %s", async (source) => {
+    const calls: string[] = [];
+    const error = await runWorkflow(
+      `
+          export const meta = {
+            name: "strict_schema_primitives",
+            description: "Reject non-JSON schema primitives",
+            phases: [{ title: "Assess" }],
+          };
+
+          return await agent("Return data", {
+            schema: { type: "object", default: ${source} },
+          });
+        `,
+      {
+        cwd: "/repo",
+        agent: (prompt) => {
+          calls.push(prompt);
+          return "unexpected";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("only JSON values"),
+    });
+    expect(calls).toEqual([]);
   });
 
   test("passes normalized provider/model:effort selections through agent options and journal keys", async () => {
@@ -420,7 +672,8 @@ describe("dynamic workflow runtime", () => {
           nextJournalAgentId += 1;
           return `journal-agent-${nextJournalAgentId}`;
         },
-        agent: () => ({ ok: true }),
+        agent: (_prompt, options) =>
+          options.schema === undefined ? { ok: true } : { verdict: "pass" },
         onAgentQueued: (event) => events.push({ kind: "queued", ...event }),
         onAgentStart: (event) => events.push({ kind: "start", ...event }),
         onAgentEnd: (event) => events.push({ kind: "end", ...event }),
@@ -470,7 +723,7 @@ describe("dynamic workflow runtime", () => {
         prompt: "Review auth",
         journalKey: reviewKey,
         journalAgentId: "journal-agent-1",
-        result: { ok: true },
+        result: { verdict: "pass" },
       },
       {
         kind: "queued",
@@ -693,6 +946,165 @@ describe("dynamic workflow runtime", () => {
     expect(result.result).toEqual(["slow result", null]);
   });
 
+  test("latches a caught contract hard stop and blocks later host calls", async () => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "caught_contract_hard_stop",
+          description: "A caught contract error remains terminal",
+          phases: [{ title: "Run" }],
+        };
+
+        try {
+          await agent("invalid", { schema: { unknownKeyword: true } });
+        } catch (_error) {}
+        try {
+          await agent("blocked");
+        } catch (_error) {}
+        try {
+          log("blocked");
+        } catch (_error) {}
+        return "caught";
+      `,
+      {
+        cwd: "/repo",
+        onLog: (message) => logs.push(message),
+        agent: (prompt) => {
+          calls.push(prompt);
+          return "unexpected";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("unsupported keyword `unknownKeyword`"),
+    });
+    expect(calls).toEqual([]);
+    expect(logs).toEqual([]);
+  });
+
+  test("latches a caught runtime limit and blocks later host calls", async () => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "caught_limit_hard_stop",
+          description: "A caught limit error remains terminal",
+          phases: [{ title: "Run" }],
+        };
+
+        await agent("first");
+        try {
+          await agent("over limit");
+        } catch (_error) {}
+        try {
+          await agent("blocked");
+        } catch (_error) {}
+        try {
+          log("blocked");
+        } catch (_error) {}
+        return "caught";
+      `,
+      {
+        cwd: "/repo",
+        maxTotalAgents: 1,
+        onLog: (message) => logs.push(message),
+        agent: (prompt) => {
+          calls.push(prompt);
+          return "ok";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowLimitError",
+      message: expect.stringContaining("max total agents"),
+    });
+    expect(calls).toEqual(["first"]);
+    expect(logs).toEqual([]);
+  });
+
+  test("latches a caught workflow abort and blocks later host calls", async () => {
+    const controller = new AbortController();
+    const logs: string[] = [];
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const running = runWorkflow(
+      `
+        export const meta = {
+          name: "caught_abort_hard_stop",
+          description: "A caught abort remains terminal",
+          phases: [{ title: "Run" }],
+        };
+
+        try {
+          await agent("wait");
+        } catch (_error) {}
+        try {
+          log("blocked");
+        } catch (_error) {}
+        return "caught";
+      `,
+      {
+        cwd: "/repo",
+        signal: controller.signal,
+        onLog: (message) => logs.push(message),
+        agent: async (_prompt, options) => {
+          markStarted();
+          await new Promise<void>((_resolve, reject) => {
+            options.signal?.addEventListener("abort", () => reject(new Error("stopped")), {
+              once: true,
+            });
+          });
+        },
+      },
+    );
+
+    await started;
+    controller.abort("cancel caught workflow");
+    const error = await running.catch((error: unknown) => error);
+
+    expect(error).toMatchObject({
+      name: "WorkflowAbortError",
+      message: "cancel caught workflow",
+    });
+    expect(logs).toEqual([]);
+  });
+
+  test("ordinary agent failures remain recoverable after introducing the hard-stop latch", async () => {
+    const calls: string[] = [];
+    const result = await runWorkflow(
+      `
+        export const meta = {
+          name: "recoverable_agent_failure",
+          description: "Continue after an ordinary agent failure",
+          phases: [{ title: "Run" }],
+        };
+
+        const failed = await agent("fails");
+        log("continued");
+        const recovered = await agent("works");
+        return { failed, recovered };
+      `,
+      {
+        cwd: "/repo",
+        agent: (prompt) => {
+          calls.push(prompt);
+          if (prompt === "fails") throw new Error("recoverable");
+          return "ok";
+        },
+      },
+    );
+
+    expect(calls).toEqual(["fails", "works"]);
+    expect(result.logs).toEqual(["agent agent 1 failed: recoverable", "continued"]);
+    expect(result.result).toEqual({ failed: null, recovered: "ok" });
+  });
+
   test("parallel preserves input order and converts branch failures to null", async () => {
     const result = await runWorkflow(
       `
@@ -722,7 +1134,167 @@ describe("dynamic workflow runtime", () => {
     expect(result.logs).toEqual(["parallel[1] failed: boom"]);
   });
 
-  test("parallel rejects non-thunk items and more than 4096 branches", async () => {
+  test("parallel aborts siblings on hard failure and waits for them to settle", async () => {
+    let markSiblingStarted: () => void = () => {};
+    const siblingStarted = new Promise<void>((resolve) => (markSiblingStarted = resolve));
+    let markSiblingAborted: () => void = () => {};
+    const siblingAborted = new Promise<void>((resolve) => (markSiblingAborted = resolve));
+    let releaseSibling: (() => void) | undefined;
+    let siblingSettled = false;
+
+    const running = runWorkflow(
+      `
+        export const meta = {
+          name: "parallel_hard_stop",
+          description: "Abort and settle siblings before rejecting",
+          phases: [{ title: "Fan out" }],
+        };
+
+        return await parallel([
+          () => agent("invalid", {
+            label: "invalid",
+            schema: {
+              type: "object",
+              properties: { verdict: { type: "string" } },
+              required: ["verdict"],
+            },
+          }),
+          () => agent("sibling", { label: "sibling" }),
+        ]);
+      `,
+      {
+        cwd: "/repo",
+        agent: async (prompt, options) => {
+          if (prompt === "invalid") {
+            await siblingStarted;
+            return { wrong: true };
+          }
+          markSiblingStarted();
+          await new Promise<void>((resolve) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                markSiblingAborted();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          await new Promise<void>((resolve) => (releaseSibling = resolve));
+          siblingSettled = true;
+          return "stopped";
+        },
+      },
+    );
+    let workflowSettled = false;
+    void running.then(
+      () => (workflowSettled = true),
+      () => (workflowSettled = true),
+    );
+
+    await siblingAborted;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(workflowSettled).toBe(false);
+    expect(siblingSettled).toBe(false);
+
+    await waitUntil(() => releaseSibling !== undefined);
+    releaseSibling?.();
+    const error = await running.catch((error: unknown) => error);
+
+    expect(siblingSettled).toBe(true);
+    expect(error).toMatchObject({
+      name: "WorkflowContractError",
+      message: expect.stringContaining("result did not match its schema"),
+    });
+  });
+
+  test("parallel stops queued siblings before releasing a failed agent slot", async () => {
+    const calls: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "parallel_queued_hard_stop",
+          description: "Do not start queued siblings after a hard stop",
+          phases: [{ title: "Fan out" }],
+        };
+
+        return await parallel([
+          () => agent("invalid", {
+            schema: {
+              type: "object",
+              properties: { verdict: { type: "string" } },
+              required: ["verdict"],
+            },
+          }),
+          () => agent("queued"),
+        ]);
+      `,
+      {
+        cwd: "/repo",
+        maxConcurrentAgents: 1,
+        agent: (prompt) => {
+          calls.push(prompt);
+          return prompt === "invalid" ? { wrong: true } : "unexpected";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ name: "WorkflowContractError" });
+    expect(calls).toEqual(["invalid"]);
+  });
+
+  test("nested parallel agents inherit outer hard-stop cancellation", async () => {
+    let nestedAborted = false;
+    let markNestedStarted: () => void = () => {};
+    const nestedStarted = new Promise<void>((resolve) => (markNestedStarted = resolve));
+
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "nested_parallel_hard_stop",
+          description: "Propagate hard stops through nested parallel calls",
+          phases: [{ title: "Fan out" }],
+        };
+
+        return await parallel([
+          () => agent("invalid", {
+            schema: {
+              type: "object",
+              properties: { verdict: { type: "string" } },
+              required: ["verdict"],
+            },
+          }),
+          () => parallel([() => agent("nested")]),
+        ]);
+      `,
+      {
+        cwd: "/repo",
+        agent: async (prompt, options) => {
+          if (prompt === "invalid") {
+            await nestedStarted;
+            return { wrong: true };
+          }
+          markNestedStarted();
+          await new Promise<void>((resolve) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                nestedAborted = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          return "stopped";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ name: "WorkflowContractError" });
+    expect(nestedAborted).toBe(true);
+  });
+
+  test("parallel rejects non-thunk items, sparse arrays, and more than 4096 branches", async () => {
     await expect(
       runWorkflow(
         `
@@ -733,6 +1305,23 @@ describe("dynamic workflow runtime", () => {
           };
 
           return await parallel([Promise.resolve("not a thunk")]);
+        `,
+        { cwd: "/repo", agent: () => "unused" },
+      ),
+    ).rejects.toThrow("functions, not promises");
+
+    await expect(
+      runWorkflow(
+        `
+          export const meta = {
+            name: "parallel_sparse",
+            description: "Reject sparse branch arrays",
+            phases: [{ title: "Fan out" }],
+          };
+
+          const thunks = [() => agent("unused")];
+          delete thunks[0];
+          return await parallel(thunks);
         `,
         { cwd: "/repo", agent: () => "unused" },
       ),
@@ -771,6 +1360,208 @@ describe("dynamic workflow runtime", () => {
         { cwd: "/repo", agent: () => "unused" },
       ),
     ).rejects.toThrow("4096");
+  });
+
+  test("pipeline blocks sibling host calls after a synchronous contract hard stop", async () => {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const error = await runWorkflow(
+      `
+        export const meta = {
+          name: "pipeline_synchronous_hard_stop",
+          description: "Block siblings after synchronous pipeline failure",
+          phases: [{ title: "Pipeline" }],
+        };
+
+        return await pipeline(["invalid", "sibling"], (item) => {
+          if (item === "invalid") {
+            return agent(item, { schema: { unknownKeyword: true } });
+          }
+          log("sibling started");
+          return agent(item);
+        });
+      `,
+      {
+        cwd: "/repo",
+        onLog: (message) => logs.push(message),
+        agent: (prompt) => {
+          calls.push(prompt);
+          return "unexpected";
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ name: "WorkflowContractError" });
+    expect(logs).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  test("pipeline hard stops abort running and queued items and wait for settlement", async () => {
+    const calls: string[] = [];
+    let markSiblingStarted: () => void = () => {};
+    const siblingStarted = new Promise<void>((resolve) => (markSiblingStarted = resolve));
+    let markSiblingAborted: () => void = () => {};
+    const siblingAborted = new Promise<void>((resolve) => (markSiblingAborted = resolve));
+    let releaseSibling: (() => void) | undefined;
+    let siblingSettled = false;
+
+    const running = runWorkflow(
+      `
+        export const meta = {
+          name: "pipeline_hard_stop",
+          description: "Abort and settle pipeline siblings before rejecting",
+          phases: [{ title: "Pipeline" }],
+        };
+
+        return await pipeline(["invalid", "sibling", "queued"], (item) =>
+          item === "invalid"
+            ? agent(item, {
+                schema: {
+                  type: "object",
+                  properties: { verdict: { type: "string" } },
+                  required: ["verdict"],
+                },
+              })
+            : agent(item),
+        );
+      `,
+      {
+        cwd: "/repo",
+        maxConcurrentAgents: 2,
+        agent: async (prompt, options) => {
+          calls.push(prompt);
+          if (prompt === "invalid") {
+            await siblingStarted;
+            return { wrong: true };
+          }
+          markSiblingStarted();
+          await new Promise<void>((resolve) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                markSiblingAborted();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          await new Promise<void>((resolve) => (releaseSibling = resolve));
+          siblingSettled = true;
+          return "stopped";
+        },
+      },
+    );
+    let workflowSettled = false;
+    void running.then(
+      () => (workflowSettled = true),
+      () => (workflowSettled = true),
+    );
+
+    await siblingAborted;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(workflowSettled).toBe(false);
+    expect(siblingSettled).toBe(false);
+    expect(calls).toEqual(["invalid", "sibling"]);
+
+    await waitUntil(() => releaseSibling !== undefined);
+    releaseSibling?.();
+    const error = await running.catch((error: unknown) => error);
+
+    expect(siblingSettled).toBe(true);
+    expect(error).toMatchObject({ name: "WorkflowContractError" });
+  });
+
+  test.each([
+    {
+      name: "a pipeline nested in parallel",
+      body: `
+        return await parallel([
+          () => agent("invalid", {
+            schema: {
+              type: "object",
+              properties: { verdict: { type: "string" } },
+              required: ["verdict"],
+            },
+          }),
+          () => pipeline(["nested"], (item) => agent(item)),
+        ]);
+      `,
+    },
+    {
+      name: "parallel nested in a pipeline",
+      body: `
+        return await pipeline(["invalid", "nested"], (item) =>
+          item === "invalid"
+            ? agent(item, {
+                schema: {
+                  type: "object",
+                  properties: { verdict: { type: "string" } },
+                  required: ["verdict"],
+                },
+              })
+            : parallel([() => agent(item)]),
+        );
+      `,
+    },
+  ])("propagates and settles hard stops through $name", async ({ body }) => {
+    let markNestedStarted: () => void = () => {};
+    const nestedStarted = new Promise<void>((resolve) => (markNestedStarted = resolve));
+    let markNestedAborted: () => void = () => {};
+    const nestedAborted = new Promise<void>((resolve) => (markNestedAborted = resolve));
+    let releaseNested: (() => void) | undefined;
+    let nestedSettled = false;
+
+    const running = runWorkflow(
+      `
+        export const meta = {
+          name: "nested_pipeline_parallel_hard_stop",
+          description: "Propagate nested pipeline and parallel hard stops",
+          phases: [{ title: "Pipeline" }],
+        };
+
+        ${body}
+      `,
+      {
+        cwd: "/repo",
+        agent: async (prompt, options) => {
+          if (prompt === "invalid") {
+            await nestedStarted;
+            return { wrong: true };
+          }
+          markNestedStarted();
+          await new Promise<void>((resolve) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => {
+                markNestedAborted();
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          await new Promise<void>((resolve) => (releaseNested = resolve));
+          nestedSettled = true;
+          return "stopped";
+        },
+      },
+    );
+    let workflowSettled = false;
+    void running.then(
+      () => (workflowSettled = true),
+      () => (workflowSettled = true),
+    );
+
+    await nestedAborted;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(workflowSettled).toBe(false);
+    expect(nestedSettled).toBe(false);
+
+    await waitUntil(() => releaseNested !== undefined);
+    releaseNested?.();
+    const error = await running.catch((error: unknown) => error);
+
+    expect(error).toMatchObject({ name: "WorkflowContractError" });
+    expect(nestedSettled).toBe(true);
   });
 
   test("pipeline moves each item through all stages without a global stage barrier", async () => {
@@ -884,23 +1675,64 @@ describe("dynamic workflow runtime", () => {
     expect(result.agentCount).toBe(6);
   });
 
-  test("runtime limits enforce max total agents and token budget hard stops", async () => {
-    await expect(
-      runWorkflow(
-        `
-          export const meta = {
-            name: "total_agent_limit",
-            description: "Exercise total agent limit",
-            phases: [{ title: "Run" }],
-          };
+  test("preserves abort error identity across the VM boundary", async () => {
+    const controller = new AbortController();
+    let markStarted: () => void = () => {};
+    const started = new Promise<void>((resolve) => (markStarted = resolve));
+    const running = runWorkflow(
+      `
+        export const meta = {
+          name: "abort_identity",
+          description: "Preserve abort identity",
+          phases: [{ title: "Run" }],
+        };
 
-          await agent("first");
-          await agent("second");
-          return "unreachable";
-        `,
-        { cwd: "/repo", maxTotalAgents: 1, agent: () => "ok" },
-      ),
-    ).rejects.toThrow("max total agents");
+        return await agent("wait");
+      `,
+      {
+        cwd: "/repo",
+        signal: controller.signal,
+        agent: async (_prompt, options) => {
+          markStarted();
+          await new Promise<void>((_resolve, reject) => {
+            options.signal?.addEventListener(
+              "abort",
+              () => reject(new Error("agent hook stopped")),
+              { once: true },
+            );
+          });
+        },
+      },
+    );
+
+    await started;
+    controller.abort("cancel runtime");
+    const error = await running.catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      name: "WorkflowAbortError",
+      message: "cancel runtime",
+    });
+  });
+
+  test("runtime limits enforce max total agents and token budget hard stops", async () => {
+    const limitError = await runWorkflow(
+      `
+        export const meta = {
+          name: "total_agent_limit",
+          description: "Exercise total agent limit",
+          phases: [{ title: "Run" }],
+        };
+
+        await agent("first");
+        await agent("second");
+        return "unreachable";
+      `,
+      { cwd: "/repo", maxTotalAgents: 1, agent: () => "ok" },
+    ).catch((error: unknown) => error);
+    expect(limitError).toMatchObject({
+      name: "WorkflowLimitError",
+      message: expect.stringContaining("max total agents"),
+    });
 
     const prompts: string[] = [];
     await expect(

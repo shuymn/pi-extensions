@@ -25,28 +25,30 @@ pi config
 ## Available extensions
 
 - `add-dir` — Register extra workspace directories for the current session.
-- `agmsg-pi` — Send and receive local messages between pi sessions.
-- `ask-user-question` — Let the agent ask structured clarification questions.
+- `ask-user-question` — Let the agent ask structured clarification questions sequentially.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
-- `compact` — Let the agent request Pi context compaction at semantic checkpoints.
-- `commit` — Launch the existing `/skill:commit` as a bounded one-shot flow with `--commit`.
-- `create-pr` — Launch the existing `/skill:create-pr` as a bounded one-shot flow with `--create-pr`.
 - `commandcode-provider` — Register the Command Code model provider with live model discovery and a fallback catalog.
+- `commit` — Launch the existing `/skill:commit` as a bounded one-shot flow with `--commit`.
+- `compact` — Let the agent request Pi context compaction at semantic checkpoints.
+- `companion` — Control the Glimpse cursor companion overlay.
 - `copy-file` — Add `/copy-file` to write the latest assistant message to `RESULT_<uuid>.md` in cwd.
+- `create-pr` — Launch the existing `/skill:create-pr` as a bounded one-shot flow with `--create-pr`.
+- `disable-model` — Hide configured providers or models from model selection.
+- `dynamic-workflows` — Run deterministic subagent workflows, including packaged `review_flow` and `research_flow` presets.
+- `env` — Select the initial model from `PI_MODEL` or project settings when the CLI does not specify one.
 - `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
 - `fallback-model` — Switch to comma-separated fallback models on retryable model errors.
 - `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
 - `plan` — Add `/plan` and `/impl` workflow prompts.
 - `prompt-stash` — Stash and restore the prompt buffer with `ctrl+s`.
-- `research` — Run staged deep-research workflows and Tavily Research escalation.
-- `review` — Run the multi-phase code review workflow.
+- `sakana-ai-provider` — Register Sakana AI Fugu models through the OpenAI Responses API.
 - `sakura-ai-engine-provider` — Register the Sakura AI Engine model provider.
 - `session-title` — Generate a session title from the first user message.
 - `statusline` — Replace the TUI footer with project, model, and context status.
 - `subagents` — Spawn isolated subagent sessions for delegated work.
 - `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.
 - `todo` — Manage branch-local todos for multi-step work.
-- `vertex-claude-provider` — Register Claude models served through Google Vertex AI.
+- `tool-search` — Keep large tool groups deferred and activate matching tools through `search_tools`.
 - `wt` — Add `/wt` to create a `git-wt` worktree and continue the current session there.
 
 ## One-shot flows
@@ -76,4 +78,5 @@ Shared optional flags: `--english`/`--japanese` and `--base <branch>`. `--base` 
 Dependencies:
 
 - `commit` and `create-pr` require `ask-user-question` because these one-shot flows launch only when the `ask_user_question` LLM Tool is available.
-- `todo` imports `review` workflow events to suppress the todo widget while review runs.
+- `todo` imports `dynamic-workflows` review lifecycle events to suppress the todo widget while `review_flow` runs.
+- `tool-search` keeps Tavily, `workflow`, and background subagent management tools deferred. `ask_user_question`, `compact_context`, `todo`, `spawn_subagent`, and `github_clone_workspace` remain active.

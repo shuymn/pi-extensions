@@ -13,13 +13,22 @@ describe("dynamic workflow tool notifications", () => {
     const workflowRoot = tempWorkflowRoot();
     const backgroundTasks: Array<() => Promise<void>> = [];
     const notifications: unknown[] = [];
+    const lifecycleNotifications: unknown[] = [];
+    const terminalCallbackOrder: string[] = [];
     let nextJournalAgentId = 0;
     const tool = createWorkflowTool({
       workflowRoot,
       runIdFactory: () => "wf_fail_12345678",
       taskIdFactory: () => "task_fail_12345678",
       backgroundScheduler: (task) => backgroundTasks.push(task),
-      completionNotifier: (notification) => notifications.push(notification),
+      completionNotifier: (notification) => {
+        terminalCallbackOrder.push("completion");
+        notifications.push(notification);
+      },
+      lifecycleNotifier: (notification) => {
+        if (notification.status !== "started") terminalCallbackOrder.push("lifecycle");
+        lifecycleNotifications.push(notification);
+      },
       journalAgentIdFactory: () => {
         nextJournalAgentId += 1;
         return `journal-agent-${nextJournalAgentId}`;
@@ -44,6 +53,14 @@ describe("dynamic workflow tool notifications", () => {
       undefined,
       { cwd: "/repo" } as never,
     );
+
+    expect(lifecycleNotifications).toEqual([
+      expect.objectContaining({
+        runId: "wf_fail_12345678",
+        workflowName: "fail_smoke",
+        status: "started",
+      }),
+    ]);
 
     await backgroundTasks[0]!();
 
@@ -78,6 +95,11 @@ describe("dynamic workflow tool notifications", () => {
         }),
       }),
     ]);
+    expect(lifecycleNotifications).toEqual([
+      expect.objectContaining({ status: "started", workflowName: "fail_smoke" }),
+      expect.objectContaining({ status: "completed", workflowName: "fail_smoke" }),
+    ]);
+    expect(terminalCallbackOrder).toEqual(["lifecycle", "completion"]);
   });
 
   test("keeps completed terminal status visible when journal flush fails", async () => {

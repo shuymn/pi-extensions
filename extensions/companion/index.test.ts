@@ -18,6 +18,7 @@ type FakeContext = {
   cwd: string;
   getContextUsage: () => undefined;
   model: Record<string, never>;
+  isIdle: () => boolean;
   ui: {
     notify: (message: string, level: "info" | "warning" | "error") => void;
     setStatus: (key: string, value: string | undefined) => void;
@@ -46,7 +47,7 @@ class FakeChild extends EventEmitter {
   unref() {}
 }
 
-function createContext() {
+function createContext(idle = true) {
   const notifications: Array<{ message: string; level: "info" | "warning" | "error" }> = [];
   const statuses = new Map<string, string | undefined>();
   const ctx: FakeContext = {
@@ -54,6 +55,7 @@ function createContext() {
     cwd: "/work/project",
     getContextUsage: () => undefined,
     model: {},
+    isIdle: () => idle,
     ui: {
       notify(message, level) {
         notifications.push({ message, level });
@@ -90,6 +92,7 @@ describe("companion extension", () => {
       "Control the Glimpse cursor companion overlay",
     );
     expect(pi.getEventHandlers("agent_start")).toHaveLength(1);
+    expect(pi.getEventHandlers("agent_settled")).toHaveLength(1);
     expect(pi.getEventHandlers("tool_execution_start")).toHaveLength(1);
     expect(pi.getEventHandlers("session_shutdown")).toHaveLength(1);
   });
@@ -161,6 +164,28 @@ describe("companion extension", () => {
     expect(JSON.parse(readFileSync(join(tempAgentDir, "settings.json"), "utf8"))).toEqual({
       companion: { enabled: false },
     });
+  });
+
+  test("sends done status only after the agent settles", async () => {
+    const socket = new FakeSocket();
+    const pi = createFakePi();
+    companionExtension(pi as never, {
+      connect: ((_: string, listener: () => void) => {
+        queueMicrotask(listener);
+        return socket;
+      }) as never,
+    });
+    const { ctx } = createContext();
+
+    await pi.getCommand("companion")!.handler("on", ctx);
+    await pi.getEventHandlers("agent_start")[0]!({}, ctx);
+    expect(JSON.parse(socket.writes.at(-1) ?? "{}").status).toBe("starting");
+
+    await pi.getEventHandlers("agent_settled")[0]!({}, createContext(false).ctx);
+    expect(JSON.parse(socket.writes.at(-1) ?? "{}").status).toBe("starting");
+
+    await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
+    expect(JSON.parse(socket.writes.at(-1) ?? "{}").status).toBe("done");
   });
 
   test("sends truncated tool details to companion", async () => {

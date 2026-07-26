@@ -82,6 +82,7 @@ function createContext(
     model?: Model | unknown;
     models?: unknown[];
     usage?: { tokens: number } | undefined;
+    idle?: boolean;
   } = {},
 ) {
   const footerFactories: FooterFactory[] = [];
@@ -95,6 +96,7 @@ function createContext(
     model,
     modelRegistry: { getAvailable: () => options.models ?? [model] },
     getContextUsage: () => options.usage,
+    isIdle: () => options.idle ?? true,
     footerFactories,
     ui: {
       setFooter(factory: FooterFactory) {
@@ -159,7 +161,7 @@ describe("statusline extension", () => {
     extension(pi as never);
 
     expect([...pi.events.keys()].sort()).toEqual([
-      "agent_end",
+      "agent_settled",
       "model_select",
       "session_start",
       "thinking_level_select",
@@ -310,7 +312,7 @@ describe("statusline extension", () => {
     expect(rendered.length).toBeLessThanOrEqual(24);
   });
 
-  test("agent_end and model/thinking selection request footer rerender", async () => {
+  test("agent_settled and model/thinking selection request footer rerender", async () => {
     const extension = await loadExtension();
     const pi = createFakePi();
     extension(pi as never);
@@ -319,7 +321,10 @@ describe("statusline extension", () => {
     await pi.events.get("session_start")![0]({}, ctx);
     const footer = instantiateFooter(ctx);
 
-    await pi.events.get("agent_end")![0]({}, ctx);
+    await pi.events.get("agent_settled")![0]({}, createContext({ idle: false }));
+    expect(footer.renderCount).toBe(0);
+
+    await pi.events.get("agent_settled")![0]({}, ctx);
     await pi.events.get("model_select")![0]({}, ctx);
     await pi.events.get("thinking_level_select")![0]({}, ctx);
 

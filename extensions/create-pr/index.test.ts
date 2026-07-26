@@ -32,6 +32,7 @@ type FakeContext = {
     notify: (message: string, level: "info" | "warning" | "error") => void;
   };
   shutdown: () => void;
+  isIdle: () => boolean;
 };
 
 const DEFAULT_TOOLS = [...CREATE_PR_SAFE_TOOLS, "edit", "write", "todo"];
@@ -122,7 +123,7 @@ function createFakePi(
   };
 }
 
-function createContext(hasUI = true): FakeContext {
+function createContext(hasUI = true, idle = true): FakeContext {
   const ctx: FakeContext = {
     hasUI,
     notifications: [],
@@ -135,6 +136,7 @@ function createContext(hasUI = true): FakeContext {
     shutdown() {
       ctx.shutdowns += 1;
     },
+    isIdle: () => idle,
   };
   return ctx;
 }
@@ -168,6 +170,11 @@ async function agentEnd(
   messages: unknown[] = [],
 ) {
   await pi.getEventHandlers("agent_end")[0]!({ messages }, ctx);
+  return ctx;
+}
+
+async function agentSettled(pi: ReturnType<typeof createFakePi>, ctx = createContext()) {
+  await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
   return ctx;
 }
 
@@ -233,6 +240,7 @@ describe("create-pr extension", () => {
     expect(pi.flagDefinitions.get(CREATE_PR_BASE_FLAG)).toMatchObject({ type: "string" });
     expect(pi.getEventHandlers("session_start")).toHaveLength(1);
     expect(pi.getEventHandlers("agent_end")).toHaveLength(1);
+    expect(pi.getEventHandlers("agent_settled")).toHaveLength(1);
   });
 
   test("registers shared one-shot flags only once with commit extension", async () => {
@@ -369,6 +377,8 @@ describe("create-pr extension", () => {
     await agentEnd(pi, ctx, [
       expandedCreatePrSkillMessage("--japanese\n\ndraft only\n\nextra note"),
     ]);
+    expect(ctx.shutdowns).toBe(0);
+    await agentSettled(pi, ctx);
     expect(ctx.shutdowns).toBe(1);
   });
 
@@ -428,7 +438,7 @@ describe("create-pr extension", () => {
     expect(ctx.shutdowns).toBe(1);
   });
 
-  test("launches only once and shuts down after the active create-pr agent run ends", async () => {
+  test("launches only once and shuts down after the active create-pr agent run settles", async () => {
     const pi = createFakePi({ flags: { [CREATE_PR_FLAG]: true } });
     createPrExtension(pi as never);
     const ctx = createContext();
@@ -442,6 +452,10 @@ describe("create-pr extension", () => {
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
 
+    expect(ctx.shutdowns).toBe(0);
+    await agentSettled(pi, ctx);
+    await agentSettled(pi, ctx);
+
     expect(ctx.shutdowns).toBe(1);
     expect(pi.emittedEvents).toEqual([
       { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
@@ -449,7 +463,21 @@ describe("create-pr extension", () => {
     ]);
   });
 
-  test("ignores non-matching agent_end before the create-pr agent run ends", async () => {
+  test("waits for an idle settled event before shutting down", async () => {
+    const pi = createFakePi({ flags: { [CREATE_PR_FLAG]: true } });
+    createPrExtension(pi as never);
+    const ctx = createContext();
+
+    await sessionStart(pi, ctx);
+    await agentEnd(pi, ctx, [{ role: "assistant", content: "provider failure" }]);
+    await agentSettled(pi, createContext(true, false));
+    expect(ctx.shutdowns).toBe(0);
+
+    await agentSettled(pi, ctx);
+    expect(ctx.shutdowns).toBe(1);
+  });
+
+  test("recognizes the active one-shot agent_end without transcript matching", async () => {
     const pi = createFakePi({ flags: { [CREATE_PR_FLAG]: true } });
     createPrExtension(pi as never);
     const ctx = createContext();
@@ -464,6 +492,8 @@ describe("create-pr extension", () => {
 
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
 
+    expect(ctx.shutdowns).toBe(0);
+    await agentSettled(pi, ctx);
     expect(ctx.shutdowns).toBe(1);
     expect(pi.emittedEvents).toEqual([
       { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },

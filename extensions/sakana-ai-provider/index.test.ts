@@ -91,6 +91,7 @@ describe("sakana-ai-provider extension", () => {
       medium: null,
       high: "high",
       xhigh: "xhigh",
+      max: "max",
     });
   });
 

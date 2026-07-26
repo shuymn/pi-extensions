@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type JsonSettingsObject = Record<string, unknown>;
 
@@ -30,7 +30,7 @@ export function globalSettingsPath(): string {
 }
 
 export function projectSettingsPath(cwd = process.cwd()): string {
-  return join(cwd, ".pi", "settings.json");
+  return join(cwd, CONFIG_DIR_NAME, "settings.json");
 }
 
 export function readSettingsJson(path: string): JsonSettingsObject {

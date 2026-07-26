@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  agentEndIncludesSkillPrompt,
   appendOneShotFreeInput,
   availableOneShotTools,
   collectOneShotCliFreeInputs,
@@ -102,7 +101,8 @@ export default function commitExtension(pi: ExtensionAPI): void {
 
   let launchAttempted = false;
   let boundedQuestionnaireActive = false;
-  let launchedCommitPrompt: string | undefined;
+  let commitRunActive = false;
+  let activeCommitRunEnded = false;
 
   function setBoundedQuestionnaire(): void {
     pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: false });
@@ -116,7 +116,8 @@ export default function commitExtension(pi: ExtensionAPI): void {
   }
 
   function clearActiveCommitRun(): void {
-    launchedCommitPrompt = undefined;
+    commitRunActive = false;
+    activeCommitRunEnded = false;
     resetBoundedQuestionnaire();
   }
 
@@ -167,7 +168,7 @@ export default function commitExtension(pi: ExtensionAPI): void {
       const expandedPrompt = expandOneShotSkillPrompt(pi, "commit", prompt);
       setBoundedQuestionnaire();
       pi.sendUserMessage(expandedPrompt);
-      launchedCommitPrompt = prompt;
+      commitRunActive = true;
     } catch (error) {
       clearActiveCommitRun();
       notifyIfUI(
@@ -185,9 +186,12 @@ export default function commitExtension(pi: ExtensionAPI): void {
     });
   }
 
-  pi.on("agent_end", async (event, ctx) => {
-    if (!launchedCommitPrompt) return;
-    if (!agentEndIncludesSkillPrompt(event.messages, "commit", launchedCommitPrompt)) return;
+  pi.on("agent_end", async () => {
+    if (commitRunActive) activeCommitRunEnded = true;
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!activeCommitRunEnded || !ctx.isIdle()) return;
     clearActiveCommitRun();
     ctx.shutdown();
   });

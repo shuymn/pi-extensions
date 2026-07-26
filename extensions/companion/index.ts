@@ -312,8 +312,8 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
     send("starting");
   });
 
-  pi.on("agent_end", async (_event, ctx) => {
-    if (!enabled) return;
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!enabled || !ctx.isIdle()) return;
     lastCtx = ctx;
     send("done");
     const removeVersion = statusVersion;

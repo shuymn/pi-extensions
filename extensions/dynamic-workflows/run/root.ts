@@ -1,25 +1,26 @@
-import { existsSync, statSync } from "node:fs";
-import { dirname, join, parse, resolve } from "node:path";
+import { statSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { CONFIG_DIR_NAME } from "@earendil-works/pi-coding-agent";
 
 export function resolveWorkflowRoot(cwd: string): string {
   const start = resolve(cwd);
   let current = start;
 
   while (true) {
-    const candidate = join(current, ".pi", "workflows");
+    const candidate = join(current, CONFIG_DIR_NAME, "workflows");
     if (isDirectory(candidate)) return candidate;
 
     const parent = dirname(current);
-    if (parent === current || current === parse(current).root) break;
+    if (parent === current) break;
     current = parent;
   }
 
-  return join(start, ".pi", "workflows");
+  return join(start, CONFIG_DIR_NAME, "workflows");
 }
 
 function isDirectory(path: string): boolean {
   try {
-    return existsSync(path) && statSync(path).isDirectory();
+    return statSync(path).isDirectory();
   } catch {
     return false;
   }

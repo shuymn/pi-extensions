@@ -259,7 +259,9 @@ describe("dynamic workflow tool resume", () => {
       },
       agent: (prompt, options) => {
         calls.push({ prompt, options });
-        return { fresh: prompt, schema: options.schema };
+        return options.schema === undefined
+          ? { fresh: prompt }
+          : { verdict: "pass", confidence: 1 };
       },
     });
 
@@ -284,7 +286,7 @@ describe("dynamic workflow tool resume", () => {
         duplicate: { duplicate: "second" },
         incomplete: { fresh: "incomplete prompt" },
         changedPrompt: { fresh: "new prompt" },
-        changedSchema: { fresh: "schema prompt", schema: newSchema },
+        changedSchema: { verdict: "pass", confidence: 1 },
       },
       agentCount: 4,
     });
@@ -331,7 +333,7 @@ describe("dynamic workflow tool resume", () => {
         type: "result",
         key: newSchemaKey,
         agentId: "journal-agent-4",
-        result: { fresh: "schema prompt", schema: newSchema },
+        result: { verdict: "pass", confidence: 1 },
       },
     ]);
   });

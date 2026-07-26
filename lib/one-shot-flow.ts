@@ -8,6 +8,16 @@ export const ONE_SHOT_JAPANESE_FLAG = "japanese";
 export const ONE_SHOT_BASE_FLAG = "base";
 export const ONE_SHOT_PRIMARY_FLAGS = ["commit", "create-pr"] as const;
 
+function selectedOneShotPrimaryFlags(argv: string[]): (typeof ONE_SHOT_PRIMARY_FLAGS)[number][] {
+  return ONE_SHOT_PRIMARY_FLAGS.filter((flag) =>
+    argv.some((arg) => arg === `--${flag}` || arg.startsWith(`--${flag}=`)),
+  );
+}
+
+export function isOneShotPrimaryModeSelected(argv: string[] = process.argv.slice(2)): boolean {
+  return selectedOneShotPrimaryFlags(argv).length > 0;
+}
+
 export const ONE_SHOT_SAFE_TOOLS = [
   "read",
   "bash",
@@ -107,9 +117,7 @@ export type OneShotPrimaryFlagConflictResult =
 export function findOneShotPrimaryFlagConflict(
   argv: string[] = process.argv.slice(2),
 ): OneShotPrimaryFlagConflictResult {
-  const selected = ONE_SHOT_PRIMARY_FLAGS.filter((flag) =>
-    argv.some((arg) => arg === `--${flag}` || arg.startsWith(`--${flag}=`)),
-  );
+  const selected = selectedOneShotPrimaryFlags(argv);
   if (selected.length < 2) return { ok: true };
 
   const key = selected.join("\0");
@@ -377,44 +385,4 @@ export function consumeOneShotFreeInput(
   if (index === -1) return false;
   pendingFreeInputs.splice(index, 1);
   return true;
-}
-
-function textFromContent(content: unknown): string | undefined {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return undefined;
-
-  const parts: string[] = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    const block = part as { type?: unknown; text?: unknown };
-    if (block.type === "text" && typeof block.text === "string" && block.text) {
-      parts.push(block.text);
-    }
-  }
-  return parts.length > 0 ? parts.join("\n") : undefined;
-}
-
-function expandedSkillTextMatchesPrompt(skillName: string, text: string, prompt: string): boolean {
-  const command = `/skill:${skillName}`;
-  if (!prompt.startsWith(command)) return false;
-  const args = prompt.slice(command.length).trim();
-  return text.startsWith(`<skill name="${skillName}" `) && (!args || text.endsWith(`\n\n${args}`));
-}
-
-function userTextMatchesPrompt(skillName: string, text: string, prompt: string): boolean {
-  return text === prompt || expandedSkillTextMatchesPrompt(skillName, text, prompt);
-}
-
-export function agentEndIncludesSkillPrompt(
-  messages: unknown,
-  skillName: string,
-  prompt: string,
-): boolean {
-  if (!Array.isArray(messages)) return false;
-  return messages.some((message) => {
-    if (!message || typeof message !== "object") return false;
-    const record = message as { role?: unknown; content?: unknown };
-    const text = record.role === "user" ? textFromContent(record.content) : undefined;
-    return text !== undefined && userTextMatchesPrompt(skillName, text, prompt);
-  });
 }

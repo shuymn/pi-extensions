@@ -6,6 +6,7 @@ import { createFakeUi } from "../../tests/support/fake-ui";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
 mock.module("@earendil-works/pi-coding-agent", () => ({
+  CONFIG_DIR_NAME: ".pi",
   getAgentDir: () => "/agent-dir",
   DefaultResourceLoader: class {},
   SessionManager: { inMemory: (cwd: string) => ({ cwd }) },
@@ -34,6 +35,16 @@ mock.module("@earendil-works/pi-tui", () => ({
 installTypeboxMock();
 
 type WorkflowToolOptions = {
+  exec?: ToolsetConfig["exec"];
+  completionNotifier?: (notification: unknown) => void;
+  lifecycleNotifier?: (notification: {
+    runId: string;
+    taskId: string;
+    workflowName: string;
+    status: "started" | "completed" | "failed" | "cancelled";
+    artifactDir: string;
+    outputPath: string;
+  }) => void;
   controllerRegistry: {
     register: (runId: string) => {
       signal: AbortSignal;
@@ -47,7 +58,10 @@ type WorkflowToolOptions = {
 };
 const workflowToolOptions: WorkflowToolOptions[] = [];
 mock.module("./workflow-tool", () => ({
-  createWorkflowCompletionNotifier: () => () => undefined,
+  createWorkflowCompletionNotifier:
+    (pi: { sendMessage: (message: unknown, options: unknown) => void }) =>
+    (notification: unknown) =>
+      pi.sendMessage(notification, { triggerTurn: true }),
   createWorkflowTool: (options: WorkflowToolOptions) => {
     workflowToolOptions.push(options);
     return {
@@ -63,7 +77,11 @@ mock.module("./workflow-tool", () => ({
 }));
 
 type ToolsetConfig = {
-  exec: (command: string, args: string[], options?: { timeout?: number }) => Promise<unknown>;
+  exec: (
+    command: string,
+    args: string[],
+    options?: { timeout?: number; cwd?: string; signal?: AbortSignal },
+  ) => Promise<unknown>;
 };
 const createInvestigationToolsetCalls: ToolsetConfig[] = [];
 const cleanupCalls: boolean[] = [];
@@ -115,12 +133,21 @@ function createExtensionPi() {
   const tools = new Map<string, ToolDefinition>();
   const commands = new Map<string, CommandDefinition>();
   const events = new Map<string, EventHandler[]>();
+  const emittedEvents: Array<{ name: string; data: unknown }> = [];
+  Object.assign(events, {
+    emit(name: string, data: unknown) {
+      emittedEvents.push({ name, data });
+    },
+  });
   const execCalls: Array<{ command: string; args: string[]; options: unknown }> = [];
+  const sentMessages: unknown[] = [];
   return {
     tools,
     commands,
     events,
+    emittedEvents,
     execCalls,
+    sentMessages,
     registerTool(tool: ToolDefinition) {
       tools.set(tool.name, tool);
     },
@@ -134,7 +161,9 @@ function createExtensionPi() {
       execCalls.push({ command, args, options });
       return { code: 0, stdout: "", stderr: "" };
     },
-    sendMessage() {},
+    sendMessage(message: unknown) {
+      sentMessages.push(message);
+    },
     getThinkingLevel: () => "medium",
     getCommands: () => [...commands.keys()].map((name) => ({ name })),
   };
@@ -174,8 +203,45 @@ describe("dynamic workflows extension", () => {
 
     expect(createInvestigationToolsetCalls).toHaveLength(1);
     await createInvestigationToolsetCalls[0].exec("tvly", ["auth", "--json"], { timeout: 1 });
+    await workflowToolOptions.at(-1)!.exec!("git", ["status", "--porcelain"], {
+      cwd: "/repo",
+      timeout: 10_000,
+    });
     expect(pi.execCalls).toEqual([
       { command: "tvly", args: ["auth", "--json"], options: { timeout: 1 } },
+      {
+        command: "git",
+        args: ["status", "--porcelain"],
+        options: { cwd: "/repo", timeout: 10_000 },
+      },
+    ]);
+
+    const lifecycleNotifier = workflowToolOptions.at(-1)!.lifecycleNotifier!;
+    lifecycleNotifier({
+      runId: "wf_review_12345678",
+      taskId: "task_review_12345678",
+      workflowName: "review_flow",
+      status: "started",
+      artifactDir: "/repo/.pi/workflows/wf_review_12345678",
+      outputPath: "/repo/.pi/workflows/wf_review_12345678/output.json",
+    });
+    lifecycleNotifier({
+      runId: "wf_research_12345678",
+      taskId: "task_research_12345678",
+      workflowName: "research_flow",
+      status: "completed",
+      artifactDir: "/repo/.pi/workflows/wf_research_12345678",
+      outputPath: "/repo/.pi/workflows/wf_research_12345678/output.json",
+    });
+    expect(pi.emittedEvents).toEqual([
+      {
+        name: "workflow:started",
+        data: expect.objectContaining({
+          name: "review",
+          workflowName: "review_flow",
+          status: "started",
+        }),
+      },
     ]);
 
     expect(pi.events.get("session_shutdown")).toHaveLength(1);
@@ -209,10 +275,14 @@ describe("dynamic workflows extension", () => {
     );
     expect(cleanupCalls).toEqual([]);
 
+    workflowToolOptions.at(-1)!.completionNotifier?.({ status: "cancelled" });
+    expect(pi.sentMessages).toEqual([]);
+
     resolveCompletion();
     await shutdown;
 
     expect(cleanupCalls).toEqual([true]);
+    expect(() => registry.register("wf_after_shutdown_12345678")).toThrow("shutting down");
   });
 
   test("injects optional ultracode policy only after /ultracode enables it", async () => {

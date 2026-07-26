@@ -62,7 +62,7 @@ async function loadTools(execHandler?: (call: ExecCall) => ExecResult | Promise<
 }
 
 describe("tavily extension", () => {
-  test("registers all Tavily tools with schemas and guidance", async () => {
+  test("registers all Tavily tools with schemas and deferred-loading-safe metadata", async () => {
     const { tools } = await loadTools();
 
     expect([...tools.keys()].sort()).toEqual([
@@ -85,9 +85,8 @@ describe("tavily extension", () => {
         },
       },
     });
-    expect(tools.get("tavily_search")!.promptGuidelines!.join("\n")).toContain(
-      "Keep tavily_search queries under 400 characters",
-    );
+    expect(tools.get("tavily_search")!.promptSnippet).toBeUndefined();
+    expect(tools.get("tavily_search")!.promptGuidelines).toBeUndefined();
     expect(tools.get("tavily_auth_status")!.parameters).toEqual({
       type: "object",
       properties: {},

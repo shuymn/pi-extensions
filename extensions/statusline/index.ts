@@ -180,7 +180,8 @@ export default function (pi: ExtensionAPI) {
     rerender();
   });
 
-  pi.on("agent_end", async () => {
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!ctx.isIdle()) return;
     lastReadyTime = formatTime(new Date());
     rerender();
   });

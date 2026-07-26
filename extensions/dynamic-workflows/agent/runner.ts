@@ -82,13 +82,21 @@ async function runWorkflowSubagent(
   // Under the read-only policy, drop edit/write from the allowlist and shadow
   // the built-in bash with an OS-sandboxed, repo-write-denying bash so the
   // subagent cannot mutate the workspace through any tool.
-  const readOnlyBashTool = readOnly ? createReadOnlyBashTool(pi, ctx.cwd) : undefined;
-  const tools = isolatedAgentToolNames(investigationToolset, {
-    readOnly,
-    extraTools: structuredOutputTool ? [structuredOutputTool.name] : [],
-  });
+  const availableTools = isolatedAgentToolNames(investigationToolset, { readOnly });
+  const requestedTools = options.allowedTools;
+  if (requestedTools !== undefined) {
+    const unsupportedTool = requestedTools.find((name) => !availableTools.includes(name));
+    if (unsupportedTool !== undefined) {
+      throw new Error(`workflow agent allowedTools includes unavailable tool: ${unsupportedTool}`);
+    }
+  }
+  const selectedTools = requestedTools ?? availableTools;
+  const readOnlyBashTool =
+    readOnly && selectedTools.includes("bash") ? createReadOnlyBashTool(pi, ctx.cwd) : undefined;
+  const tools = [...selectedTools, ...(structuredOutputTool ? [structuredOutputTool.name] : [])];
+  const selectedToolNames = new Set(selectedTools);
   const customTools = [
-    ...investigationToolset.tools,
+    ...investigationToolset.tools.filter((tool) => selectedToolNames.has(tool.name)),
     ...(readOnlyBashTool ? [readOnlyBashTool] : []),
     ...(structuredOutputTool ? [structuredOutputTool] : []),
   ];

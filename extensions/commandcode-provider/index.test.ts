@@ -56,6 +56,23 @@ describe("commandcode-provider extension", () => {
     expect(model.compat).toBeUndefined();
   });
 
+  test("publishes max thinking only for models with matching capabilities", () => {
+    for (const id of [
+      "claude-haiku-4-5-20251001",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.3-codex",
+      "moonshotai/Kimi-K2.6",
+    ]) {
+      expect(createCommandCodeModelConfig({ id }).thinkingLevelMap).toEqual({ xhigh: "xhigh" });
+    }
+    for (const id of ["claude-opus-4-8", "deepseek/deepseek-v4-pro", "moonshotai/Kimi-K3"]) {
+      expect(createCommandCodeModelConfig({ id }).thinkingLevelMap).toEqual(
+        COMMANDCODE_THINKING_LEVEL_MAP,
+      );
+    }
+  });
+
   test("uses model-specific max output tokens", () => {
     expect(
       createCommandCodeModelConfig({

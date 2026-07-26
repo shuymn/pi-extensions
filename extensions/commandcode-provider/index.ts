@@ -80,7 +80,21 @@ function needsForceAdaptiveThinking(modelId: string): boolean {
 
 export const COMMANDCODE_THINKING_LEVEL_MAP = {
   xhigh: "xhigh",
+  max: "max",
 } satisfies ProviderModelConfig["thinkingLevelMap"];
+
+const COMMANDCODE_XHIGH_THINKING_LEVEL_MAP = {
+  xhigh: "xhigh",
+} satisfies ProviderModelConfig["thinkingLevelMap"];
+
+function supportsMaxThinking(modelId: string): boolean {
+  const normalized = modelId.toLowerCase();
+  return (
+    needsForceAdaptiveThinking(modelId) ||
+    normalized.startsWith("deepseek/deepseek-v4") ||
+    normalized.includes("kimi-k3")
+  );
+}
 
 function toPositiveInteger(value: unknown, fallback: number): number {
   if (typeof value !== "number") return fallback;
@@ -105,7 +119,9 @@ export function createCommandCodeModelConfig(model: {
     api: anthropic ? COMMANDCODE_ANTHROPIC_API : COMMANDCODE_OPENAI_API,
     baseUrl: anthropic ? COMMANDCODE_ANTHROPIC_BASE_URL : COMMANDCODE_OPENAI_BASE_URL,
     reasoning: true,
-    thinkingLevelMap: COMMANDCODE_THINKING_LEVEL_MAP,
+    thinkingLevelMap: supportsMaxThinking(model.id)
+      ? COMMANDCODE_THINKING_LEVEL_MAP
+      : COMMANDCODE_XHIGH_THINKING_LEVEL_MAP,
     input: ["text", "image"],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow,

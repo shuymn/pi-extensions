@@ -19,37 +19,17 @@ describe("dynamic workflow tool contract", () => {
         },
       },
     });
-    const guidelines = tool.promptGuidelines!.join("\n");
     const acceptedPhaseExamples = [
       'phases: [{ title: "Inspect" }]',
       'phases: [{ title: "Inspect", description: "..." }]',
     ];
-    const rejectedPhaseExamples = ['phases: ["Inspect"]', 'phases: [{ name: "Inspect" }]'];
 
     expect(tool.description).toContain("deterministic JavaScript workflow");
-    expect(tool.promptSnippet).toContain("Use workflow");
-    expect(guidelines).toContain("explicitly asks");
-    expect(guidelines).toContain("not authorization by themselves");
-    expect(guidelines).toContain("extension-packaged workflow meta.name");
-    expect(guidelines).toContain("parallel() takes functions");
-    expect(guidelines).toContain("do not use TypeScript");
-    for (const example of [...acceptedPhaseExamples, ...rejectedPhaseExamples]) {
-      expect(guidelines).toContain(example);
-    }
-    expect(guidelines).not.toContain("description?:");
-    expect(guidelines).toContain("agent(prompt, { schema, label }) returns the parsed object");
-    expect(guidelines).toContain(
-      "Supported options are label, phase, schema, agentType, model, and toolPolicy",
-    );
-    expect(guidelines).toContain('pass toolPolicy: "readOnly" to run a read-only phase');
-    expect(guidelines).toContain("Use model as provider/model or provider/model:effort");
-    expect(guidelines).toContain(
-      "when :effort is omitted, the child inherits the parent session effort",
-    );
-    expect(guidelines).toContain(
-      "thinkingLevel, effort, and isolation are unsupported and fail fast",
-    );
-    expect(guidelines).toContain("hard runtime/contract error");
+    expect(tool.description).toContain("review_flow");
+    expect(tool.description).toContain("research_flow");
+    expect(tool.description).toContain("files > pr > base > staged > working tree");
+    expect(tool.promptSnippet).toBeUndefined();
+    expect(tool.promptGuidelines).toBeUndefined();
     const properties = (tool.parameters as any).properties;
     expect(properties).toMatchObject({
       resumeFromRunId: { type: "string", optional: true },
@@ -59,6 +39,13 @@ describe("dynamic workflow tool contract", () => {
     }
     expect(properties.name.description).toContain("extension-packaged workflows/*.js");
     expect(properties.script.description).toContain("with `title`, not strings or `name`");
+    expect(properties.script.description).toContain("parallel() takes thunks");
+    expect(properties.script.description).toContain('toolPolicy: "readOnly"');
+    expect(properties.script.description).toContain("provider/model[:effort]");
+    expect(properties.script.description).toContain("thinkingLevel, effort, and isolation");
+    expect(properties.script.description).toContain(
+      "imports, eval, and code generation are forbidden",
+    );
     expect(properties.script.description).not.toContain("description?:");
   });
 

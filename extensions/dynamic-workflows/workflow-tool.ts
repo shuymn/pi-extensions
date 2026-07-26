@@ -1,16 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type {
-  ExtensionAPI,
-  ExtensionContext,
-  ToolDefinition,
+import {
+  CONFIG_DIR_NAME,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { CliExec } from "../../lib/cli";
 import { createWorkflowAgentTranscriptId } from "./agent/transcript";
 import type { WorkflowJournalAgentIdFactory } from "./journal/model";
 import { WorkflowJournalRecorder } from "./journal/recorder";
 import { loadWorkflowReplayCache, type WorkflowReplayCache } from "./journal/replay";
 import { WorkflowJournalStore } from "./journal/store";
+import { prepareReviewFlowLaunch, reauthorizeReviewFlowMutation } from "./review-authorization";
 import {
   type WorkflowRunControllerRegistration,
   WorkflowRunControllerRegistry,
@@ -32,14 +35,13 @@ import {
   type WorkflowRunResult,
 } from "./runtime/runtime";
 import { workflowCatalogForRoot } from "./saved/catalog";
-import type { SavedWorkflowRootInput } from "./saved/resolver";
+import { savedWorkflowSelection } from "./saved/launch-selection";
+import type { SavedWorkflow, SavedWorkflowRootInput } from "./saved/resolver";
 import { createWorkflowCallComponent, createWorkflowResultComponent } from "./ui/render-tool";
 import { refreshWorkflowWidget } from "./ui/workflow-widget";
 
 const PHASE_TITLE_EXAMPLE = 'phases: [{ title: "Inspect" }]';
 const PHASE_DESCRIPTION_EXAMPLE = 'phases: [{ title: "Inspect", description: "..." }]';
-const PHASE_STRING_REJECTED_EXAMPLE = 'phases: ["Inspect"]';
-const PHASE_NAME_REJECTED_EXAMPLE = 'phases: [{ name: "Inspect" }]';
 
 const workflowToolSchema = Type.Object({
   scriptPath: Type.Optional(
@@ -50,13 +52,12 @@ const workflowToolSchema = Type.Object({
   ),
   script: Type.Optional(
     Type.String({
-      description: `Raw JavaScript workflow script. It must start with \`export const meta = { name, description, phases }\`; \`meta.phases\` entries must follow \`${PHASE_TITLE_EXAMPLE}\` or \`${PHASE_DESCRIPTION_EXAMPLE}\` (write actual JavaScript with \`title\`, not strings or \`name\`). It must call agent() at least once. Used when scriptPath is omitted, before name.`,
+      description: `Raw JavaScript workflow script. It must start with \`export const meta = { name, description, phases }\`; \`meta.phases\` entries must follow \`${PHASE_TITLE_EXAMPLE}\` or \`${PHASE_DESCRIPTION_EXAMPLE}\` (write actual JavaScript with \`title\`, not strings or \`name\`). Available globals are agent, parallel, pipeline, phase, log, args, cwd, process.cwd(), budget, and console. parallel() takes thunks such as \`[() => agent(...)]\`, never promises. agent(prompt, options) supports label, phase, schema, agentType, model in \`provider/model[:effort]\` form, \`toolPolicy: "readOnly"\`, and an optional \`allowedTools\` string array; thinkingLevel, effort, and isolation options are unsupported. Host globals, imports, eval, and code generation are forbidden. It must call agent() at least once. Used when scriptPath is omitted, before name.`,
     }),
   ),
   name: Type.Optional(
     Type.String({
-      description:
-        "Saved workflow name resolved from project .pi/workflows/*.js, loaded skill-packaged workflows/*.js, or extension-packaged workflows/*.js by static meta.name parsing. Used when scriptPath and script are omitted.",
+      description: `Saved workflow name resolved from project ${CONFIG_DIR_NAME}/workflows/*.js, loaded skill-packaged workflows/*.js, or extension-packaged workflows/*.js by static meta.name parsing. Used when scriptPath and script are omitted.`,
     }),
   ),
   args: Type.Optional(
@@ -128,6 +129,17 @@ export type WorkflowCompletionNotification = {
 
 export type WorkflowCompletionNotifier = (notification: WorkflowCompletionNotification) => void;
 
+export type WorkflowLifecycleStatus = "started" | WorkflowCompletionStatus;
+
+export type WorkflowLifecycleNotification = Omit<
+  WorkflowCompletionNotification,
+  "status" | "usage"
+> & {
+  status: WorkflowLifecycleStatus;
+};
+
+export type WorkflowLifecycleNotifier = (notification: WorkflowLifecycleNotification) => void;
+
 type BackgroundTask = () => Promise<void>;
 
 export const defaultWorkflowRunControllerRegistry = new WorkflowRunControllerRegistry();
@@ -137,6 +149,7 @@ export type WorkflowAdditionalRootsProvider =
   | ((ctx: ExtensionContext | undefined) => readonly SavedWorkflowRootInput[]);
 
 export type WorkflowToolOptions = {
+  exec?: CliExec;
   agent?: WorkflowAgent;
   agentFactory?: (ctx: ExtensionContext) => WorkflowAgent;
   cwd?: string;
@@ -147,6 +160,7 @@ export type WorkflowToolOptions = {
   backgroundScheduler?: (task: BackgroundTask) => void;
   controllerRegistry?: WorkflowRunControllerRegistry;
   completionNotifier?: WorkflowCompletionNotifier;
+  lifecycleNotifier?: WorkflowLifecycleNotifier;
   journalAgentIdFactory?: WorkflowJournalAgentIdFactory;
   maxConcurrentAgents?: number;
   maxTotalAgents?: number;
@@ -196,27 +210,7 @@ export function createWorkflowTool(options: WorkflowToolOptions = {}): ToolDefin
     name: "workflow",
     label: "Workflow",
     description:
-      "Execute a deterministic JavaScript workflow that orchestrates isolated subagent work with agent(), parallel(), pipeline(), phase(), and log(). Use only when the user explicitly asks for workflow-style multi-agent orchestration.",
-    promptSnippet:
-      "Use workflow for explicit dynamic workflow or multi-agent fan-out requests. Provide one raw deterministic JavaScript script with export const meta first, then orchestrate with agent(), parallel(), pipeline(), phase(), and log().",
-    promptGuidelines: [
-      "Use workflow only when the user explicitly asks for a workflow, dynamic workflow, fan-out, or multi-agent orchestration, or when a loaded skill explicitly instructs you to use it.",
-      "For workflow, packaged workflows/*.js files (skill or extension) are discoverable but are not authorization by themselves; the user must explicitly ask for workflow-style orchestration or loaded skill instructions must explicitly say to launch workflow, /workflow, or workflow({ name }).",
-      "For workflow, select the script source with precedence scriptPath > script > name. Pass raw JavaScript in script, a cwd-relative or absolute file in scriptPath, or a project saved / skill-packaged / extension-packaged workflow meta.name in name.",
-      "For workflow, do not wrap raw script in Markdown fences, although the tool will defensively strip one surrounding fence.",
-      "For workflow, the first statement after comments/whitespace must be `export const meta = { name, description, phases }`; keep meta a plain literal object.",
-      `For workflow, \`meta.phases\` entries must use the accepted contract \`${PHASE_TITLE_EXAMPLE}\`, or provide a description as \`${PHASE_DESCRIPTION_EXAMPLE}\`; never use \`${PHASE_STRING_REJECTED_EXAMPLE}\` or \`${PHASE_NAME_REJECTED_EXAMPLE}\`.`,
-      "For workflow, do not use TypeScript syntax, imports, require(), fs, shell, network, Date.now(), Math.random(), or argument-less new Date().",
-      "For workflow, available globals are args, cwd, process.cwd(), phase(title), log(message), agent(prompt, options), parallel(thunks), pipeline(items, ...stages), and budget. The budget values are estimates based on agent result size, not actual model token usage.",
-      "For workflow, every script must call agent() at least once. Do not use workflow only to return a static object or declare phases.",
-      "For workflow, parallel() takes functions, not promises: use `await parallel(items.map(item => () => agent(...)))`, never `await parallel(items.map(item => agent(...)))`.",
-      "For workflow, pipeline(items, ...stages) runs each item through all stages independently; do not assume a global barrier between stages.",
-      "For workflow, include short unique agent labels such as { label: 'repo inventory' } so progress and errors are readable.",
-      "For workflow, agent(prompt, { schema, label }) returns the parsed object when schema is provided. Supported options are label, phase, schema, agentType, model, and toolPolicy. Use model as provider/model or provider/model:effort; when :effort is omitted, the child inherits the parent session effort; thinkingLevel, effort, and isolation are unsupported and fail fast.",
-      'For workflow, pass toolPolicy: "readOnly" to run a read-only phase: the child agent loses edit and write tools and its bash is restricted to read-only operations. "readOnly" is the only accepted value; any other value fails fast.',
-      "For workflow, failed agent(), parallel(), or pipeline() branches return null and log the failure unless the workflow is aborted or a hard runtime/contract error is reached.",
-      "For workflow, return a compact JSON-serializable value. Use a final synthesis agent when combining several subagent results.",
-    ],
+      "Execute a deterministic JavaScript workflow that orchestrates isolated subagent work with agent(), parallel(), pipeline(), phase(), and log(). Use only for explicitly requested workflow-style orchestration. Launch review_flow with args files/staged/base/pr/noFix/instructions (precedence: files > pr > base > staged > working tree), or research_flow with task/depth/profile/outputFormat/citationFormat/maxSources.",
     parameters: workflowToolSchema,
     prepareArguments: normalizeWorkflowToolInput,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
@@ -251,12 +245,9 @@ export type WorkflowLaunchResult = {
 };
 
 /**
- * A bound programmatic launcher. Sibling extensions prepare safe structured
- * `args` (e.g. review Target Scope, research options) and launch a packaged
- * workflow by resolved name/script through this bridge without duplicating
- * dynamic-workflow scheduling, storage, widget, or completion-notification
- * logic. The bridge is intentionally generic: it knows nothing about review or
- * research semantics.
+ * A generic bound programmatic launcher for callers that need workflow
+ * scheduling, storage, widget, and completion-notification behavior without
+ * duplicating it.
  */
 export type WorkflowLaunchBridge = (
   input: WorkflowToolInput,
@@ -278,73 +269,149 @@ export async function launchWorkflowRun(
 ): Promise<WorkflowLaunchResult> {
   if (signal?.aborted) throw new Error("workflow launch was aborted.");
 
+  const preservedSavedWorkflow = snapshotSavedWorkflow(savedWorkflowSelection(rawInput));
   const input = normalizeWorkflowToolInput(rawInput);
-  const cwd = options.cwd ?? ctx.cwd;
-  const effectiveCtx = workflowToolContextWithCwd(ctx, cwd);
-  const agent = options.agent ?? options.agentFactory?.(effectiveCtx) ?? createUnconfiguredAgent();
-  const workflowRoot = options.workflowRoot ?? resolveWorkflowRoot(cwd);
-  const workflowCatalog = workflowCatalogForRoot(
-    workflowRoot,
-    workflowAdditionalRoots(options.additionalWorkflowRoots, effectiveCtx),
-  );
-  const resumePaths =
-    input.resumeFromRunId === undefined
-      ? undefined
-      : getWorkflowRunPaths(workflowRoot, input.resumeFromRunId);
-  const script = await readWorkflowScriptForLaunch(input, {
-    cwd,
-    workflowCatalog,
-    resumePaths,
-  });
-  const replayCache =
-    resumePaths === undefined ? undefined : await loadWorkflowReplayCache(resumePaths.journalPath);
-  const parsed = parseWorkflowScript(script);
-  if (!executableScriptCallsAgent(parsed.executableScript)) {
-    throw new Error("workflow scripts must call agent() at least once.");
-  }
-
   const runId = options.runIdFactory?.() ?? createWorkflowRunId();
   const taskId = options.taskIdFactory?.() ?? createTaskId();
-  const paths = getWorkflowRunPaths(workflowRoot, runId);
-  const state = createInitialWorkflowRunState({
-    runId,
-    taskId,
-    sessionId: getSessionId(effectiveCtx),
-    cwd,
-    workflowName: parsed.meta.name,
-    description: parsed.meta.description,
-    phases: parsed.meta.phases,
-    scriptPath: paths.scriptPath,
-  });
-  const store = new WorkflowRunStore(workflowRoot);
-  const createdPaths = await store.createRun({ state, script });
   const controllerRegistry = options.controllerRegistry ?? defaultWorkflowRunControllerRegistry;
   const controller = controllerRegistry.register(runId);
+  const lifecycle = createWorkflowLifecycleCompletion();
+  controller.trackCompletion(lifecycle.completion);
+  const stopForParentAbort = () => controller.stop("workflow launch was aborted.");
+  signal?.addEventListener("abort", stopForParentAbort, { once: true });
 
-  scheduleBackgroundWorkflow({
-    store,
-    paths: createdPaths,
-    script,
-    args: input.args,
-    cwd,
-    agent,
-    meta: parsed.meta,
-    state,
-    options,
-    controller,
-    ctx: effectiveCtx,
-    replayCache,
-    resumeFromRunId: input.resumeFromRunId,
-  });
-  refreshWorkflowWidget(effectiveCtx, state);
+  let prepared: ScheduleBackgroundWorkflowInput;
+  try {
+    const cwd = options.cwd ?? ctx.cwd;
+    const effectiveCtx = workflowToolContextWithCwd(ctx, cwd);
+    const agent =
+      options.agent ?? options.agentFactory?.(effectiveCtx) ?? createUnconfiguredAgent();
+    const workflowRoot = options.workflowRoot ?? resolveWorkflowRoot(cwd);
+    const workflowCatalog = workflowCatalogForRoot(
+      workflowRoot,
+      workflowAdditionalRoots(options.additionalWorkflowRoots, effectiveCtx),
+    );
+    let args = snapshotWorkflowArgs(input.args);
+    throwIfWorkflowLaunchStopped(controller);
+    const resumePaths =
+      input.resumeFromRunId === undefined
+        ? undefined
+        : getWorkflowRunPaths(workflowRoot, input.resumeFromRunId);
+    const selectedWorkflow = await readWorkflowScriptForLaunch(input, {
+      cwd,
+      workflowCatalog,
+      resumePaths,
+      preservedSavedWorkflow,
+    });
+    throwIfWorkflowLaunchStopped(controller);
+    const replayCache =
+      resumePaths === undefined
+        ? undefined
+        : await loadWorkflowReplayCache(resumePaths.journalPath);
+    throwIfWorkflowLaunchStopped(controller);
+    const parsed = parseWorkflowScript(selectedWorkflow.script);
+    if (!executableScriptCallsAgent(parsed.executableScript)) {
+      throw new Error("workflow scripts must call agent() at least once.");
+    }
+    const reviewPreparation = await prepareReviewFlowLaunch({
+      workflow: selectedWorkflow.savedWorkflow,
+      args,
+      exec: options.exec,
+      cwd,
+      signal: controller.signal,
+    });
+    args = reviewPreparation.args;
+    const trustedRuntimeContext = reviewPreparation.trustedRuntimeContext;
+    throwIfWorkflowLaunchStopped(controller);
 
-  const details = createLaunchDetails(parsed.meta, state, createdPaths, input.resumeFromRunId);
+    const paths = getWorkflowRunPaths(workflowRoot, runId);
+    const state = createInitialWorkflowRunState({
+      runId,
+      taskId,
+      sessionId: getSessionId(effectiveCtx),
+      cwd,
+      workflowName: parsed.meta.name,
+      description: parsed.meta.description,
+      phases: parsed.meta.phases,
+      scriptPath: paths.scriptPath,
+    });
+    const store = new WorkflowRunStore(workflowRoot);
+    const createdPaths = await store.createRun({ state, script: selectedWorkflow.script });
+    prepared = {
+      store,
+      paths: createdPaths,
+      script: selectedWorkflow.script,
+      args,
+      trustedRuntimeContext,
+      cwd,
+      agent,
+      meta: parsed.meta,
+      state,
+      options,
+      controller,
+      ctx: effectiveCtx,
+      replayCache,
+      resumeFromRunId: input.resumeFromRunId,
+    };
+  } catch (error) {
+    signal?.removeEventListener("abort", stopForParentAbort);
+    finishWorkflowController(controller, lifecycle.settle);
+    throw error;
+  }
+
+  const manifest = createWorkflowManifest(prepared);
+  const journal = createWorkflowJournal(prepared.paths);
+  let scheduled = false;
+  try {
+    try {
+      refreshWorkflowWidget(prepared.ctx, prepared.state);
+    } catch {
+      // UI rendering is best-effort and must not strand a persisted queued run.
+    }
+    notifyLifecycle(options, {
+      ...baseWorkflowNotification(prepared, prepared.paths.outputPath),
+      status: "started",
+    });
+
+    if (controller.signal.aborted) {
+      const reason = cancellationReason(controller, controller.signal.reason);
+      await finalizeCancelledWorkflowRun(prepared, manifest, journal, reason);
+      throw new Error(reason);
+    }
+
+    try {
+      scheduleBackgroundWorkflow(prepared, manifest, journal, lifecycle.settle);
+    } catch (error) {
+      if (controller.signal.aborted) {
+        await finalizeCancelledWorkflowRun(
+          prepared,
+          manifest,
+          journal,
+          cancellationReason(controller, error),
+        );
+      } else {
+        await finalizeFailedWorkflowRun(prepared, manifest, journal, error);
+      }
+      throw error;
+    }
+    scheduled = true;
+  } finally {
+    signal?.removeEventListener("abort", stopForParentAbort);
+    if (!scheduled) finishWorkflowController(controller, lifecycle.settle);
+  }
+
+  const details = createLaunchDetails(
+    prepared.meta,
+    prepared.state,
+    prepared.paths,
+    input.resumeFromRunId,
+  );
   return {
     runId,
     taskId,
-    workflowName: parsed.meta.name,
-    artifactDir: createdPaths.runDir,
-    outputPath: createdPaths.outputPath,
+    workflowName: prepared.meta.name,
+    artifactDir: prepared.paths.runDir,
+    outputPath: prepared.paths.outputPath,
     ...(input.resumeFromRunId === undefined ? {} : { resumeFromRunId: input.resumeFromRunId }),
     details,
   };
@@ -365,6 +432,7 @@ type ScheduleBackgroundWorkflowInput = {
   paths: WorkflowRunPaths;
   script: string;
   args?: unknown;
+  trustedRuntimeContext?: unknown;
   cwd: string;
   agent: WorkflowAgent;
   meta: WorkflowMeta;
@@ -376,26 +444,48 @@ type ScheduleBackgroundWorkflowInput = {
   resumeFromRunId?: string;
 };
 
-function scheduleBackgroundWorkflow(input: ScheduleBackgroundWorkflowInput): void {
-  const task = async () => {
-    let manifest: WorkflowManifestUpdater | undefined;
-    let journal: WorkflowJournalRecorder | undefined;
+function reviewFlowAgentWithFreshMutationAuthorization(
+  input: ScheduleBackgroundWorkflowInput,
+): WorkflowAgent {
+  return async (prompt, options) => {
+    if (options.label !== "fix") return input.agent(prompt, options);
+    const reviewFlow =
+      input.trustedRuntimeContext && typeof input.trustedRuntimeContext === "object"
+        ? (input.trustedRuntimeContext as { reviewFlow?: { prSelector?: unknown } }).reviewFlow
+        : undefined;
+    if (typeof reviewFlow?.prSelector !== "string") return input.agent(prompt, options);
 
+    const authorized = await reauthorizeReviewFlowMutation({
+      trustedRuntimeContext: input.trustedRuntimeContext,
+      exec: input.options.exec,
+      cwd: input.cwd,
+      signal: input.controller.signal,
+    });
+    if (!authorized) {
+      return {
+        changes: [],
+        notes: "Host reauthorization failed immediately before PR mutation; Fix was skipped.",
+        mutationAuthorized: false,
+      };
+    }
+    return input.agent(prompt, options);
+  };
+}
+
+function scheduleBackgroundWorkflow(
+  input: ScheduleBackgroundWorkflowInput,
+  manifest: WorkflowManifestUpdater,
+  journal: WorkflowJournalRecorder,
+  settleCompletion: () => void,
+): void {
+  const task = async () => {
     try {
-      const activeManifest = new WorkflowManifestUpdater(input.state, async (state) => {
-        await input.store.writeManifest(state);
-        refreshWorkflowWidget(input.ctx, state);
-      });
-      const activeJournal = new WorkflowJournalRecorder(
-        new WorkflowJournalStore({ journalPath: input.paths.journalPath }),
-      );
-      manifest = activeManifest;
-      journal = activeJournal;
-      activeManifest.markRunning();
+      manifest.markRunning();
       const runResult = await runWorkflow(input.script, {
         cwd: input.cwd,
         args: input.args,
-        agent: input.agent,
+        trustedRuntimeContext: input.trustedRuntimeContext,
+        agent: reviewFlowAgentWithFreshMutationAuthorization(input),
         signal: input.controller.signal,
         maxConcurrentAgents: input.options.maxConcurrentAgents,
         maxTotalAgents: input.options.maxTotalAgents,
@@ -410,28 +500,28 @@ function scheduleBackgroundWorkflow(input: ScheduleBackgroundWorkflowInput): voi
           transcriptsDir: input.paths.transcriptsDir,
         }),
         agentControlFactory: (event) => input.controller.registerAgent(event.runAgentId),
-        onPhase: (title) => activeManifest.phase(title),
-        onLog: (message) => activeManifest.log(message),
-        onAgentQueued: (event) => activeManifest.agentQueued(event),
+        onPhase: (title) => manifest.phase(title),
+        onLog: (message) => manifest.log(message),
+        onAgentQueued: (event) => manifest.agentQueued(event),
         onAgentStart(event) {
-          activeManifest.agentStarted(event);
-          activeJournal.started(event);
+          manifest.agentStarted(event);
+          journal.started(event);
         },
         onAgentStop(event, reason) {
-          activeManifest.agentStopped(event, reason);
-          activeJournal.stopped(event, reason);
+          manifest.agentStopped(event, reason);
+          journal.stopped(event, reason);
         },
         onAgentEnd(event) {
           if (event.error) {
-            activeManifest.agentFailed({ ...event, error: event.error });
-            activeJournal.failed(event, event.error);
+            manifest.agentFailed({ ...event, error: event.error });
+            journal.failed(event, event.error);
           } else {
-            activeManifest.agentCompleted(event);
-            activeJournal.result(event);
+            manifest.agentCompleted(event);
+            journal.result(event);
           }
         },
         onEstimatedResultTokensChange(estimatedResultTokens) {
-          activeManifest.updateEstimatedResultTokens(estimatedResultTokens);
+          manifest.updateEstimatedResultTokens(estimatedResultTokens);
         },
       });
 
@@ -439,45 +529,73 @@ function scheduleBackgroundWorkflow(input: ScheduleBackgroundWorkflowInput): voi
         throw new Error("workflow scripts must call agent() at least once.");
       }
 
-      await finalizeCompletedWorkflowRun(input, activeManifest, activeJournal, runResult);
+      await finalizeCompletedWorkflowRun(input, manifest, journal, runResult);
     } catch (error) {
       if (input.controller.signal.aborted) {
         const reason = cancellationReason(input.controller, error);
-        if (manifest && journal)
-          await finalizeCancelledWorkflowRun(input, manifest, journal, reason);
-      } else if (manifest && journal) {
+        await finalizeCancelledWorkflowRun(input, manifest, journal, reason);
+      } else {
         await finalizeFailedWorkflowRun(input, manifest, journal, error);
       }
+    }
+  };
+
+  let scheduled = false;
+  const trackedTask = async () => {
+    await Promise.resolve();
+    if (!scheduled) return;
+    try {
+      await task();
+    } catch {
+      // Background failures are already reflected in best-effort terminal artifacts.
     } finally {
-      input.controller.unregister();
+      finishWorkflowController(input.controller, settleCompletion);
     }
   };
 
   const scheduler = input.options.backgroundScheduler ?? defaultBackgroundScheduler;
-  let resolveCompletion!: () => void;
-  let rejectCompletion!: (error: unknown) => void;
-  const completion = new Promise<void>((resolve, reject) => {
-    resolveCompletion = resolve;
-    rejectCompletion = reject;
+  scheduler(trackedTask);
+  scheduled = true;
+}
+
+function createWorkflowManifest(input: ScheduleBackgroundWorkflowInput): WorkflowManifestUpdater {
+  return new WorkflowManifestUpdater(input.state, async (state) => {
+    await input.store.writeManifest(state);
+    refreshWorkflowWidget(input.ctx, state);
   });
-  input.controller.trackCompletion(completion);
+}
 
-  const trackedTask = async () => {
-    try {
-      await task();
-      resolveCompletion();
-    } catch (error) {
-      rejectCompletion(error);
-    }
-  };
+function createWorkflowJournal(paths: WorkflowRunPaths): WorkflowJournalRecorder {
+  return new WorkflowJournalRecorder(new WorkflowJournalStore({ journalPath: paths.journalPath }));
+}
 
+function createWorkflowLifecycleCompletion(): {
+  completion: Promise<void>;
+  settle: () => void;
+} {
+  let settle!: () => void;
+  const completion = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  return { completion, settle };
+}
+
+function finishWorkflowController(
+  controller: WorkflowRunControllerRegistration,
+  settleCompletion: () => void,
+): void {
   try {
-    scheduler(trackedTask);
-  } catch (error) {
-    rejectCompletion(error);
-    input.controller.unregister();
-    throw error;
+    controller.unregister();
+  } catch {
+    // Controller cleanup failures must not escape a background task.
+  } finally {
+    settleCompletion();
   }
+}
+
+function throwIfWorkflowLaunchStopped(controller: WorkflowRunControllerRegistration): void {
+  if (!controller.signal.aborted) return;
+  throw new Error(cancellationReason(controller, controller.signal.reason));
 }
 
 async function finalizeCompletedWorkflowRun(
@@ -502,7 +620,7 @@ async function finalizeCompletedWorkflowRun(
   await manifest.flush().catch(() => undefined);
   await flushTerminalJournal(manifest, journal);
   notifyCompletion(input.options, {
-    ...baseCompletionNotification(input, effectiveOutputPath),
+    ...baseWorkflowNotification(input, effectiveOutputPath),
     status: "completed",
     resultPreview: compactPreview(runResult.result),
     usage: usageFromRunResult(runResult),
@@ -524,7 +642,7 @@ async function finalizeCancelledWorkflowRun(
   await manifest.flush().catch(() => undefined);
   await flushTerminalJournal(manifest, journal);
   notifyCompletion(input.options, {
-    ...baseCompletionNotification(input, effectiveOutputPath),
+    ...baseWorkflowNotification(input, effectiveOutputPath),
     status: "cancelled",
     error: reason,
     usage: usageFromState(input.state),
@@ -546,7 +664,7 @@ async function finalizeFailedWorkflowRun(
   await manifest.flush().catch(() => undefined);
   await flushTerminalJournal(manifest, journal);
   notifyCompletion(input.options, {
-    ...baseCompletionNotification(input, effectiveOutputPath),
+    ...baseWorkflowNotification(input, effectiveOutputPath),
     status: "failed",
     error: errorMessage(error),
     usage: usageFromState(input.state),
@@ -565,7 +683,7 @@ async function flushTerminalJournal(
   }
 }
 
-function baseCompletionNotification(
+function baseWorkflowNotification(
   input: ScheduleBackgroundWorkflowInput,
   outputPath: string,
 ): Pick<
@@ -677,10 +795,22 @@ function notifyCompletion(
   options: WorkflowToolOptions,
   notification: WorkflowCompletionNotification,
 ) {
+  notifyLifecycle(options, notification);
   try {
     options.completionNotifier?.(notification);
   } catch {
     // Completion notification failures must not rewrite terminal workflow state.
+  }
+}
+
+function notifyLifecycle(
+  options: WorkflowToolOptions,
+  notification: WorkflowLifecycleNotification,
+): void {
+  try {
+    options.lifecycleNotifier?.(notification);
+  } catch {
+    // Lifecycle observers must not affect workflow launch or terminal state.
   }
 }
 
@@ -712,22 +842,35 @@ function defaultBackgroundScheduler(task: BackgroundTask): void {
   }, 0);
 }
 
+type SelectedWorkflowScript = {
+  script: string;
+  savedWorkflow?: SavedWorkflow;
+};
+
 async function readWorkflowScriptForLaunch(
   input: WorkflowToolInput,
   options: {
     cwd: string;
     workflowCatalog: ReturnType<typeof workflowCatalogForRoot>;
     resumePaths?: WorkflowRunPaths;
+    preservedSavedWorkflow?: SavedWorkflow;
   },
-): Promise<string> {
+): Promise<SelectedWorkflowScript> {
+  if (options.preservedSavedWorkflow !== undefined) {
+    return {
+      script: options.preservedSavedWorkflow.script,
+      savedWorkflow: options.preservedSavedWorkflow,
+    };
+  }
   if (input.scriptPath !== undefined) {
-    return await readWorkflowScriptPath(input.scriptPath, options.cwd);
+    return { script: await readWorkflowScriptPath(input.scriptPath, options.cwd) };
   }
-  if (input.script !== undefined) return input.script;
+  if (input.script !== undefined) return { script: input.script };
   if (input.name !== undefined) {
-    return (await options.workflowCatalog.resolve(input.name)).script;
+    const savedWorkflow = await options.workflowCatalog.resolve(input.name);
+    return { script: savedWorkflow.script, savedWorkflow };
   }
-  return await readWorkflowScriptForResume(options.resumePaths);
+  return { script: await readWorkflowScriptForResume(options.resumePaths) };
 }
 
 async function readWorkflowScriptPath(scriptPath: string, cwd: string): Promise<string> {
@@ -751,6 +894,29 @@ async function readWorkflowScriptForResume(paths: WorkflowRunPaths | undefined):
     throw new Error(
       `workflow resume run script is unavailable: ${paths.runDir}: ${errorMessage(error)}`,
     );
+  }
+}
+
+function snapshotSavedWorkflow(workflow: SavedWorkflow | undefined): SavedWorkflow | undefined {
+  return workflow === undefined
+    ? undefined
+    : {
+        ...workflow,
+        phases: workflow.phases.map((phase) => ({ ...phase })),
+      };
+}
+
+function snapshotWorkflowArgs(args: unknown): unknown {
+  if (args === undefined) return undefined;
+  try {
+    const json = JSON.stringify(args);
+    if (json === undefined) throw new Error("workflow args must be JSON-serializable.");
+    return JSON.parse(json) as unknown;
+  } catch (error) {
+    if (error instanceof Error && error.message === "workflow args must be JSON-serializable.") {
+      throw error;
+    }
+    throw new Error(`workflow args must be JSON-serializable: ${errorMessage(error)}`);
   }
 }
 

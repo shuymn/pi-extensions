@@ -1,6 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  agentEndIncludesSkillPrompt,
   appendOneShotFreeInput,
   availableOneShotTools,
   collectOneShotCliFreeInputs,
@@ -100,7 +99,8 @@ export default function createPrExtension(pi: ExtensionAPI): void {
 
   let launchAttempted = false;
   let boundedQuestionnaireActive = false;
-  let launchedCreatePrPrompt: string | undefined;
+  let createPrRunActive = false;
+  let activeCreatePrRunEnded = false;
 
   function setBoundedQuestionnaire(): void {
     pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: false });
@@ -114,7 +114,8 @@ export default function createPrExtension(pi: ExtensionAPI): void {
   }
 
   function clearActiveCreatePrRun(): void {
-    launchedCreatePrPrompt = undefined;
+    createPrRunActive = false;
+    activeCreatePrRunEnded = false;
     resetBoundedQuestionnaire();
   }
 
@@ -165,7 +166,7 @@ export default function createPrExtension(pi: ExtensionAPI): void {
       const expandedPrompt = expandOneShotSkillPrompt(pi, "create-pr", prompt);
       setBoundedQuestionnaire();
       pi.sendUserMessage(expandedPrompt);
-      launchedCreatePrPrompt = prompt;
+      createPrRunActive = true;
     } catch (error) {
       clearActiveCreatePrRun();
       notifyIfUI(
@@ -183,9 +184,12 @@ export default function createPrExtension(pi: ExtensionAPI): void {
     });
   }
 
-  pi.on("agent_end", async (event, ctx) => {
-    if (!launchedCreatePrPrompt) return;
-    if (!agentEndIncludesSkillPrompt(event.messages, "create-pr", launchedCreatePrPrompt)) return;
+  pi.on("agent_end", async () => {
+    if (createPrRunActive) activeCreatePrRunEnded = true;
+  });
+
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (!activeCreatePrRunEnded || !ctx.isIdle()) return;
     clearActiveCreatePrRun();
     ctx.shutdown();
   });
