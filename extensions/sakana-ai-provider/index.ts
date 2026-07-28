@@ -1,6 +1,7 @@
 import {
   type Api,
   type AssistantMessage,
+  type AssistantMessageEvent,
   type AssistantMessageEventStream,
   type Context,
   createAssistantMessageEventStream,
@@ -18,11 +19,8 @@ export const SAKANA_AI_API_KEY_CONFIG_FALLBACK = "$SAKANA_API_KEY";
 export const SAKANA_AI_UPSTREAM_API = "openai-responses";
 export const SAKANA_AI_RESPONSES_API = "sakana-ai-openai-responses";
 
-// Fallback stream/retry defaults applied only when the caller omits these options.
-// Sakana's Codex setup recommends a 2-hour stream idle timeout and 4 request retries.
-// Note: under the normal pi runtime the SDK always supplies `timeoutMs` (from the
-// `httpIdleTimeoutMs` setting), so SAKANA_AI_DEFAULT_TIMEOUT_MS only takes effect for
-// direct/wrapper callers; set `httpIdleTimeoutMs` to actually raise the idle timeout.
+// Fallback request settings applied only when the caller omits these options.
+// Pi's global `httpIdleTimeoutMs` must be configured separately for a 2-hour stream idle timeout.
 export const SAKANA_AI_DEFAULT_TIMEOUT_MS = 7_200_000;
 export const SAKANA_AI_DEFAULT_MAX_RETRIES = 4;
 
@@ -33,6 +31,11 @@ export const SAKANA_AI_THINKING_LEVEL_MAP = {
   medium: null,
   high: "high",
   xhigh: "xhigh",
+  max: null,
+} satisfies ProviderModelConfig["thinkingLevelMap"];
+
+export const SAKANA_AI_MAX_THINKING_LEVEL_MAP = {
+  ...SAKANA_AI_THINKING_LEVEL_MAP,
   max: "max",
 } satisfies ProviderModelConfig["thinkingLevelMap"];
 
@@ -42,10 +45,19 @@ export const SAKANA_AI_OPENAI_RESPONSES_COMPAT = {
   supportsLongCacheRetention: false,
 } satisfies OpenAIResponsesCompat;
 
+// Pi's upstream Responses parser does not expose Sakana's billable orchestration tokens,
+// so no listed model's cost can be calculated accurately yet.
 const UNKNOWN_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-const FUGU_ULTRA_STANDARD_COST = { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 };
+// Cap Pi's usable context to avoid Sakana's higher pricing and subscription usage above 272K.
 const FUGU_CONTEXT_WINDOW = 272_000;
 const FUGU_MAX_TOKENS = 128_000;
+const FUGU_MODEL_DEFAULTS = {
+  input: ["text", "image"],
+  cost: UNKNOWN_COST,
+  contextWindow: FUGU_CONTEXT_WINDOW,
+  maxTokens: FUGU_MAX_TOKENS,
+  compat: SAKANA_AI_OPENAI_RESPONSES_COMPAT,
+} satisfies Pick<ProviderModelConfig, "input" | "cost" | "contextWindow" | "maxTokens" | "compat">;
 
 export const SAKANA_AI_MODELS = [
   {
@@ -53,24 +65,44 @@ export const SAKANA_AI_MODELS = [
     name: "Fugu",
     reasoning: true,
     thinkingLevelMap: SAKANA_AI_THINKING_LEVEL_MAP,
-    input: ["text", "image"],
-    cost: UNKNOWN_COST,
-    contextWindow: FUGU_CONTEXT_WINDOW,
-    maxTokens: FUGU_MAX_TOKENS,
-    compat: SAKANA_AI_OPENAI_RESPONSES_COMPAT,
+    ...FUGU_MODEL_DEFAULTS,
   },
   {
     id: "fugu-ultra",
     name: "Fugu Ultra",
     reasoning: true,
+    thinkingLevelMap: SAKANA_AI_MAX_THINKING_LEVEL_MAP,
+    ...FUGU_MODEL_DEFAULTS,
+  },
+  {
+    id: "fugu-ultra-v1.1",
+    name: "Fugu Ultra v1.1",
+    reasoning: true,
+    thinkingLevelMap: SAKANA_AI_MAX_THINKING_LEVEL_MAP,
+    ...FUGU_MODEL_DEFAULTS,
+  },
+  {
+    id: "fugu-ultra-v1.0",
+    name: "Fugu Ultra v1.0",
+    reasoning: true,
     thinkingLevelMap: SAKANA_AI_THINKING_LEVEL_MAP,
-    input: ["text", "image"],
-    cost: FUGU_ULTRA_STANDARD_COST,
-    contextWindow: FUGU_CONTEXT_WINDOW,
-    maxTokens: FUGU_MAX_TOKENS,
-    compat: SAKANA_AI_OPENAI_RESPONSES_COMPAT,
+    ...FUGU_MODEL_DEFAULTS,
+  },
+  {
+    id: "fugu-cyber",
+    name: "Fugu Cyber",
+    reasoning: true,
+    thinkingLevelMap: SAKANA_AI_THINKING_LEVEL_MAP,
+    ...FUGU_MODEL_DEFAULTS,
   },
 ] satisfies ProviderModelConfig[];
+
+const REASONING_SUMMARY_MODEL_IDS = new Set([
+  "fugu-ultra",
+  "fugu-ultra-v1.1",
+  "fugu-ultra-v1.0",
+  "fugu-cyber",
+]);
 
 type StreamSimple = (
   model: Model<Api>,
@@ -95,6 +127,7 @@ function isRecord(value: unknown): value is UnknownRecord {
 
 function sanitizeTool(tool: unknown): unknown {
   if (!isRecord(tool)) return tool;
+  if (tool.type === "web_search") return { type: "web_search" };
 
   const next = { ...tool };
   delete next.strict;
@@ -109,7 +142,7 @@ function sanitizeTool(tool: unknown): unknown {
   return next;
 }
 
-export function sanitizeSakanaResponsesPayload(payload: unknown): unknown {
+export function sanitizeSakanaResponsesPayload(payload: unknown, modelId?: string): unknown {
   if (!isRecord(payload)) return payload;
 
   const next = { ...payload };
@@ -118,9 +151,25 @@ export function sanitizeSakanaResponsesPayload(payload: unknown): unknown {
   delete next.store;
   delete next.service_tier;
   delete next.include;
+  delete next.previous_response_id;
 
-  if (isRecord(next.reasoning) && typeof next.reasoning.effort === "string") {
-    next.reasoning = { effort: next.reasoning.effort };
+  if (isRecord(next.reasoning)) {
+    const reasoning: UnknownRecord = {};
+    if (typeof next.reasoning.effort === "string") {
+      reasoning.effort = next.reasoning.effort;
+    }
+    if (
+      modelId &&
+      REASONING_SUMMARY_MODEL_IDS.has(modelId) &&
+      typeof next.reasoning.summary === "string"
+    ) {
+      reasoning.summary = next.reasoning.summary;
+    }
+    if (Object.keys(reasoning).length > 0) {
+      next.reasoning = reasoning;
+    } else {
+      delete next.reasoning;
+    }
   }
 
   if (Array.isArray(next.tools)) {
@@ -128,6 +177,37 @@ export function sanitizeSakanaResponsesPayload(payload: unknown): unknown {
   }
 
   return next;
+}
+
+function normalizeMessageApi(message: AssistantMessage, api: Api): AssistantMessage {
+  return message.api === api ? message : { ...message, api };
+}
+
+function normalizeEventApi(event: AssistantMessageEvent, api: Api): AssistantMessageEvent {
+  if ("partial" in event) {
+    return { ...event, partial: normalizeMessageApi(event.partial, api) };
+  }
+  if (event.type === "done") {
+    return { ...event, message: normalizeMessageApi(event.message, api) };
+  }
+  return { ...event, error: normalizeMessageApi(event.error, api) };
+}
+
+function createUpstreamContext(model: Model<Api>, context: Context): Context {
+  return {
+    ...context,
+    messages: (context.messages ?? []).map((message) => {
+      if (
+        message.role === "assistant" &&
+        message.api === model.api &&
+        message.provider === model.provider &&
+        message.model === model.id
+      ) {
+        return { ...message, api: SAKANA_AI_UPSTREAM_API };
+      }
+      return message;
+    }),
+  };
 }
 
 function createErrorMessage(
@@ -169,19 +249,33 @@ export function createSakanaAiStreamSimple({
           timeoutMs: options?.timeoutMs ?? SAKANA_AI_DEFAULT_TIMEOUT_MS,
           maxRetries: options?.maxRetries ?? SAKANA_AI_DEFAULT_MAX_RETRIES,
           async onPayload(payload, upstreamModel) {
-            const sanitized = sanitizeSakanaResponsesPayload(payload);
-            const replacement = await options?.onPayload?.(sanitized, upstreamModel);
-            return replacement === undefined ? sanitized : replacement;
+            const sanitized = sanitizeSakanaResponsesPayload(payload, upstreamModel.id);
+            if (!options?.onPayload) return sanitized;
+
+            const replacement = await options.onPayload(sanitized, model);
+            return replacement === undefined
+              ? sanitized
+              : sanitizeSakanaResponsesPayload(replacement, upstreamModel.id);
+          },
+          async onResponse(response) {
+            await options?.onResponse?.(response, model);
           },
         };
 
         const upstreamStream = streamSimple(
           { ...model, api: SAKANA_AI_UPSTREAM_API },
-          context,
+          createUpstreamContext(model, context),
           upstreamOptions,
         );
+        let receivedTerminalEvent = false;
         for await (const event of upstreamStream) {
-          output.push(event);
+          if (event.type === "done" || event.type === "error") {
+            receivedTerminalEvent = true;
+          }
+          output.push(normalizeEventApi(event, model.api));
+        }
+        if (!receivedTerminalEvent) {
+          throw new Error("Upstream stream ended without a terminal event");
         }
       } catch (error) {
         output.push({

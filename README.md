@@ -51,6 +51,42 @@ pi config
 - `tool-search` — Keep large tool groups deferred and activate matching tools through `search_tools`.
 - `wt` — Add `/wt` to create a `git-wt` worktree and continue the current session there.
 
+## Sakana AI provider
+
+Set `SAKANA_API_KEY` before selecting one of these models:
+
+- `sakana-ai/fugu`
+- `sakana-ai/fugu-ultra`
+- `sakana-ai/fugu-ultra-v1.1`
+- `sakana-ai/fugu-ultra-v1.0`
+- `sakana-ai/fugu-cyber`
+
+`fugu-ultra` tracks the current Ultra release and currently aliases `fugu-ultra-v1.1`. `fugu-cyber` is access-gated and requires an approved application plus an API key whose billing mode is **Pay as you go**. Sakana dynamically prices `fugu` from the underlying model pool, and Pi does not expose the billable orchestration-token usage for Ultra or Cyber. Pi therefore cannot calculate these models' costs locally; a displayed `$0` means unknown, not free.
+
+To allow Sakana streams to remain idle for up to two hours, merge this setting into `~/.pi/agent/settings.json`:
+
+```json
+{
+  "httpIdleTimeoutMs": 7200000
+}
+```
+
+This is a global Pi setting: it also extends every provider's HTTP header/body idle timeout and default request timeout.
+
+After setting `SAKANA_API_KEY` outside your shell history, manually smoke-test the generally available models with:
+
+```bash
+for model in fugu fugu-ultra-v1.1 fugu-ultra-v1.0; do
+  pi --print --no-session --model "sakana-ai/${model}:high" "Reply with only OK."
+done
+```
+
+Approved users can test Cyber separately:
+
+```bash
+pi --print --no-session --model "sakana-ai/fugu-cyber:high" "Reply with only OK."
+```
+
 ## One-shot flows
 
 Use caller-provided session and model flags, then add a one-shot flag to launch a skill and exit after the agent run:
