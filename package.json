@@ -48,6 +48,6 @@
     "@earendil-works/pi-tui": "0.80.7"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.61"
+    "@anthropic-ai/sandbox-runtime": "^0.0.75"
   }
 }
