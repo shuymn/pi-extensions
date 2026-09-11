@@ -3,6 +3,10 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+mock.module("../../../lib/isolated-model-runtime", () => ({
+  createIsolatedModelRuntime: async (registry: unknown) => ({ parentRegistry: registry }),
+}));
+
 const createAgentSessionCalls: any[] = [];
 const loaderInstances: any[] = [];
 const createdSessions: any[] = [];
@@ -220,7 +224,7 @@ describe("workflow subagent runner", () => {
     expect(createAgentSessionCalls[0]).toMatchObject({
       cwd: "/repo",
       agentDir: "/agent-dir",
-      modelRegistry: { id: "registry" },
+      modelRuntime: { parentRegistry: { id: "registry" } },
       model: { id: "model" },
       thinkingLevel: "high",
       tools: WORKFLOW_TOOL_NAMES,

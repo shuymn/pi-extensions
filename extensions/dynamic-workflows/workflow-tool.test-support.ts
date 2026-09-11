@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
+mock.module("../../lib/isolated-model-runtime", () => ({
+  createIsolatedModelRuntime: async (registry: unknown) => ({ parentRegistry: registry }),
+}));
+
 type Subscriber = (event: any) => void;
 
 export const createAgentSessionCalls: any[] = [];

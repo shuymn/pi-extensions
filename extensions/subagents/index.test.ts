@@ -4,6 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
+mock.module("../../lib/isolated-model-runtime", () => ({
+  createIsolatedModelRuntime: async (registry: unknown) => ({ parentRegistry: registry }),
+}));
+
 let uuidCounter = 0;
 mock.module("node:crypto", () => ({
   randomUUID: () => `id${String(++uuidCounter).padStart(6, "0")}-0000-4000-8000-000000000000`,
@@ -453,7 +457,7 @@ describe("subagents extension", () => {
       thinkingLevel: "high",
       tools: DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES,
       model: { name: "model" },
-      modelRegistry: { id: "registry" },
+      modelRuntime: { parentRegistry: { id: "registry" } },
     });
     expect(
       createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),

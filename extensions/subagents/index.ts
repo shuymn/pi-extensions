@@ -20,6 +20,7 @@ import {
   type InvestigationToolset,
   isolatedAgentToolNames,
 } from "../../lib/investigation-tools";
+import { createIsolatedModelRuntime } from "../../lib/isolated-model-runtime";
 import { shouldFallbackForError } from "../../lib/model-fallback";
 import { formatModelSpec, parseModelSpecList, type ThinkingLevel } from "../../lib/model-spec";
 import {
@@ -435,7 +436,7 @@ async function runSubagentAttempt(
     agentDir,
     sessionManager: SessionManager.inMemory(ctx.cwd),
     settingsManager: SettingsManager.create(ctx.cwd, agentDir),
-    modelRegistry: ctx.modelRegistry,
+    modelRuntime: await createIsolatedModelRuntime(ctx.modelRegistry),
     model: modelSelection.model,
     thinkingLevel: modelSelection.thinkingLevel,
     tools: isolatedAgentToolNames(options.investigationToolset, {

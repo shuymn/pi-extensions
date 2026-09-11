@@ -5,6 +5,10 @@ import { join } from "node:path";
 import { createFakeUi } from "../../tests/support/fake-ui";
 import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
+mock.module("../../lib/isolated-model-runtime", () => ({
+  createIsolatedModelRuntime: async (registry: unknown) => ({ parentRegistry: registry }),
+}));
+
 mock.module("@earendil-works/pi-coding-agent", () => ({
   CONFIG_DIR_NAME: ".pi",
   getAgentDir: () => "/agent-dir",

@@ -4,6 +4,7 @@
 
 - Use `bun run test` for the full test suite.
 - Use `bun run check` for CI-equivalent verification.
+- `package.json` defines the Pi SDK compatibility verification target. Keep Pi SDK dependencies and overrides aligned when updating Pi; extension mocks alone do not detect removed SDK options.
 - Tests are colocated with extension and helper sources as `*.test.ts`.
 - `bun run test` runs each test file with `bun test` while excluding `node_modules`.
 
