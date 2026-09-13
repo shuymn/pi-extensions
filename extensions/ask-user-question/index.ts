@@ -1,117 +1,86 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
-import type { TSchema } from "typebox";
-import { isTuiMode } from "../../lib/tui";
-import { ASK_USER_QUESTION_POLICY_EVENT, isAskUserQuestionPolicy } from "./policy";
-import { cancelledResult, completedResult, errorResult, pausedResult } from "./response";
 import {
-  type AskUserQuestionParams,
   AskUserQuestionParamsSchema,
-  CHAT_ABOUT_THIS_LABEL,
-  NEXT_QUESTION_LABEL,
-  OTHER_LABEL,
+  FREE_INPUT_LABEL,
+  type QuestionAnswer,
   type QuestionnaireResult,
-  TYPE_SOMETHING_LABEL,
+  type QuestionnaireStatus,
 } from "./types";
-import { type AskUiResult, createQuestionnaireComponent } from "./ui";
 import { validateAskUserQuestionParams } from "./validation";
 
-const ERROR_NO_UI = "Error: UI not available (running in non-interactive mode)";
-const ERROR_NO_TUI = "Error: TUI custom UI not available in this mode";
-
 export default function askUserQuestion(pi: ExtensionAPI) {
-  let allowChatAboutThis = true;
-
-  pi.events.on(ASK_USER_QUESTION_POLICY_EVENT, (policy) => {
-    if (!isAskUserQuestionPolicy(policy)) return;
-    if (policy.allowChatAboutThis !== undefined) {
-      allowChatAboutThis = policy.allowChatAboutThis;
-    }
-  });
-
   pi.registerTool({
     name: "ask_user_question",
     label: "Ask User Question",
-    description: `Ask the user one or more structured questions during execution. Use when implementation-relevant requirements or decisions are ambiguous.
-
-Usage notes:
-- Users can type a custom answer for single-select questions or choose "${CHAT_ABOUT_THIS_LABEL}" to pause the questionnaire and continue in free-form conversation.
-- Multi-select questions accept listed options only; use "${CHAT_ABOUT_THIS_LABEL}" when the user needs to discuss an unlisted answer.
-- Do not author reserved labels such as "${OTHER_LABEL}", "${TYPE_SOMETHING_LABEL}", "${CHAT_ABOUT_THIS_LABEL}", or "${NEXT_QUESTION_LABEL}"; the tool adds runtime controls.
-- Use multiSelect: true when multiple answers are valid. Option previews are supported only for single-select questions.
-- If you recommend a specific option, make it the first option and append "(Recommended)" to the label.`,
+    description: `Ask the user up to 4 structured questions sequentially when implementation-relevant decisions are ambiguous. Each question accepts one listed option or a custom answer. Put a recommended option first and append "(Recommended)" to its label. Cancellation or interruption preserves only actual answers; unansweredQuestionIndexes are zero-based. Do not infer answers to unanswered questions.`,
     promptSnippet:
       "Ask the user up to 4 structured questions when implementation-relevant requirements or decisions are ambiguous",
     promptGuidelines: [
       "Use ask_user_question when ambiguity materially affects implementation, architecture, scope, data loss, or user-visible behavior.",
-      "For ask_user_question, group related questions in one call and resolve trivial choices without asking.",
-      `If the user selects ${CHAT_ABOUT_THIS_LABEL}, stop the questionnaire flow and discuss normally. Do not immediately call ask_user_question again.`,
-      "When resuming after a paused ask_user_question result, reuse details.pendingQuestions; do not regenerate all questions from memory.",
+      "Group related questions in one call and resolve trivial choices without asking.",
     ],
-    parameters: AskUserQuestionParamsSchema as unknown as TSchema,
+    parameters: AskUserQuestionParamsSchema,
     executionMode: "sequential",
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      validateAskUserQuestionParams(params);
+      const answers: QuestionAnswer[] = [];
+      const finish = (status: QuestionnaireStatus) => {
+        const details: QuestionnaireResult = {
+          status,
+          answers,
+          questionCount: params.questions.length,
+          unansweredQuestionIndexes: params.questions
+            .map((_, index) => index)
+            .slice(answers.length),
+        };
+        return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
+      };
 
-    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const validation = validateAskUserQuestionParams(params);
-      if (!validation.ok) return errorResult(params, validation.message, validation.error);
-
-      const typed = params as AskUserQuestionParams;
-      if (!ctx.hasUI) return errorResult(typed, ERROR_NO_UI, "no_ui", "no_ui");
-      if (!isTuiMode(ctx)) return errorResult(typed, ERROR_NO_TUI, "no_ui", "no_ui");
-
-      const result = await ctx.ui.custom<AskUiResult | null>((tui, theme, keybindings, done) =>
-        createQuestionnaireComponent(typed, tui, theme, keybindings, done, {
-          allowChatAboutThis,
-        }),
-      );
-
-      if (!result || result.status === "cancelled")
-        return cancelledResult(typed, result?.answers ?? []);
-      if (result.status === "paused") {
-        return pausedResult(typed, result.answers, result.activeQuestionIndex, result.chatMessage);
+      if (signal?.aborted) return finish("interrupted");
+      if (!ctx.hasUI) return finish("unavailable");
+      try {
+        for (const [questionIndex, question] of params.questions.entries()) {
+          if (signal?.aborted) return finish("interrupted");
+          const labels = question.options.map((option, index) => `${index + 1}. ${option.label}`);
+          const freeInput = `${labels.length + 1}. ${FREE_INPUT_LABEL}`;
+          const title = [
+            `質問 ${questionIndex + 1}/${params.questions.length}: ${question.header}`,
+            question.question,
+            ...question.options.map((option, index) => `${labels[index]}\n${option.description}`),
+          ].join("\n\n");
+          const selected = await ctx.ui.select(title, [...labels, freeInput], { signal });
+          if (signal?.aborted) return finish("interrupted");
+          if (selected === undefined) return finish("cancelled");
+          if (selected === freeInput) {
+            const input = await ctx.ui.input(
+              `${question.question}\n回答を入力してください（空欄でキャンセル）`,
+              undefined,
+              { signal },
+            );
+            if (signal?.aborted) return finish("interrupted");
+            if (input === undefined || input.trim() === "") return finish("cancelled");
+            answers.push({
+              questionIndex,
+              question: question.question,
+              kind: "custom",
+              answer: input,
+            });
+          } else {
+            const optionIndex = labels.indexOf(selected);
+            if (optionIndex < 0) throw new Error("Invalid ask_user_question UI selection.");
+            answers.push({
+              questionIndex,
+              question: question.question,
+              kind: "option",
+              answer: question.options[optionIndex].label,
+            });
+          }
+        }
+      } catch (error) {
+        if (signal?.aborted) return finish("interrupted");
+        throw error;
       }
-      return completedResult(result.answers);
-    },
-
-    renderCall(args, theme) {
-      const questions = Array.isArray((args as Partial<AskUserQuestionParams>).questions)
-        ? ((args as Partial<AskUserQuestionParams>).questions ?? [])
-        : [];
-      const labels = questions.map((q) => q.header || q.question).join(", ");
-      const text =
-        theme.fg("toolTitle", theme.bold("ask_user_question ")) +
-        theme.fg("muted", `${questions.length} question${questions.length === 1 ? "" : "s"}`) +
-        (labels ? theme.fg("dim", ` (${labels})`) : "");
-      return new Text(text, 0, 0);
-    },
-
-    renderResult(result, _options, theme) {
-      const details = result.details as QuestionnaireResult | undefined;
-      if (!details) {
-        const first = result.content[0];
-        return new Text(first?.type === "text" ? first.text : "", 0, 0);
-      }
-
-      if (details.status === "paused") {
-        const suffix = details.chatMessage ? `: ${details.chatMessage}` : "";
-        return new Text(
-          theme.fg("warning", "Paused for discussion") + theme.fg("muted", suffix),
-          0,
-          0,
-        );
-      }
-
-      if (details.status === "cancelled") {
-        const reason = details.error ? ` (${details.error})` : "";
-        return new Text(theme.fg("warning", `Cancelled${reason}`), 0, 0);
-      }
-
-      const lines = details.answers.map((answer) => {
-        const value =
-          answer.kind === "multi" ? answer.selected.join(", ") : (answer.answer ?? "(no response)");
-        return `${theme.fg("success", "✓")} Q${answer.questionIndex + 1}: ${theme.fg("accent", value)}`;
-      });
-      return new Text(lines.join("\n"), 0, 0);
+      return finish("completed");
     },
   });
 }

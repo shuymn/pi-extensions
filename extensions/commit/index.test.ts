@@ -3,7 +3,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetOneShotSharedFlagsForTest } from "../../lib/one-shot-flow";
-import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 import commitExtension, {
   buildCommitSkillPrompt,
   COMMIT_BASE_FLAG,
@@ -59,14 +58,12 @@ function createFakePi(
   const handlers = new Map<string, Handler[]>();
   const sentUserMessages: string[] = [];
   const activeToolsCalls: string[][] = [];
-  const emittedEvents: Array<{ name: string; data: unknown }> = [];
   const tools = options.tools ?? DEFAULT_TOOLS;
 
   return {
     flagDefinitions,
     sentUserMessages,
     activeToolsCalls,
-    emittedEvents,
     registerFlag(name: string, definition: FlagDefinition) {
       flagDefinitions.set(name, definition);
     },
@@ -91,11 +88,6 @@ function createFakePi(
     sendUserMessage(message: string) {
       if (options.failSendUserMessage) throw new Error("send failed");
       sentUserMessages.push(message);
-    },
-    events: {
-      emit(name: string, data: unknown) {
-        emittedEvents.push({ name, data });
-      },
     },
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
@@ -216,24 +208,17 @@ describe("commit extension", () => {
 
     expect(pi.sentUserMessages).toEqual([]);
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(ctx.notifications).toEqual([]);
     expect(ctx.shutdowns).toBe(0);
   });
 
-  test("launches the commit skill with bounded questionnaire mode by default", async () => {
+  test("launches the commit skill with safe tools by default", async () => {
     const pi = createFakePi({ flags: { [COMMIT_FLAG]: true } });
     commitExtension(pi as never);
 
     const ctx = await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([[...COMMIT_SAFE_TOOLS]]);
-    expect(pi.emittedEvents).toEqual([
-      {
-        name: ASK_USER_QUESTION_POLICY_EVENT,
-        data: { allowChatAboutThis: false },
-      },
-    ]);
     expect(pi.sentUserMessages).toEqual([expandedCommitSkillPrompt()]);
     expect(ctx.shutdowns).toBe(0);
   });
@@ -318,7 +303,6 @@ describe("commit extension", () => {
     const ctx = await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(pi.sentUserMessages).toEqual([]);
     expect(ctx.notifications).toEqual([
       {
@@ -339,7 +323,6 @@ describe("commit extension", () => {
     const ctx = await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(pi.sentUserMessages).toEqual([]);
     expect(ctx.notifications).toEqual([
       { message: "--base は --branch と一緒に指定してください。", level: "error" },
@@ -356,7 +339,6 @@ describe("commit extension", () => {
     await sessionStart(pi, ctx);
 
     expect(pi.sentUserMessages).toEqual([expandedCommitSkillPrompt()]);
-    expect(pi.emittedEvents).toHaveLength(1);
 
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
@@ -366,10 +348,6 @@ describe("commit extension", () => {
     await agentSettled(pi, ctx);
 
     expect(ctx.shutdowns).toBe(1);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: true } },
-    ]);
   });
 
   test("waits for an idle settled event before shutting down", async () => {
@@ -395,33 +373,24 @@ describe("commit extension", () => {
     await agentEnd(pi, ctx, [userMessage("Unrelated prompt")]);
 
     expect(ctx.shutdowns).toBe(0);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-    ]);
 
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
 
     expect(ctx.shutdowns).toBe(0);
     await agentSettled(pi, ctx);
     expect(ctx.shutdowns).toBe(1);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: true } },
-    ]);
   });
 
-  test("startup send failures reset questionnaire policy and request shutdown", async () => {
+  test("startup send failures clear the active run and request shutdown", async () => {
     const pi = createFakePi({ flags: { [COMMIT_FLAG]: true }, failSendUserMessage: true });
     commitExtension(pi as never);
 
     const ctx = await sessionStart(pi);
     await agentEnd(pi, ctx, [expandedCommitSkillMessage()]);
 
+    await agentSettled(pi, ctx);
+
     expect(pi.sentUserMessages).toEqual([]);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: true } },
-    ]);
     expect(ctx.notifications).toEqual([
       { message: "commit one-shot の起動に失敗しました: send failed", level: "error" },
     ]);

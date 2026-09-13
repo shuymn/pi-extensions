@@ -3,7 +3,6 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetOneShotSharedFlagsForTest } from "../../lib/one-shot-flow";
-import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 import commitExtension, { COMMIT_FLAG } from "../commit";
 import createPrExtension, {
   buildCreatePrSkillPrompt,
@@ -69,7 +68,6 @@ function createFakePi(
   const handlers = new Map<string, Handler[]>();
   const sentUserMessages: string[] = [];
   const activeToolsCalls: string[][] = [];
-  const emittedEvents: Array<{ name: string; data: unknown }> = [];
   const tools = options.tools ?? DEFAULT_TOOLS;
 
   return {
@@ -77,7 +75,6 @@ function createFakePi(
     flagRegistrations,
     sentUserMessages,
     activeToolsCalls,
-    emittedEvents,
     registerFlag(name: string, definition: FlagDefinition) {
       flagRegistrations.push(name);
       flagDefinitions.set(name, definition);
@@ -108,11 +105,6 @@ function createFakePi(
     sendUserMessage(message: string) {
       if (options.failSendUserMessage) throw new Error("send failed");
       sentUserMessages.push(message);
-    },
-    events: {
-      emit(name: string, data: unknown) {
-        emittedEvents.push({ name, data });
-      },
     },
     on(event: string, handler: Handler) {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
@@ -284,7 +276,6 @@ describe("create-pr extension", () => {
     const ctx = await withArgvAsync(argv, () => sessionStartAll(pi));
 
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(pi.sentUserMessages).toEqual([]);
     expect(ctx.notifications).toEqual([
       { message: "--commit と --create-pr は同時に指定できません。", level: "error" },
@@ -300,24 +291,17 @@ describe("create-pr extension", () => {
 
     expect(pi.sentUserMessages).toEqual([]);
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(ctx.notifications).toEqual([]);
     expect(ctx.shutdowns).toBe(0);
   });
 
-  test("launches the create-pr skill with bounded questionnaire mode by default", async () => {
+  test("launches the create-pr skill with safe tools by default", async () => {
     const pi = createFakePi({ flags: { [CREATE_PR_FLAG]: true } });
     createPrExtension(pi as never);
 
     const ctx = await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([[...CREATE_PR_SAFE_TOOLS]]);
-    expect(pi.emittedEvents).toEqual([
-      {
-        name: ASK_USER_QUESTION_POLICY_EVENT,
-        data: { allowChatAboutThis: false },
-      },
-    ]);
     expect(pi.sentUserMessages).toEqual([expandedSkillPrompt("create-pr")]);
     expect(ctx.shutdowns).toBe(0);
   });
@@ -405,7 +389,6 @@ describe("create-pr extension", () => {
     const ctx = await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(pi.sentUserMessages).toEqual([]);
     expect(ctx.notifications).toEqual([
       {
@@ -430,7 +413,6 @@ describe("create-pr extension", () => {
     const ctx = await sessionStart(pi);
 
     expect(pi.activeToolsCalls).toEqual([]);
-    expect(pi.emittedEvents).toEqual([]);
     expect(pi.sentUserMessages).toEqual([]);
     expect(ctx.notifications).toEqual([
       { message: "--base は --update と同時に指定できません。", level: "error" },
@@ -447,7 +429,6 @@ describe("create-pr extension", () => {
     await sessionStart(pi, ctx);
 
     expect(pi.sentUserMessages).toEqual([expandedSkillPrompt("create-pr")]);
-    expect(pi.emittedEvents).toHaveLength(1);
 
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
@@ -457,10 +438,6 @@ describe("create-pr extension", () => {
     await agentSettled(pi, ctx);
 
     expect(ctx.shutdowns).toBe(1);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: true } },
-    ]);
   });
 
   test("waits for an idle settled event before shutting down", async () => {
@@ -486,33 +463,24 @@ describe("create-pr extension", () => {
     await agentEnd(pi, ctx, [userMessage("Unrelated prompt")]);
 
     expect(ctx.shutdowns).toBe(0);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-    ]);
 
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
 
     expect(ctx.shutdowns).toBe(0);
     await agentSettled(pi, ctx);
     expect(ctx.shutdowns).toBe(1);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: true } },
-    ]);
   });
 
-  test("startup send failures reset questionnaire policy and request shutdown", async () => {
+  test("startup send failures clear the active run and request shutdown", async () => {
     const pi = createFakePi({ flags: { [CREATE_PR_FLAG]: true }, failSendUserMessage: true });
     createPrExtension(pi as never);
 
     const ctx = await sessionStart(pi);
     await agentEnd(pi, ctx, [expandedCreatePrSkillMessage()]);
 
+    await agentSettled(pi, ctx);
+
     expect(pi.sentUserMessages).toEqual([]);
-    expect(pi.emittedEvents).toEqual([
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: false } },
-      { name: ASK_USER_QUESTION_POLICY_EVENT, data: { allowChatAboutThis: true } },
-    ]);
     expect(ctx.notifications).toEqual([
       { message: "create-pr one-shot の起動に失敗しました: send failed", level: "error" },
     ]);

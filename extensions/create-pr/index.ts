@@ -17,7 +17,6 @@ import {
   registerOneShotSharedFlags,
 } from "../../lib/one-shot-flow";
 import { notifyIfUI } from "../../lib/tui";
-import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 
 export const CREATE_PR_FLAG = "create-pr";
 export const CREATE_PR_ENGLISH_FLAG = ONE_SHOT_ENGLISH_FLAG;
@@ -98,25 +97,12 @@ export default function createPrExtension(pi: ExtensionAPI): void {
   });
 
   let launchAttempted = false;
-  let boundedQuestionnaireActive = false;
   let createPrRunActive = false;
   let activeCreatePrRunEnded = false;
-
-  function setBoundedQuestionnaire(): void {
-    pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: false });
-    boundedQuestionnaireActive = true;
-  }
-
-  function resetBoundedQuestionnaire(): void {
-    if (!boundedQuestionnaireActive) return;
-    pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: true });
-    boundedQuestionnaireActive = false;
-  }
 
   function clearActiveCreatePrRun(): void {
     createPrRunActive = false;
     activeCreatePrRunEnded = false;
-    resetBoundedQuestionnaire();
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -164,7 +150,6 @@ export default function createPrExtension(pi: ExtensionAPI): void {
         cliFreeInputs.all,
       );
       const expandedPrompt = expandOneShotSkillPrompt(pi, "create-pr", prompt);
-      setBoundedQuestionnaire();
       pi.sendUserMessage(expandedPrompt);
       createPrRunActive = true;
     } catch (error) {

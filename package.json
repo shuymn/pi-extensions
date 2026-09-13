@@ -10,6 +10,7 @@
     "fmt:fix": "bunx biome check --write --linter-enabled=false .",
     "fmt:check": "bunx biome check --linter-enabled=false .",
     "typecheck": "bunx tsc --noEmit",
+    "test:integration": "bun test tests/ask-user-question-pi.integration.test.ts",
     "test": "find . -name '*.test.ts' -not -path './node_modules/*' -print0 | xargs -0 -n1 bun test",
     "check:fast": "bun run fmt:check && bun run lint && bun run typecheck",
     "check": "bun run check:fast && bun run test"

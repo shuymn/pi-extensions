@@ -17,7 +17,6 @@ import {
   registerOneShotSharedFlags,
 } from "../../lib/one-shot-flow";
 import { notifyIfUI } from "../../lib/tui";
-import { ASK_USER_QUESTION_POLICY_EVENT } from "../ask-user-question/policy";
 
 export const COMMIT_FLAG = "commit";
 export const COMMIT_ENGLISH_FLAG = ONE_SHOT_ENGLISH_FLAG;
@@ -100,25 +99,12 @@ export default function commitExtension(pi: ExtensionAPI): void {
   });
 
   let launchAttempted = false;
-  let boundedQuestionnaireActive = false;
   let commitRunActive = false;
   let activeCommitRunEnded = false;
-
-  function setBoundedQuestionnaire(): void {
-    pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: false });
-    boundedQuestionnaireActive = true;
-  }
-
-  function resetBoundedQuestionnaire(): void {
-    if (!boundedQuestionnaireActive) return;
-    pi.events.emit(ASK_USER_QUESTION_POLICY_EVENT, { allowChatAboutThis: true });
-    boundedQuestionnaireActive = false;
-  }
 
   function clearActiveCommitRun(): void {
     commitRunActive = false;
     activeCommitRunEnded = false;
-    resetBoundedQuestionnaire();
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -166,7 +152,6 @@ export default function commitExtension(pi: ExtensionAPI): void {
         cliFreeInputs.all,
       );
       const expandedPrompt = expandOneShotSkillPrompt(pi, "commit", prompt);
-      setBoundedQuestionnaire();
       pi.sendUserMessage(expandedPrompt);
       commitRunActive = true;
     } catch (error) {

@@ -23,8 +23,8 @@
 
 ## TUI component
 
-- 検索可能な単一選択は `lib/tui.ts` の `selectFuzzy()` を使う。
-- 任意テキスト入力は `lib/tui.ts` の `inputOptional()` を使う。
+- TUI と RPC で共有する単一選択・任意テキスト入力は Pi 公開の `ctx.ui.select()` / `ctx.ui.input()` を使う。
+- `ask_user_question` は標準ダイアログを逐次表示し、選択肢の説明を選択時のタイトル内に含める。独自質問票やモード別 UI は持たない。
 - custom component の render line は必ず width 以下に収める。共通 helper の `truncateLines()` を優先する。
 - state を変えた後は `tui.requestRender()` を呼ぶ。
 - embedded `Input` を持つ component は、IME 対応のため `Focusable` propagation を意識する。
@@ -48,7 +48,7 @@
 - LLM-to-LLM の内部 workflow handoff は Markdown / prose を基本にし、具体的な失敗や品質改善が観測されるまで schema / validation / patch tool を追加しない。
 - 文字列 enum は Google API 互換性のため `@earendil-works/pi-ai` の `StringEnum` を使い、`Type.Union` / `Type.Literal` で表現しない。
 - 最終または中間成果物の提出で turn を終える tool は `terminate: true` を返す。
-- `content` は人間向けの短い説明に留め、機械可読な状態は `details` に置く。
+- `content` はモデルに渡る tool result として、判断に必要な回答・状態・未回答情報を含める。`details` は UI や extension が使う構造化データであり、モデルへの伝達には使わない。
 - recoverable な workflow 提出失敗は `{ ok, warnings }`（必要なら `reason`）を含む structured result で返し、実行不能な tool failure は throw する。
 - 外部 CLI JSON の parse、質問 UI、state persistence の result は、具体的な再利用ニーズが出るまで structured-output helper に一般化しない。
 
