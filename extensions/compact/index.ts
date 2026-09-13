@@ -147,9 +147,8 @@ export default function compactExtension(pi: ExtensionAPI) {
     promptGuidelines: [
       `Use ${COMPACT_TOOL_NAME} only when context usage is high, unfinished user-requested work remains, and the current atomic step is complete.`,
       `Call ${COMPACT_TOOL_NAME} as the only tool; do not combine it with other tool calls in the same response.`,
-      `Do not use ${COMPACT_TOOL_NAME} when all user-requested work is complete and only a final response or completion report remains.`,
-      `Do not use ${COMPACT_TOOL_NAME} as a general summarization tool or as a substitute for answering the user.`,
-      "By default, compaction will trigger a follow-up turn to continue unfinished work; stopAfterCompaction is only for rare cases where compaction is explicitly needed without a follow-up.",
+      `Do not use ${COMPACT_TOOL_NAME} for general summarization or when only a final response or completion report remains.`,
+      `${COMPACT_TOOL_NAME} continues unfinished work by default; set stopAfterCompaction only when compaction is needed without a follow-up.`,
     ],
     parameters: COMPACT_TOOL_PARAMETERS,
     executionMode: "sequential",

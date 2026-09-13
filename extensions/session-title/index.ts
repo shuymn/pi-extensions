@@ -37,18 +37,9 @@ const titleTool = {
 };
 
 const TITLE_SYSTEM_PROMPT = `Create a concise, searchable title for a coding-agent session.
-Call the ${TITLE_TOOL_NAME} tool with exactly one title based only on the user's first message.
-
-Rules:
-- Prefer 2 to 6 words
-- Use the same language as the user's message when practical
-- Include the task, feature, bug, file, package, command, model, or error when clear
-- Avoid generic titles like Coding Help, Fix Bug, Update Code, or New Session
-- No quotes
-- No markdown
-- No labels like Title:
-- No trailing punctuation
-- Maximum ${MAX_TITLE_CHARS} characters`;
+Call ${TITLE_TOOL_NAME} with exactly one title based only on the user's first message.
+Prefer 2–6 words in the user's language, naming the specific task or subject rather than generic coding help.
+Use plain text without quotes, Markdown, a label, or trailing punctuation; maximum ${MAX_TITLE_CHARS} characters.`;
 
 export default function sessionTitleExtension(pi: ExtensionAPI): void {
   pi.registerFlag(NO_SESSION_TITLE_FLAG, {

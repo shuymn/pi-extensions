@@ -44,10 +44,7 @@ Usage notes:
       "Ask the user up to 4 structured questions when implementation-relevant requirements or decisions are ambiguous",
     promptGuidelines: [
       "Use ask_user_question when ambiguity materially affects implementation, architecture, scope, data loss, or user-visible behavior.",
-      "Do not use ask_user_question for trivial choices that can be safely assumed.",
-      "Group related clarifying questions into one invocation; do not stack multiple ask_user_question calls back-to-back.",
-      "Each ask_user_question question must have 2-4 options. Each option must have a concise label and a description explaining the trade-off.",
-      `Do not author reserved labels such as ${OTHER_LABEL}, ${TYPE_SOMETHING_LABEL}, ${CHAT_ABOUT_THIS_LABEL}, or ${NEXT_QUESTION_LABEL}; ask_user_question adds runtime sentinel rows.`,
+      "For ask_user_question, group related questions in one call and resolve trivial choices without asking.",
       `If the user selects ${CHAT_ABOUT_THIS_LABEL}, stop the questionnaire flow and discuss normally. Do not immediately call ask_user_question again.`,
       "When resuming after a paused ask_user_question result, reuse details.pendingQuestions; do not regenerate all questions from memory.",
     ],

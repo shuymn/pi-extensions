@@ -69,8 +69,7 @@ export default function toolSearchExtension(pi: ExtensionAPI): void {
     promptSnippet:
       "Search and load deferred tools when the active tool set does not contain the capability needed for the user's task.",
     promptGuidelines: [
-      "Use search_tools before attempting a task that needs deferred Tavily web tools, workflow orchestration, review_flow/research_flow, or background subagent result/stop/list management.",
-      "Describe the needed capability in query; search_tools activates matching registered tools additively for the rest of the session.",
+      "Use search_tools when a needed capability is not active; matching tools remain available for the session.",
     ],
     parameters: paramsSchema,
     async execute(_toolCallId, params) {
