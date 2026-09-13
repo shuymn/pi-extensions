@@ -6,14 +6,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { clearWidget, notifyIfUI, setAboveEditorWidget } from "../../lib/tui";
-import {
-  CONTINUATION_LIMIT,
-  GOAL_ENTRY,
-  type Goal,
-  goalContext,
-  parseGoalStart,
-  restoreGoal,
-} from "./goal";
+import { GOAL_ENTRY, type Goal, goalContext, parseGoalStart, restoreGoal } from "./goal";
 import {
   type CompactRequestState,
   type CompactScheduleOptions,
@@ -40,11 +33,8 @@ export function createContinuationRuntime(pi: ExtensionAPI) {
   function save(ctx: ExtensionContext) {
     if (goal) pi.appendEntry(GOAL_ENTRY, structuredClone(goal));
     if (ctx.hasUI) {
-      if (goal)
-        setAboveEditorWidget(ctx, "goal", [
-          `● Goal: ${goal.objective}`,
-          `${goal.status} (${goal.continuations}/${CONTINUATION_LIMIT})`,
-        ]);
+      if (goal && goal.status !== "completed")
+        setAboveEditorWidget(ctx, "goal", [`● Goal: ${goal.objective}`, goal.status]);
       else clearWidget(ctx, "goal");
     }
   }
@@ -80,21 +70,6 @@ export function createContinuationRuntime(pi: ExtensionAPI) {
     if (source === "goal" || source === "goal-command" || authorized) {
       if (!goal || !authorized || goal.status !== "running") return;
       if (automatic) {
-        if (goal.continuations >= CONTINUATION_LIMIT) {
-          authorized = false;
-          goal = {
-            ...goal,
-            status: "limited",
-            evidence: "Continuation limit reached; use /goal resume to continue.",
-          };
-          save(ctx);
-          notifyIfUI(
-            ctx,
-            "Goalの自動継続上限に達しました。再開には /goal resume を使ってください。",
-            "warning",
-          );
-          return;
-        }
         goal = { ...goal, continuations: goal.continuations + 1 };
         save(ctx);
       }

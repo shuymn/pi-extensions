@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { createFakePi } from "../../tests/support/fake-pi";
-import { CONTINUATION_LIMIT, GOAL_ENTRY, restoreGoal } from "./goal";
+import { createFakeUi } from "../../tests/support/fake-ui";
+import { GOAL_ENTRY, restoreGoal } from "./goal";
 import { createContinuationRuntime } from "./runtime";
 
 function harness(sessionManager = SessionManager.inMemory()) {
@@ -18,6 +19,7 @@ function harness(sessionManager = SessionManager.inMemory()) {
   let queued = false;
   const ctx = {
     hasUI: false,
+    ui: createFakeUi(),
     cwd: "/tmp",
     sessionManager,
     signal: abort.signal,
@@ -129,15 +131,36 @@ describe("Goal and compact continuation", () => {
     expect(h.turns()).toHaveLength(2);
     expect(h.state().data.status).toBe("running");
   });
-  test("When UI or unavailable questionnaire needs input, automatic continuation waits", async () => {
-    for (const event of ["ui_prompt_start", "tool_result"]) {
+  for (const status of ["completed", "cancelled", "interrupted", "unavailable", undefined]) {
+    test(`When questionnaire status is ${status ?? "missing"}, Goal only continues for completed`, async () => {
       const h = harness();
       await h.command("start A | B");
-      await h.emit(event, { toolName: "ask_user_question", details: { status: "cancelled" } });
+      await h.emit("tool_result", {
+        toolName: "ask_user_question",
+        ...(status === undefined ? {} : { details: { status } }),
+      });
       await h.end();
-      expect(h.state().data.status).toBe("waiting");
-      expect(h.turns()).toHaveLength(1);
-    }
+      expect(h.state().data.status).toBe(status === "completed" ? "running" : "waiting");
+      expect(h.turns()).toHaveLength(status === "completed" ? 2 : 1);
+    });
+  }
+  test("When a UI questionnaire completes, Goal stays waiting until explicit user resume", async () => {
+    const h = harness();
+    await h.command("start A | B");
+    await h.emit("ui_prompt_start");
+    expect(h.state().data.status).toBe("waiting");
+    await h.emit("tool_result", {
+      toolName: "ask_user_question",
+      details: { status: "completed" },
+    });
+    await h.end();
+    await h.emit("input", { source: "interactive", text: "yes" });
+    await h.end();
+    expect(h.state().data.status).toBe("waiting");
+    expect(h.turns()).toHaveLength(1);
+    await h.command("resume");
+    expect(h.state().data.status).toBe("running");
+    expect(h.turns()).toHaveLength(2);
   });
   test("When completed, evidence is required and no further turn is scheduled", async () => {
     const h = harness();
@@ -148,14 +171,31 @@ describe("Goal and compact continuation", () => {
     expect(h.turns()).toHaveLength(1);
     expect(h.state().data).toMatchObject({ status: "completed", evidence: "B verified by test" });
   });
-  test("When the continuation limit is reached, state is limited and resume resets the allowance", async () => {
+  test("When automatic continuations exceed the former limit, Goal shall remain running and restorable", async () => {
     const h = harness();
     await h.command("start A | B");
-    for (let i = 0; i < CONTINUATION_LIMIT + 2; i++) await h.end();
-    expect(h.turns()).toHaveLength(CONTINUATION_LIMIT + 1);
-    expect(h.state().data.status).toBe("limited");
-    await h.command("resume");
-    expect(h.state().data.continuations).toBe(0);
+    for (let i = 0; i < 25; i++) await h.end();
+    expect(h.turns()).toHaveLength(26);
+    expect(h.state().data).toMatchObject({ status: "running", continuations: 25 });
+    expect(restoreGoal(h.ctx.sessionManager.getBranch())).toMatchObject({
+      status: "paused",
+      continuations: 25,
+    });
+  });
+  test("When Goal completes or a completed session is restored, its widget shall clear while the record remains available", async () => {
+    const h = harness();
+    h.ctx.hasUI = true;
+    await h.command("start A | B");
+    expect(h.ctx.ui.widgets.at(-1)?.lines).toEqual(["● Goal: A", "running"]);
+    await h.tool("complete", "B verified");
+    expect(h.ctx.ui.widgets.at(-1)).toMatchObject({ key: "goal", lines: undefined });
+    await h.command("status");
+    expect(h.pi.sentMessages.at(-1)?.message.content).toContain('"status": "completed"');
+    const restored = harness(h.ctx.sessionManager);
+    restored.ctx.hasUI = true;
+    await restored.emit("session_start");
+    expect(restored.ctx.ui.widgets.at(-1)).toMatchObject({ key: "goal", lines: undefined });
+    expect(restored.state().data).toMatchObject({ status: "completed", evidence: "B verified" });
   });
   test("When a compact request and Goal end together, only compact owns the continuation", async () => {
     const h = harness();
@@ -325,7 +365,7 @@ test("When leaving and restoring a session, waiting, limited and failed remain d
       objective: "A",
       doneWhen: ["B"],
       status,
-      continuations: status === "limited" ? CONTINUATION_LIMIT : 0,
+      continuations: status === "limited" ? 20 : 0,
       evidence: "reason to retain",
     });
     await h.emit("session_start");
@@ -369,7 +409,7 @@ for (const status of ["paused", "waiting", "limited", "failed"] as const) {
         objective: "Old task",
         doneWhen: ["Old condition"],
         status,
-        continuations: status === "limited" ? CONTINUATION_LIMIT : 0,
+        continuations: status === "limited" ? 20 : 0,
         evidence: "old reason",
       });
       await h.emit("session_start");

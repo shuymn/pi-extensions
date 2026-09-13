@@ -1,13 +1,12 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 export const GOAL_ENTRY = "goal-state-v1";
-export const CONTINUATION_LIMIT = 20;
 export const GOAL_STATUSES = [
   "running",
   "paused",
   "waiting",
   "completed",
-  "limited",
+  "limited", // Historical sessions only; new runs never enter this state.
   "failed",
 ] as const;
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
@@ -36,7 +35,6 @@ export function isGoal(value: unknown): value is Goal {
     GOAL_STATUSES.includes(g.status) &&
     Number.isInteger(g.continuations) &&
     g.continuations >= 0 &&
-    g.continuations <= CONTINUATION_LIMIT &&
     typeof g.evidence === "string"
   );
 }
