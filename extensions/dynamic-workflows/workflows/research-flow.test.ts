@@ -239,9 +239,7 @@ describe("packaged research_flow workflow", () => {
     });
 
     const evidence = JSON.parse(
-      synthesisPrompt.match(
-        /Evidence \(objects, no parsing needed\):\n([^\n]+)\nAssessment/,
-      )?.[1] ?? "null",
+      synthesisPrompt.match(/Evidence:\n([^\n]+)\nAssessment/)?.[1] ?? "null",
     );
     expect(evidence.sources.map((source: { url: string }) => source.url)).toEqual([
       "https://example.com/a#section",
@@ -311,9 +309,7 @@ describe("packaged research_flow workflow", () => {
       },
     });
     const evidence = JSON.parse(
-      synthesisPrompt.match(
-        /Evidence \(objects, no parsing needed\):\n([^\n]+)\nAssessment/,
-      )?.[1] ?? "null",
+      synthesisPrompt.match(/Evidence:\n([^\n]+)\nAssessment/)?.[1] ?? "null",
     );
     expect(evidence.sources.map((source: { url: string }) => source.url)).toEqual([
       "https://EXAMPLE.com/Report#one",

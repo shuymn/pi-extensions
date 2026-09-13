@@ -64,10 +64,13 @@ describe("/ultracode policy command", () => {
     expect(result.systemPrompt).toContain("workflow tool");
     expect(result.systemPrompt).toContain("not automatically selected");
     expect(result.systemPrompt).toContain("architect/conductor");
-    expect(result.systemPrompt).toContain("two axes");
     expect(result.systemPrompt).toContain("multi-stage, data-dependent orchestration");
     expect(result.systemPrompt).toContain("independent lenses");
-    expect(result.systemPrompt).toContain("tens of agents");
+    expect(result.systemPrompt).toContain("size agent count and depth to the task, not a quota");
+    expect(result.systemPrompt).toContain("success conditions are met or a concrete blocker");
+    expect(result.systemPrompt).toContain("authorization boundaries");
+    expect(result.systemPrompt).toContain("only use a packaged workflow when");
+    expect(result.systemPrompt).toContain("do not launch one for quick single-file edits");
   });
 
   test("reports status, rejects invalid args, disables mode, and resets on session start", async () => {

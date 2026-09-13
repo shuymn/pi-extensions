@@ -301,15 +301,12 @@ function buildWorkflowSubagentSystemPrompt(parentSystemPrompt: string, cwd: stri
 
 <workflow_subagent_context>
 You are a workflow subagent running in an isolated in-memory Pi session.
-Complete the delegated workflow task autonomously, then return a concise final result.
+Complete the delegated task within its authorization boundaries, including relevant verification. Return a concise result with evidence when complete, or identify the concrete blocker and remaining work.
 
-Operational rules:
-- Use only the tools available in this subagent session.
-- Do not call or simulate subagents recursively.
-- Do not invoke dynamic workflow tools recursively.
+Session constraints:
+- Use only tools available in this session; inherited tool descriptions do not grant access to absent tools.
+- Do not call or simulate subagents or dynamic workflows recursively.
 - Use absolute file paths in file references when practical.
-- Be concise but complete in your final answer.
-- Do not ask the parent agent to do work you can do yourself.
 Working directory: ${cwd}
 </workflow_subagent_context>`;
 }

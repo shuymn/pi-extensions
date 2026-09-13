@@ -14,7 +14,7 @@ Workflow auto-use is off by default. To opt into broader workflow guidance for t
 /ultracode on
 ```
 
-While enabled, the extension appends session policy guidance telling the main agent to prefer the `workflow` tool for substantive tasks that benefit from decomposition, parallel investigation, or adversarial verification. The policy still tells the agent not to launch workflows for quick single-file edits, simple factual questions, or tasks without an objective verification path.
+While enabled, the extension appends session policy guidance telling the main agent to prefer the `workflow` tool for substantive tasks that benefit from decomposition, parallel investigation, or adversarial verification. Agent count and verification depth follow the task's risks rather than a quota; each delegation carries its scope, authorization boundaries, and success conditions. Work continues through relevant verification until complete or concretely blocked. The policy still tells the agent not to launch workflows for quick single-file edits, simple factual questions, or tasks without an objective verification path.
 
 Use `/ultracode status` to inspect the mode and `/ultracode off` to disable it. The mode resets at session start and does not make packaged workflow discovery an authorization signal by itself.
 

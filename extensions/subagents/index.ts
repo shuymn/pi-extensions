@@ -181,21 +181,17 @@ function buildSystemPrompt(
     isolatedAgentToolNames(toolset, { readOnly: true, extraTools }),
   );
   const delegationGuidance = canDelegate
-    ? `- Prefer doing simple work directly.\n- When an independent focused check would materially improve quality or confidence, you may use ${SPAWN_SUBAGENT_TOOL_NAME}.\n- Verify and integrate delegated results before relying on them.\n- For delegated modelTier selection, medium is the default. Use small only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples.\n`
-    : "- Complete the assigned task with the tools available in this session. No further delegation tool is available.\n";
+    ? `- Use ${SPAWN_SUBAGENT_TOOL_NAME} for independent focused checks when they materially improve confidence; verify and integrate the results.\n`
+    : "- No further delegation tool is available.\n";
   return `${parentSystemPrompt}
 
 <delegated_task_context>
 You are a general-purpose agent running in an isolated in-memory session.
-Your job is to complete the assigned task accurately and autonomously, then return a concise final result.
+Complete the assigned task within its authorization boundaries, including relevant verification. Stop when complete or blocked by unavailable input, access, or authorization; return a concise result with evidence and unresolved limits.
 
-Operational rules:
-- Use only the tools available in this session.
-- Default sessions have ${defaultToolList}.
-- Read-only sessions have ${readOnlyToolList} only.
+Session constraints:
+- Available tools: ${readOnly ? readOnlyToolList : defaultToolList}. Inherited tool descriptions do not grant access to tools absent from this session.
 - Use absolute file paths in file references when practical.
-- Be concise but complete in your final answer.
-- Do not ask for outside work you can do yourself.
 ${delegationGuidance}${readOnly ? "- This session is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.\n" : ""}
 Working directory: ${cwd}
 </delegated_task_context>`;
@@ -290,7 +286,8 @@ function createSpawnSubagentParameters(runtime: SpawnToolRuntime) {
 
   return Type.Object({
     prompt: Type.String({
-      description: "The complete task for the subagent to perform autonomously.",
+      description:
+        "Self-contained task, relevant context, authorization boundaries, and success conditions.",
     }),
     description: Type.Optional(
       Type.String({
@@ -310,7 +307,7 @@ function createSpawnSubagentParameters(runtime: SpawnToolRuntime) {
     modelTier: Type.Optional(
       StringEnum(MODEL_TIERS, {
         description:
-          'Optional model tier for delegated work. Top-level calls inherit the current model unless set; delegated calls from an isolated session default to "medium" when omitted. Use "small" only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples; verify results before relying on them. Configure mappings under subagents.modelTiers in settings as a model string, comma-separated string, or array; missing, invalid, unresolved, or exhausted mappings fall back to the current model.',
+          'Model tier resolved via subagents.modelTiers; unavailable candidates fall back to the current model. Omitted: inherit at top level, "medium" in delegated sessions. Use "small" only for bounded, easy-to-check investigation and verify its results.',
       }),
     ),
   });
@@ -335,10 +332,6 @@ function buildSpawnSubagentDescription(
   const delegationGuidance = spawnedSessionCanDelegate
     ? "The delegated session may use spawn_subagent for independent focused checks within one additional delegation level when doing so materially improves quality or confidence."
     : "The delegated session cannot delegate further.";
-  const modelTierGuidance = runtime.callerRecordId
-    ? "Omitted modelTier defaults to medium. Reserve small for bounded, easy-to-check investigation whose output will be verified before use."
-    : "Top-level calls inherit the current model unless modelTier is explicitly set; delegated calls from an isolated session default omitted modelTier to medium. Reserve small for bounded, easy-to-check investigation whose output will be verified before use.";
-
   const toolGuidance = runtime.forceReadOnly
     ? `Spawned sessions are read-only because the calling session is read-only; they receive ${readOnlySubagentToolList}.`
     : `Default subagents receive ${defaultSubagentToolList}; read-only subagents receive ${readOnlySubagentToolList}.`;
@@ -348,7 +341,6 @@ function buildSpawnSubagentDescription(
     "Use this for self-contained investigation or implementation work that benefits from an isolated context. " +
     `${toolGuidance} ` +
     `${delegationGuidance} ` +
-    `${modelTierGuidance} ` +
     backgroundGuidance
   );
 }

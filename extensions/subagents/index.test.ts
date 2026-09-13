@@ -397,15 +397,15 @@ describe("subagents extension", () => {
     expect(pi.tools.get("spawn_subagent")!.description).toContain(
       "Default subagents receive read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent",
     );
-    expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Top-level calls inherit the current model unless modelTier is explicitly set",
+    const modelTierDescription = (pi.tools.get("spawn_subagent")!.parameters as any).properties
+      .modelTier.description;
+    expect(modelTierDescription).toContain(
+      'Omitted: inherit at top level, "medium" in delegated sessions',
     );
-    expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "delegated calls from an isolated session default omitted modelTier to medium",
+    expect(modelTierDescription).toContain(
+      'Use "small" only for bounded, easy-to-check investigation',
     );
-    expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Reserve small for bounded, easy-to-check investigation whose output will be verified before use",
-    );
+    expect(modelTierDescription).toContain("verify its results");
     expect(pi.tools.get("spawn_subagent")!.description).toContain(
       "within one additional delegation level",
     );
@@ -416,11 +416,7 @@ describe("subagents extension", () => {
     expect(
       (pi.tools.get("spawn_subagent")!.parameters as any).properties.background.description,
     ).toContain("use get_subagent_result to check status or retrieve the result");
-    expect(
-      (pi.tools.get("spawn_subagent")!.parameters as any).properties.modelTier.description,
-    ).toContain(
-      'Use "small" only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples; verify results before relying on them.',
-    );
+    expect(modelTierDescription).toContain("unavailable candidates fall back to the current model");
   });
 
   test("foreground spawn runs an isolated subagent session and returns streamed result", async () => {
@@ -472,16 +468,13 @@ describe("subagents extension", () => {
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("parent system prompt");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain("Working directory: /repo");
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Default sessions have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
+      "Available tools: read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "When an independent focused check would materially improve quality or confidence, you may use spawn_subagent.",
+      "Use spawn_subagent for independent focused checks when they materially improve confidence; verify and integrate the results.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Verify and integrate delegated results before relying on them.",
-    );
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Use small only for bounded, easy-to-check investigation such as candidate discovery, file search, enumeration, or collecting possible counterexamples.",
+      "Stop when complete or blocked by unavailable input, access, or authorization",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).not.toContain(
       "Do not call or simulate subagents recursively.",
@@ -520,11 +513,9 @@ describe("subagents extension", () => {
       "This session is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.",
     );
     expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Default sessions have read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
+      "Available tools: read, grep, find, ls, bash, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
     );
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Read-only sessions have read, grep, find, ls, bash, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent only.",
-    );
+    expect(loaderInstances[0].options.systemPromptOverride()).not.toContain("bash, edit, write");
   });
 
   test("first-level sessions can spawn one nested session that cannot spawn further", async () => {
