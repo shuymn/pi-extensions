@@ -12,7 +12,6 @@ Requirements:
 - Split work only at real dependency, parallelization, or validation boundaries. Avoid mechanical decomposition by file, function, individual test, or command.
 - If useful, add a brief separate note for excluded or deferred candidates and why they were not selected.
 - Use numbered lists or normal bullets for tasks, not Markdown checkboxes such as `- [ ] task`.
-- PLAN.md is not the progress tracker; later progress belongs in the pi todo tool during /impl.
 - Ask clarifying questions when ambiguity affects implementation decisions.
 
 ## Additional User Instructions

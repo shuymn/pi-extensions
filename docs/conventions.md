@@ -17,7 +17,7 @@
 ## Dynamic Tool Loading
 
 - Tavily、`workflow`、background subagent management の大型 tool 群は登録したまま inactive にし、`search_tools` から純加算で有効化する。
-- `ask_user_question`、`compact_context`、`todo`、`spawn_subagent`、`github_clone_workspace` は常時 active にする。
+- `ask_user_question`、`compact_context`、`goal`、`spawn_subagent`、`github_clone_workspace` は常時 active にする。
 - deferred LLM Tool は active-only の `promptSnippet` / `promptGuidelines` を持たず、必要な契約を `description` と parameter schema に置く。
 - bounded one-shot flow が設定した active tool allowlist へ loader を再追加しない。
 
@@ -55,7 +55,7 @@
 ## 進捗表示
 
 - 長期的に参照する進行状態・作業状態は `aboveEditor` widget で示す。
-- `todo` / plan / dynamic workflow 系の状態表示は `aboveEditor` を標準にする。
+- dynamic workflow の状態表示は `aboveEditor` を標準にする。
 - `belowEditor` widget は spinner、elapsed time、外部 CLI 実行中など短命・補助的な進捗表示に使う。
 - 外部 CLI など待ち時間が読みにくい処理は spinner と elapsed time を表示する。
 - 短い完了通知は `ctx.ui.notify()` でよい。

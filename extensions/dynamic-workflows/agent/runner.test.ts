@@ -162,7 +162,7 @@ const READ_ONLY_WORKFLOW_TOOL_NAMES = [
 const EXCLUDED_WORKFLOW_TOOL_NAMES = [
   "workflow",
   "review",
-  "todo",
+  "goal",
   "spawn_subagent",
   "ask_user_question",
   "deep_research",

@@ -35,7 +35,7 @@ type FakeContext = {
   isIdle: () => boolean;
 };
 
-const DEFAULT_TOOLS = [...CREATE_PR_SAFE_TOOLS, "edit", "write", "todo"];
+const DEFAULT_TOOLS = [...CREATE_PR_SAFE_TOOLS, "edit", "write", "goal"];
 
 function createSkillFixture(skillName: string) {
   const skillDir = mkdtempSync(join(tmpdir(), `pi-${skillName}-skill-`));
@@ -385,7 +385,7 @@ describe("create-pr extension", () => {
   test("filters active tools to the available create-pr-safe allowlist", async () => {
     const pi = createFakePi({
       flags: { [CREATE_PR_FLAG]: true },
-      tools: ["read", "bash", "write", "edit", "ask_user_question", "todo"],
+      tools: ["read", "bash", "write", "edit", "ask_user_question", "goal"],
     });
     createPrExtension(pi as never);
 

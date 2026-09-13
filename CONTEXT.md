@@ -49,12 +49,12 @@ A status or progress display rendered inside pi's terminal UI, such as above or 
 _Avoid_: Widget, status UI
 
 **State**:
-The current data that represents a **Workflow Run**, todo list, or UI component at a point in time.
+The current data that represents a **Workflow Run**, **Goal**, or UI component at a point in time.
 _Avoid_: Progress, memory
 
-**Todo Item**:
-An individual unit of planned work tracked by the todo extension.
-_Avoid_: Todo, task
+**Goal**:
+An explicitly started objective with completion conditions and an execution status, distinct from a mutable work plan.
+_Avoid_: Todo, task list
 
 **Subagent Session**:
 An isolated agent session delegated from the parent session to complete a focused task.
@@ -76,9 +76,6 @@ _Avoid_: Question, clarification UI
 
 Dev: Should this Pi Extension expose an LLM Tool, a Slash Command, or both?
 Domain expert: Use both when the agent and the user need the same capability. Use only a Slash Command for user-driven actions, and only an LLM Tool for bounded agent actions.
-
-Dev: The review Workflow Run is still active. Should the todo TUI Widget stay visible?
-Domain expert: No. Suppress the todo TUI Widget while the review Workflow is running so the active Phase remains the primary status display.
 
 Dev: Does a Research Task include the Research Sources collected later?
 Domain expert: No. The Research Task is the request being investigated; Research Sources are evidence collected while answering it.

@@ -7,23 +7,12 @@ import { notifyIfUI } from "../../lib/tui";
 import {
   buildCompactWarningMessage,
   COMPACT_TOOL_NAME,
-  type CompactRequestState,
   decideCompactWarning,
-  finishCompactRequest,
-  initialCompactRequestState,
+  readAutoCompactionEnabledForCwd,
   readCompactionReserveTokensForCwd,
-  scheduleCompactRequest,
-  takePendingCompactRequest,
 } from "./policy";
 
-const DEFAULT_CONTINUATION_PROMPT = [
-  "Context compaction completed.",
-  "Continue the current user-requested work from the compaction summary, recent context, and any active reminders.",
-  "Do not repeat completed steps.",
-  "Do not request another compaction immediately unless context is still high and the next safe checkpoint has been reached.",
-].join(" ");
-
-const COMPACT_CONTINUATION_CUSTOM_TYPE = "compact-continuation";
+import { createContinuationRuntime } from "./runtime";
 
 const COMPACT_TOOL_PARAMETERS = Type.Object({
   customInstructions: Type.Optional(
@@ -131,54 +120,29 @@ function appendTransientWarning(messages: ContextEvent["messages"]): ContextEven
 
 function compactPendingMessage(status: "pending" | "compacting"): string {
   return status === "pending"
-    ? "A context compaction request is already scheduled for turn_end."
+    ? "A context compaction request is already scheduled for agent_settled."
     : "Context compaction is already in progress.";
 }
 
-function notifyCompactionStarted(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
-  notifyIfUI(ctx, "コンテキスト圧縮を開始しました。", "info");
-}
-
 function notifyCompactionScheduled(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
-  notifyIfUI(ctx, "コンテキスト圧縮を予約しました。ターン終了時に実行します。", "info");
-}
-
-function notifyCompactionCompleted(ctx: Pick<ExtensionContext, "hasUI" | "ui">): void {
-  notifyIfUI(ctx, "コンテキスト圧縮が完了しました。", "info");
-}
-
-function notifyCompactionFailed(ctx: Pick<ExtensionContext, "hasUI" | "ui">, error: Error): void {
-  notifyIfUI(ctx, `コンテキスト圧縮に失敗しました: ${error.message}`, "error");
-}
-
-function sendContinuation(pi: ExtensionAPI, continuationPrompt?: string): void {
-  pi.sendMessage(
-    {
-      customType: COMPACT_CONTINUATION_CUSTOM_TYPE,
-      content: continuationPrompt ?? DEFAULT_CONTINUATION_PROMPT,
-      display: false,
-      details: {
-        source: COMPACT_TOOL_NAME,
-      },
-    },
-    { triggerTurn: true, deliverAs: "followUp" },
-  );
+  notifyIfUI(ctx, "コンテキスト圧縮を予約しました。実行が落ち着いた後に実行します。", "info");
 }
 
 export default function compactExtension(pi: ExtensionAPI) {
-  let state: CompactRequestState = initialCompactRequestState();
+  const runtime = createContinuationRuntime(pi);
   let warningAlreadyInjected = false;
-
-  function finishCompaction(): void {
-    state = finishCompactRequest();
+  pi.on("session_compact", async () => {
     warningAlreadyInjected = false;
-  }
+  });
+  pi.on("session_start", async () => {
+    warningAlreadyInjected = false;
+  });
 
   pi.registerTool({
     name: COMPACT_TOOL_NAME,
     label: "Compact Context",
     description:
-      "Request Pi context compaction at a semantic checkpoint. The request is scheduled and runs after the current tool result lands at turn_end.",
+      "Request Pi context compaction at a semantic checkpoint. The request is scheduled and runs after the current tool result lands at agent_settled.",
     promptSnippet: "Request Pi context compaction at a semantic checkpoint",
     promptGuidelines: [
       `Use ${COMPACT_TOOL_NAME} only when context usage is high, unfinished user-requested work remains, and the current atomic step is complete.`,
@@ -192,7 +156,7 @@ export default function compactExtension(pi: ExtensionAPI) {
     renderCall: renderCompactCall,
     renderResult: renderCompactResult,
     async execute(_toolCallId, params: CompactToolParams, _signal, _onUpdate, ctx) {
-      const result = scheduleCompactRequest(state, params);
+      const result = runtime.schedule(params);
       if (!result.accepted) {
         const status = result.reason;
         return terminatingTextResult(compactPendingMessage(status), {
@@ -201,11 +165,11 @@ export default function compactExtension(pi: ExtensionAPI) {
         } satisfies CompactToolDetails);
       }
 
-      state = result.state;
+      const state = result.state;
       notifyCompactionScheduled(ctx);
 
       return terminatingTextResult(
-        "Context compaction has been scheduled and will run at turn_end.",
+        "Context compaction has been scheduled and will run at agent_settled.",
         {
           accepted: true,
           status: "scheduled",
@@ -218,10 +182,12 @@ export default function compactExtension(pi: ExtensionAPI) {
   });
 
   pi.on("context", async (event, ctx) => {
+    const autoCompactionEnabled = readAutoCompactionEnabledForCwd(ctx.cwd);
     const decision = decideCompactWarning({
       usage: ctx.getContextUsage(),
       reserveTokens: readCompactionReserveTokensForCwd(ctx.cwd),
-      state,
+      state: runtime.state,
+      autoCompactionEnabled,
     });
 
     if (!decision.inject) {
@@ -229,37 +195,15 @@ export default function compactExtension(pi: ExtensionAPI) {
       return;
     }
 
-    if (warningAlreadyInjected) return;
+    if (
+      warningAlreadyInjected &&
+      (autoCompactionEnabled || decision.tokens < decision.autoCompactThreshold)
+    )
+      return;
 
     warningAlreadyInjected = true;
     return {
       messages: appendTransientWarning(event.messages),
     };
-  });
-
-  pi.on("turn_end", async (_event, ctx) => {
-    const pending = takePendingCompactRequest(state);
-    if (!pending.taken) return;
-
-    state = pending.state;
-    notifyCompactionStarted(ctx);
-
-    try {
-      ctx.compact({
-        customInstructions: pending.customInstructions,
-        onComplete: () => {
-          finishCompaction();
-          notifyCompactionCompleted(ctx);
-          if (!pending.stopAfterCompaction) sendContinuation(pi, pending.continuationPrompt);
-        },
-        onError: (error) => {
-          finishCompaction();
-          notifyCompactionFailed(ctx, error);
-        },
-      });
-    } catch (error) {
-      finishCompaction();
-      notifyCompactionFailed(ctx, error instanceof Error ? error : new Error(String(error)));
-    }
   });
 }

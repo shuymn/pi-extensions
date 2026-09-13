@@ -5,16 +5,13 @@ import { join } from "node:path";
 
 import {
   buildCompactWarningMessage,
-  builtInAutoCompactThreshold,
   COMPACT_TOOL_NAME,
   DEFAULT_RESERVE_TOKENS,
   decideCompactWarning,
-  finishCompactRequest,
   initialCompactRequestState,
   readCompactionReserveTokens,
   resolveReserveTokens,
   scheduleCompactRequest,
-  takePendingCompactRequest,
 } from "./policy";
 
 describe("compact policy", () => {
@@ -47,12 +44,6 @@ describe("compact policy", () => {
     expect(resolveReserveTokens(undefined)).toBe(DEFAULT_RESERVE_TOKENS);
     expect(resolveReserveTokens(-1)).toBe(DEFAULT_RESERVE_TOKENS);
     expect(resolveReserveTokens(12_000.9)).toBe(12_000);
-  });
-
-  test("computes Pi built-in auto-compaction threshold from context window and reserve", () => {
-    expect(builtInAutoCompactThreshold(200_000, 32_768)).toBe(167_232);
-    expect(builtInAutoCompactThreshold(8_000, 16_384)).toBe(-8_384);
-    expect(builtInAutoCompactThreshold(undefined, 16_384)).toBeUndefined();
   });
 
   test("warns from 75 percent of context until Pi's built-in auto-compaction threshold", () => {
@@ -118,9 +109,7 @@ describe("compact policy", () => {
     });
     expect(pending.accepted).toBe(true);
     if (!pending.accepted) return;
-    const taken = takePendingCompactRequest(pending.state);
-    expect(taken.taken).toBe(true);
-    if (!taken.taken) return;
+    const taken = { state: { phase: "compacting" as const } };
 
     expect(decideCompactWarning({ usage: undefined, reserveTokens: 32_768, state })).toMatchObject({
       inject: false,
@@ -180,25 +169,12 @@ describe("compact policy", () => {
       reason: "pending",
     });
 
-    const taken = takePendingCompactRequest(scheduled.state);
-    expect(taken).toEqual({
-      taken: true,
-      state: { phase: "compacting" },
-      customInstructions: "Focus on changed files.",
-      continuationPrompt: "Continue verification after compaction.",
-      stopAfterCompaction: true,
-    });
-    if (!taken.taken) return;
+    const taken = { state: { phase: "compacting" as const } };
 
     expect(scheduleCompactRequest(taken.state)).toEqual({
       accepted: false,
       state: taken.state,
       reason: "compacting",
-    });
-    expect(takePendingCompactRequest(finishCompactRequest())).toEqual({
-      taken: false,
-      state: { phase: "idle" },
-      reason: "not_pending",
     });
   });
 
@@ -213,12 +189,6 @@ describe("compact policy", () => {
       state: { phase: "pending", stopAfterCompaction: false },
     });
     if (!scheduled.accepted) return;
-
-    expect(takePendingCompactRequest(scheduled.state)).toEqual({
-      taken: true,
-      state: { phase: "compacting" },
-      stopAfterCompaction: false,
-    });
   });
 
   test("builds warning text that only directs compaction for unfinished work", () => {
@@ -230,4 +200,14 @@ describe("compact policy", () => {
     expect(warning).toContain("unfinished user-requested work remains");
     expect(warning).toContain("as the only tool");
   });
+});
+
+test("When native auto-compaction is disabled, warnings continue beyond its threshold", () => {
+  const decision = decideCompactWarning({
+    usage: { tokens: 199_000, contextWindow: 200_000 },
+    reserveTokens: 32_768,
+    state: initialCompactRequestState(),
+    autoCompactionEnabled: false,
+  });
+  expect(decision.inject).toBe(true);
 });

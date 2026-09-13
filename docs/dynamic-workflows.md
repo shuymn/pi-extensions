@@ -240,7 +240,7 @@ Key behaviors:
 - The Gapfill → Hunt loop is bounded (at most 2 follow-up rounds). A continuation request after the budget or without valid focus becomes an authoritative coverage issue and forces no-fix.
 - Recoverable investigation-agent failures become explicit `workflowIssues`, mark failed lenses in the coverage map, and force no-fix. Schema/contract violations and failed Fix/Verify/Summary are terminal failures.
 - Summary receives authoritative `workflowIssues` and the complete target/risk/bucket/failed-lens coverage map; the returned result also carries them so prose cannot silently claim omitted coverage.
-- Generic workflow lifecycle notifications are mapped to review events. Todo suppression tracks active review run IDs, so one concurrent run finishing does not reveal the widget while another is active.
+- Generic workflow lifecycle notifications are mapped to review events.
 
 ### Runtime and preset policy boundary
 

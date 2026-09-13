@@ -51,7 +51,7 @@ function writeProjectSettings(cwd: string, reserveTokens = 32_768): void {
   mkdirSync(join(cwd, ".pi"), { recursive: true });
   writeFileSync(
     join(cwd, ".pi", "settings.json"),
-    JSON.stringify({ compaction: { reserveTokens } }),
+    JSON.stringify({ compaction: { reserveTokens, enabled: true } }),
   );
 }
 
@@ -74,6 +74,8 @@ function createCtx({
       hasUI,
       ui,
       getContextUsage: () => usage,
+      isIdle: () => true,
+      hasPendingMessages: () => false,
       compact(options?: CompactOptions) {
         compactCalls.push(options ?? {});
         compactImpl?.(options);
@@ -114,10 +116,10 @@ describe("compact extension", () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
 
-    expect([...pi.tools.keys()]).toEqual([COMPACT_TOOL_NAME]);
-    expect([...pi.commands.keys()]).toEqual([]);
-    expect(pi.getEventHandlers("context")).toHaveLength(1);
-    expect(pi.getEventHandlers("turn_end")).toHaveLength(1);
+    expect([...pi.tools.keys()]).toEqual(["goal", COMPACT_TOOL_NAME]);
+    expect([...pi.commands.keys()]).toEqual(["goal"]);
+    expect(pi.getEventHandlers("context")).toHaveLength(2);
+    expect(pi.getEventHandlers("agent_settled")).toHaveLength(1);
 
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
     expect(tool.label).toBe("Compact Context");
@@ -206,7 +208,7 @@ describe("compact extension", () => {
     const event = {
       messages: [{ role: "user", content: [{ type: "text", text: "original" }], timestamp: 1 }],
     };
-    const contextHandler = pi.getEventHandlers("context")[0]!;
+    const contextHandler = pi.getEventHandlers("context").at(-1)!;
 
     const first = await contextHandler(event, ctx);
 
@@ -242,7 +244,7 @@ describe("compact extension", () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
-    const contextHandler = pi.getEventHandlers("context")[0]!;
+    const contextHandler = pi.getEventHandlers("context").at(-1)!;
     const event = { messages: [] };
 
     const unknown = createCtx({ cwd: tempDir, usage: { tokens: null, contextWindow: 200_000 } });
@@ -253,12 +255,15 @@ describe("compact extension", () => {
     expect(await contextHandler(event, pending.ctx)).toBeUndefined();
   });
 
-  test("compact_context schedules compaction for turn_end and suppresses duplicate requests", async () => {
+  test("compact_context schedules compaction for agent_settled and suppresses duplicate requests", async () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
-    const turnEnd = pi.getEventHandlers("turn_end")[0]!;
-    const contextHandler = pi.getEventHandlers("context")[0]!;
+    const turnEnd = async (_event: unknown, ctx: unknown) => {
+      await pi.getEventHandlers("agent_end")[0]!({ messages: [] }, ctx);
+      await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
+    };
+    const contextHandler = pi.getEventHandlers("context").at(-1)!;
     const { ctx, ui, compactCalls } = createCtx({ cwd: tempDir });
 
     await expectWarningInjectedOnce(contextHandler, ctx);
@@ -282,7 +287,7 @@ describe("compact extension", () => {
     expect(compactCalls).toHaveLength(0);
     expect(pi.sentMessages).toEqual([]);
     expect(ui.notifications.at(-1)).toEqual({
-      message: "コンテキスト圧縮を予約しました。ターン終了時に実行します。",
+      message: "コンテキスト圧縮を予約しました。実行が落ち着いた後に実行します。",
       level: "info",
     });
 
@@ -313,6 +318,8 @@ describe("compact extension", () => {
     });
     expect(compactingDuplicate.content[0].text).toContain("already in progress");
 
+    for (const h of pi.getEventHandlers("session_compact"))
+      await h({ reason: "manual", willRetry: false }, ctx);
     compactCalls[0]!.onComplete?.({ ok: true });
     expect(ui.notifications.at(-1)).toEqual({
       message: "コンテキスト圧縮が完了しました。",
@@ -320,12 +327,12 @@ describe("compact extension", () => {
     });
     expect(pi.sentMessages).toHaveLength(1);
     expect(pi.sentMessages[0]!.message).toMatchObject({
-      customType: "compact-continuation",
+      customType: "work-continuation",
       display: false,
       details: { source: COMPACT_TOOL_NAME },
     });
-    expect(pi.sentMessages[0]!.message.content).toContain("Context compaction completed.");
-    expect(pi.sentMessages[0]!.options).toEqual({ triggerTurn: true, deliverAs: "followUp" });
+    expect(pi.sentMessages[0]!.message.content).toContain("compaction summary");
+    expect(pi.sentMessages[0]!.options).toEqual({ triggerTurn: true });
     await expectWarningInjectedOnce(contextHandler, ctx);
   });
 
@@ -333,7 +340,10 @@ describe("compact extension", () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
-    const turnEnd = pi.getEventHandlers("turn_end")[0]!;
+    const turnEnd = async (_event: unknown, ctx: unknown) => {
+      await pi.getEventHandlers("agent_end")[0]!({ messages: [] }, ctx);
+      await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
+    };
     const { ctx, compactCalls } = createCtx({ cwd: tempDir });
 
     const scheduled = await tool.execute(
@@ -378,12 +388,15 @@ describe("compact extension", () => {
     expect(pi.sentMessages).toEqual([]);
   });
 
-  test("turn_end without a pending request does not compact", async () => {
+  test("agent_settled without a pending request does not compact", async () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
     const { ctx, compactCalls } = createCtx({ cwd: tempDir });
 
-    await pi.getEventHandlers("turn_end")[0]!({ turnIndex: 0 }, ctx);
+    await (async (_event: unknown, ctx: unknown) => {
+      await pi.getEventHandlers("agent_end")[0]!({ messages: [] }, ctx);
+      await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
+    })({ turnIndex: 0 }, ctx);
 
     expect(compactCalls).toEqual([]);
   });
@@ -392,8 +405,11 @@ describe("compact extension", () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
-    const turnEnd = pi.getEventHandlers("turn_end")[0]!;
-    const contextHandler = pi.getEventHandlers("context")[0]!;
+    const turnEnd = async (_event: unknown, ctx: unknown) => {
+      await pi.getEventHandlers("agent_end")[0]!({ messages: [] }, ctx);
+      await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
+    };
+    const contextHandler = pi.getEventHandlers("context").at(-1)!;
     const { ctx, ui, compactCalls } = createCtx({ cwd: tempDir });
 
     await expectWarningInjectedOnce(contextHandler, ctx);
@@ -403,11 +419,10 @@ describe("compact extension", () => {
     compactCalls[0]!.onError?.(new Error("summary model failed"));
 
     expect(ui.notifications.at(-1)).toEqual({
-      message: "コンテキスト圧縮に失敗しました: summary model failed",
+      message: "継続を停止しました: summary model failed",
       level: "error",
     });
-    expect(pi.sentMessages).toEqual([]);
-    await expectWarningInjectedOnce(contextHandler, ctx);
+    expect(pi.sentMessages.at(-1)!.options).toEqual({ triggerTurn: false });
 
     const rescheduled = await tool.execute("call", {}, undefined, undefined, ctx);
     expect(rescheduled).toMatchObject({ details: { accepted: true, status: "scheduled" } });
@@ -417,8 +432,11 @@ describe("compact extension", () => {
     const pi = createFakePi<ToolDefinition>();
     compactExtension(pi as never);
     const tool = pi.tools.get(COMPACT_TOOL_NAME)!;
-    const turnEnd = pi.getEventHandlers("turn_end")[0]!;
-    const contextHandler = pi.getEventHandlers("context")[0]!;
+    const turnEnd = async (_event: unknown, ctx: unknown) => {
+      await pi.getEventHandlers("agent_end")[0]!({ messages: [] }, ctx);
+      await pi.getEventHandlers("agent_settled")[0]!({}, ctx);
+    };
+    const contextHandler = pi.getEventHandlers("context").at(-1)!;
     const { ctx, ui } = createCtx({
       cwd: tempDir,
       compactImpl: () => {
@@ -432,12 +450,30 @@ describe("compact extension", () => {
     await turnEnd({ turnIndex: 0 }, ctx);
 
     expect(ui.notifications.at(-1)).toEqual({
-      message: "コンテキスト圧縮に失敗しました: compact unavailable",
+      message: "継続を停止しました: compact unavailable",
       level: "error",
     });
-    expect(pi.sentMessages).toEqual([]);
-    await expectWarningInjectedOnce(contextHandler, ctx);
+    expect(pi.sentMessages.at(-1)!.options).toEqual({ triggerTurn: false });
     const rescheduled = await tool.execute("call", {}, undefined, undefined, ctx);
     expect(rescheduled).toMatchObject({ details: { accepted: true, status: "scheduled" } });
   });
+});
+
+test("When auto-compaction is disabled, the context hook keeps warning past the native threshold", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "pi-disabled-auto-"));
+  try {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ compaction: { enabled: false, reserveTokens: 32768 } }),
+    );
+    const pi = createFakePi<ToolDefinition>();
+    compactExtension(pi as never);
+    const { ctx } = createCtx({ cwd, usage: { tokens: 199000, contextWindow: 200000 } });
+    const handler = pi.getEventHandlers("context").at(-1)!;
+    expect(await handler({ messages: [] }, ctx)).toMatchObject({ messages: expect.any(Array) });
+    expect(await handler({ messages: [] }, ctx)).toMatchObject({ messages: expect.any(Array) });
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

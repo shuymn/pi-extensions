@@ -34,7 +34,7 @@ type FakeContext = {
   isIdle: () => boolean;
 };
 
-const DEFAULT_TOOLS = [...COMMIT_SAFE_TOOLS, "edit", "write", "todo"];
+const DEFAULT_TOOLS = [...COMMIT_SAFE_TOOLS, "edit", "write", "goal"];
 const COMMIT_SKILL_DIR = mkdtempSync(join(tmpdir(), "pi-commit-skill-"));
 const COMMIT_SKILL_PATH = join(COMMIT_SKILL_DIR, "SKILL.md");
 writeFileSync(
@@ -298,7 +298,7 @@ describe("commit extension", () => {
   test("filters active tools to the available commit-safe allowlist", async () => {
     const pi = createFakePi({
       flags: { [COMMIT_FLAG]: true },
-      tools: ["read", "bash", "write", "edit", "ask_user_question", "todo"],
+      tools: ["read", "bash", "write", "edit", "ask_user_question", "goal"],
     });
     commitExtension(pi as never);
 

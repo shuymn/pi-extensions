@@ -117,7 +117,7 @@ const EXCLUDED_TOOL_NAMES = [
   "tavily_research",
   "workflow",
   "review",
-  "todo",
+  "goal",
   "get_subagent_result",
   "stop_subagent",
   "list_subagents",

@@ -34,16 +34,6 @@ export type CompactScheduleResult =
   | { accepted: true; state: Extract<CompactRequestState, { phase: "pending" }> }
   | { accepted: false; state: CompactRequestState; reason: "pending" | "compacting" };
 
-export type TakePendingResult =
-  | {
-      taken: true;
-      state: Extract<CompactRequestState, { phase: "compacting" }>;
-      customInstructions?: string;
-      continuationPrompt?: string;
-      stopAfterCompaction: boolean;
-    }
-  | { taken: false; state: CompactRequestState; reason: "not_pending" };
-
 export type ContextUsageInput = {
   tokens?: number | null;
   contextWindow?: number | null;
@@ -80,6 +70,7 @@ export type WarningDecision =
 
 interface CompactionSettings {
   reserveTokens?: unknown;
+  enabled?: unknown;
 }
 
 function positiveInteger(value: unknown): number | undefined {
@@ -104,6 +95,14 @@ export function readCompactionReserveTokens(paths: ExtensionSettingsPaths = {}):
     paths.globalPath,
   );
   return resolveReserveTokens(globalSettings.reserveTokens);
+}
+
+export function readAutoCompactionEnabledForCwd(cwd: string): boolean {
+  return (
+    readExtensionSettings<CompactionSettings>(COMPACTION_SETTINGS_KEY, {
+      projectPath: projectSettingsPath(cwd),
+    }).enabled !== false
+  );
 }
 
 export function readCompactionReserveTokensForCwd(cwd: string): number {
@@ -140,22 +139,6 @@ export function scheduleCompactRequest(
   };
 }
 
-export function takePendingCompactRequest(state: CompactRequestState): TakePendingResult {
-  if (state.phase !== "pending") return { taken: false, state, reason: "not_pending" };
-
-  return {
-    taken: true,
-    ...(state.customInstructions ? { customInstructions: state.customInstructions } : {}),
-    ...(state.continuationPrompt ? { continuationPrompt: state.continuationPrompt } : {}),
-    stopAfterCompaction: state.stopAfterCompaction,
-    state: { phase: "compacting" },
-  };
-}
-
-export function finishCompactRequest(): CompactRequestState {
-  return initialCompactRequestState();
-}
-
 export function buildCompactWarningMessage(): string {
   return [
     "Context usage is high and Pi's built-in auto-compaction threshold is approaching.",
@@ -164,18 +147,6 @@ export function buildCompactWarningMessage(): string {
     `If unfinished user-requested work remains and the current atomic step is complete, call \`${COMPACT_TOOL_NAME}\` as the only tool.`,
     `If unfinished work remains but the current step is not complete, finish the smallest safe step, then call \`${COMPACT_TOOL_NAME}\`.`,
   ].join(" ");
-}
-
-export function builtInAutoCompactThreshold(
-  contextWindow: unknown,
-  reserveTokens: unknown,
-): number | undefined {
-  const windowTokens = positiveInteger(contextWindow);
-  const reserve = positiveInteger(reserveTokens);
-  if (windowTokens === undefined) return undefined;
-  if (reserve === undefined) return undefined;
-
-  return windowTokens - reserve;
 }
 
 function warningMarginTokens(
@@ -213,11 +184,13 @@ export function decideCompactWarning({
   reserveTokens,
   state,
   warningMargin = DEFAULT_WARNING_MARGIN_TOKENS,
+  autoCompactionEnabled = true,
 }: {
   usage: ContextUsageInput | undefined;
   reserveTokens: number;
   state: CompactRequestState;
   warningMargin?: number;
+  autoCompactionEnabled?: boolean;
 }): WarningDecision {
   if (state.phase === "pending") return { inject: false, reason: "pending" };
   if (state.phase === "compacting") return { inject: false, reason: "compacting" };
@@ -246,7 +219,7 @@ export function decideCompactWarning({
     };
   }
 
-  if (tokens >= autoCompactThreshold) {
+  if (autoCompactionEnabled && tokens >= autoCompactThreshold) {
     return {
       inject: false,
       reason: "auto_threshold_reached",
