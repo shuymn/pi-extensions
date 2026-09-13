@@ -35,8 +35,6 @@ pi config
 - `fallback-model` — retry 可能な model error 時に fallback models へ切り替えます。
 - `message-history` — `ctrl+r` で過去の user messages を fuzzy find します。
 - `prompt-stash` — `ctrl+s` で prompt buffer を stash / restore します。
-- `sakana-ai-provider` — OpenAI Responses API 経由で Sakana AI Fugu models を登録します。
-- `sakura-ai-engine-provider` — Sakura AI Engine の model provider を登録します。
 - `session-title` — 最初の user message から session title を生成します。
 - `statusline` — TUI footer を project、model、context status 表示に置き換えます。
 - `subagents` — delegated work 用に isolated subagent sessions を起動します。
@@ -92,27 +90,3 @@ flag 以外の自由入力は skill prompt に追記されます。
 エージェントは `compact_context` で圧縮を要求できます。成功後は有効な Goal がなくても現在の作業を一度継続しますが、旧 Goal の自動継続は再開しません。`stopAfterCompaction` は継続を止め、Goal も停止します。標準の `/compact` 自体は自動継続の許可にはなりません。
 
 安全網として Pi 標準の `compaction.enabled: true` を使ってください。圧縮失敗や回復できないモデルエラー時は停止します。
-
-## Sakana AI provider
-
-モデルを選択する前に `SAKANA_API_KEY` を設定してください。
-
-- `sakana-ai/fugu`
-- `sakana-ai/fugu-ultra`
-- `sakana-ai/fugu-ultra-v1.1`
-- `sakana-ai/fugu-ultra-v1.0`
-- `sakana-ai/fugu-cyber`
-
-`fugu-ultra` は現在の Ultra release を参照し、現時点では `fugu-ultra-v1.1` の alias です。Cyber の利用には申請の承認と、Billing mode が **Pay as you go** の API キーが必要です。
-
-動的な料金設定や、課金対象の orchestration token 使用量を取得できないことにより、Pi はこれらのモデルの料金をローカルに算出できません。`$0` と表示されても無料ではなく不明という意味です。
-
-stream が最大2時間 idle のまま待機できるように、次の設定を `~/.pi/agent/settings.json` にマージしてください。
-
-```json
-{
-  "httpIdleTimeoutMs": 7200000
-}
-```
-
-これは global 設定であり、**すべての provider** の HTTP header/body idle timeout と既定の request timeout を延長します。

@@ -35,8 +35,6 @@ pi config
 - `fallback-model` — Switch to fallback models on retryable model errors.
 - `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
 - `prompt-stash` — Stash and restore the prompt buffer with `ctrl+s`.
-- `sakana-ai-provider` — Register Sakana AI Fugu models through the OpenAI Responses API.
-- `sakura-ai-engine-provider` — Register the Sakura AI Engine model provider.
 - `session-title` — Generate a session title from the first user message.
 - `statusline` — Replace the TUI footer with project, model, and context status.
 - `subagents` — Spawn isolated subagent sessions for delegated work.
@@ -92,27 +90,3 @@ The `compact` extension manages context compaction and automatic continuation to
 The agent can request compaction with `compact_context`. A successful request continues the current work once even without an active Goal; it does not reactivate an old Goal. `stopAfterCompaction` stops continuation and pauses the Goal. The standard `/compact` command does not itself authorize automatic continuation.
 
 Keep Pi's standard `compaction.enabled: true` as a safety net. Compaction failures and unrecoverable model errors stop execution.
-
-## Sakana AI provider
-
-Set `SAKANA_API_KEY` before selecting a model:
-
-- `sakana-ai/fugu`
-- `sakana-ai/fugu-ultra`
-- `sakana-ai/fugu-ultra-v1.1`
-- `sakana-ai/fugu-ultra-v1.0`
-- `sakana-ai/fugu-cyber`
-
-`fugu-ultra` tracks the current Ultra release, currently `fugu-ultra-v1.1`. Cyber requires an approved application and an API key with **Pay as you go** billing.
-
-Pi cannot calculate these models' costs locally because of dynamic pricing or unavailable orchestration-token usage. A displayed `$0` means unknown, not free.
-
-To allow streams to remain idle for up to two hours, merge this into `~/.pi/agent/settings.json`:
-
-```json
-{
-  "httpIdleTimeoutMs": 7200000
-}
-```
-
-This global setting extends HTTP header/body idle timeouts and the default request timeout for **all providers**.
