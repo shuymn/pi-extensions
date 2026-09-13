@@ -10,7 +10,8 @@
 
 ## Slash Command 公開方針
 
-- 明示的に人が呼ぶ操作（例: `/plan`, `/impl`, `/workflow`, `/workflows`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
+- 実行時の制御が必要な操作（例: `/workflow`, `/workflows`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
+- 固定の手順を渡す `/plan` と `/impl` は `prompts/` 配下の標準 prompt templates とし、`package.json` の `pi.prompts` で公開する。引数展開と処理中のメッセージ配送は Pi 標準に任せる。
 - packaged review / research は専用 Slash Command を持たず、`/workflow review_flow` / `/workflow research_flow` で起動する。
 
 ## Dynamic Tool Loading

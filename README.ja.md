@@ -1,6 +1,6 @@
 # pi-extensions
 
-個人用の pi coding-agent extensions をまとめた standalone pi package です。
+個人用の pi coding-agent extensions と prompt templates をまとめた standalone pi package です。
 
 ## 使い方
 
@@ -33,11 +33,8 @@ pi config
 - `create-pr` — `--create-pr` で既存の `/skill:create-pr` を bounded one-shot flow として起動します。
 - `disable-model` — 設定した provider または model を model selection から除外します。
 - `dynamic-workflows` — deterministic subagent workflows と packaged `review_flow` / `research_flow` presets を実行します。
-- `env` — CLI で model を指定しない場合、`PI_MODEL` または project settings から初期 model を選びます。
-- `exit` — `/quit` の alias として `/exit` を追加し、resume command を表示します。
 - `fallback-model` — retry 可能な model error 時に comma-separated fallback models へ切り替えます。
 - `message-history` — `ctrl+r` で過去の user messages を fuzzy find します。
-- `plan` — `/plan` と `/impl` の workflow prompts を追加します。
 - `prompt-stash` — `ctrl+s` で prompt buffer を stash / restore します。
 - `sakana-ai-provider` — OpenAI Responses API 経由で Sakana AI Fugu models を登録します。
 - `sakura-ai-engine-provider` — Sakura AI Engine の model provider を登録します。
@@ -48,6 +45,31 @@ pi config
 - `todo` — multi-step work 用の branch-local todos を管理します。
 - `tool-search` — 大型 tool 群を deferred に保ち、`search_tools` で一致する tools を有効化します。
 - `wt` — `/wt` で `git-wt` worktree を作成し、現在のセッションをそこで継続します。
+
+## Prompt templates
+
+- `/plan [追加指示]` — 調査して agent が実行できる `PLAN.md` を作ります。実装は開始しません。
+- `/impl [追加指示]` — `PLAN.md` を実装し、`todo` で進捗を追跡して日本語の実装メモを残します。
+
+`prompts/` 配下の標準 Pi prompt templates として配布し、`pi config` で有効化できます。`/impl` には `todo` extension が必要です。引数は標準の `$ARGUMENTS` で展開します。従来の先頭 `--` の特別扱いと、処理中の実行拒否は廃止し、処理中は Pi 標準のメッセージ配送に従います。
+
+## 本体機能への移行
+
+Pi 0.85.1 以降が必要です。`env` と `exit` を削除し、`plan` を2つの prompt templates に移行しました。旧 extension のパスを Pi 設定に直接指定している場合は削除してください。package 単位で読み込んでいる場合、パス変更は不要です。package filter で prompts を無効にしている場合は、`pi config` で `/plan` と `/impl` を有効にしてください。
+
+従来の環境変数 `PI_MODEL` や extension 設定 `env.PI_MODEL` は、`~/.pi/agent/settings.json` または信頼済み project の `.pi/settings.json` にある標準の既定値に置き換えます。たとえば `openai-codex/gpt-5.6-sol:high` は次のトップレベル設定に相当します。
+
+```json
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "high"
+}
+```
+
+通常の `/model`・`/thinking`・巡回操作による変更は現在のセッション内に留まります。model / thinking selector で明示的に Ctrl+S を押した場合だけ、global な起動時の既定値を保存します。新規セッションは設定した既定値を使い、再開セッションは保存済みのモデル状態を引き継ぎます。project 設定は global 設定より優先され、モデル別の `modelThinkingLevels` は全体の thinking 既定値より優先されます。1回だけ上書きする場合は `pi --model 'openai-codex/gpt-5.6-sol:high'` を使ってください。本体の shell tool が渡す `PI_MODEL` はセッション情報であり、extension の起動設定ではありません。
+
+`/exit` の代わりに `/quit` を使ってください。fullscreen mode では本体が終了時に resume hint を表示します。transcript を省略したい場合は `fullscreenExitOutput` を `"resume-hint"` に設定します。extension が提供していた regular mode の resume 表示と `PI_RESUME_COMMAND` による上書きは廃止しました。個人設定の自動移行は行いません。
 
 ## Sakana AI provider
 

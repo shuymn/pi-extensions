@@ -33,6 +33,9 @@
   "pi": {
     "extensions": [
       "./extensions"
+    ],
+    "prompts": [
+      "./prompts"
     ]
   },
   "peerDependencies": {

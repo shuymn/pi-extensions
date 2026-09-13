@@ -1,6 +1,6 @@
 # pi-extensions
 
-Personal pi coding-agent extensions packaged as a standalone pi package.
+Personal pi coding-agent extensions and prompt templates packaged as a standalone pi package.
 
 [日本語版](./README.ja.md)
 
@@ -35,11 +35,8 @@ pi config
 - `create-pr` — Launch the existing `/skill:create-pr` as a bounded one-shot flow with `--create-pr`.
 - `disable-model` — Hide configured providers or models from model selection.
 - `dynamic-workflows` — Run deterministic subagent workflows, including packaged `review_flow` and `research_flow` presets.
-- `env` — Select the initial model from `PI_MODEL` or project settings when the CLI does not specify one.
-- `exit` — Add `/exit` as an alias for `/quit` and print a resume command.
 - `fallback-model` — Switch to comma-separated fallback models on retryable model errors.
 - `message-history` — Fuzzy-find previous user messages with `ctrl+r`.
-- `plan` — Add `/plan` and `/impl` workflow prompts.
 - `prompt-stash` — Stash and restore the prompt buffer with `ctrl+s`.
 - `sakana-ai-provider` — Register Sakana AI Fugu models through the OpenAI Responses API.
 - `sakura-ai-engine-provider` — Register the Sakura AI Engine model provider.
@@ -50,6 +47,31 @@ pi config
 - `todo` — Manage branch-local todos for multi-step work.
 - `tool-search` — Keep large tool groups deferred and activate matching tools through `search_tools`.
 - `wt` — Add `/wt` to create a `git-wt` worktree and continue the current session there.
+
+## Prompt templates
+
+- `/plan [instructions]` — Investigate and write an agent-executable `PLAN.md` without starting implementation.
+- `/impl [instructions]` — Implement `PLAN.md`, track progress with `todo`, and keep Japanese implementation notes.
+
+These are standard Pi prompt templates under `prompts/`, enabled through `pi config`. `/impl` requires the `todo` extension. Arguments use Pi's standard `$ARGUMENTS` expansion; the old special handling of a leading `--` and the busy-session rejection are removed. While the agent is running, normal Pi message delivery applies.
+
+## Migration to built-in features
+
+Requires Pi 0.85.1 or later. `env` and `exit` have been removed, and `plan` is now a pair of prompt templates. Remove explicit paths to these old extensions from your Pi settings if configured; package-level discovery needs no path changes. If your package filter disables prompts, enable `/plan` and `/impl` with `pi config`.
+
+Replace the former `PI_MODEL` environment variable or `env.PI_MODEL` extension setting with built-in defaults in `~/.pi/agent/settings.json` or trusted project `.pi/settings.json`. For example, replace `openai-codex/gpt-5.6-sol:high` with these top-level settings:
+
+```json
+{
+  "defaultProvider": "openai-codex",
+  "defaultModel": "gpt-5.6-sol",
+  "defaultThinkingLevel": "high"
+}
+```
+
+Normal `/model`, `/thinking`, and cycling changes stay in the current session. Only an explicit Ctrl+S in the model or thinking selector saves a global startup default. Fresh sessions use the configured defaults; resumed sessions retain their saved model state. Project settings override global defaults, and per-model `modelThinkingLevels` settings take precedence over the global thinking default. For a one-run override, use `pi --model 'openai-codex/gpt-5.6-sol:high'`. Pi's shell-tool `PI_MODEL` variable is session metadata, not an extension startup setting.
+
+Use `/quit` instead of `/exit`. Fullscreen mode prints a resume hint on exit; set `fullscreenExitOutput` to `"resume-hint"` to omit the transcript. The extension's regular-mode resume output and `PI_RESUME_COMMAND` override are no longer provided. Personal settings are not migrated automatically.
 
 ## Sakana AI provider
 
