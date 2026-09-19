@@ -21,6 +21,7 @@ pi config
 
 ## Available extensions
 
+- `abliteration-provider` — Use abliteration.ai with an API key saved through Pi's `/login`.
 - `add-dir` — Register extra workspace directories for the current session.
 - `ask-user-question` — Let the agent ask structured clarification questions sequentially.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.

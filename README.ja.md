@@ -21,6 +21,7 @@ pi config
 
 ## 利用可能な extensions
 
+- `abliteration-provider` — Pi の `/login` で保存した API キーで abliteration.ai を利用します。
 - `add-dir` — 現在のセッションに追加の workspace directory を登録します。
 - `ask-user-question` — エージェントが構造化された確認質問を逐次実行できるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
