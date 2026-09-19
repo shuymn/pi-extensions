@@ -21,6 +21,7 @@ pi config
 
 ## Available extensions
 
+- `abliteration-provider` — Use abliteration.ai with an API key saved through Pi's `/login`.
 - `add-dir` — Register extra workspace directories for the current session.
 - `ask-user-question` — Let the agent ask structured clarification questions sequentially.
 - `codex-fast` — Control OpenAI Codex fast service tier with global settings persistence.
@@ -41,6 +42,12 @@ pi config
 - `tavily` — Expose Tavily search, extract, map, crawl, and auth tools.
 - `tool-search` — Activate deferred tool groups through `search_tools`.
 - `wt` — Create a `git-wt` worktree and continue the current session there with `/wt`.
+
+## abliteration.ai setup
+
+Enable `abliteration-provider` in `pi config` and restart Pi (or run `/reload`). Run `/login`, select **abliteration.ai**, and enter your API key from the [console](https://abliteration.ai/console). Pi saves it in `~/.pi/agent/auth.json`; no environment variable is required. Then select an `abliteration` model with `/model`.
+
+The static catalog includes all three [documented models](https://docs.abliteration.ai/models). Only `abliterated-model` accepts images. Large V2 exposes low/high/max reasoning (it cannot disable reasoning); the previous Large exposes off/high/max. Session-affinity headers are enabled for prompt-cache routing. Cost estimates use the [pricing page](https://docs.abliteration.ai/pricing), not the older rates in the Pi integration example.
 
 ## Prompt templates
 

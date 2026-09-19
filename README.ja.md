@@ -21,6 +21,7 @@ pi config
 
 ## 利用可能な extensions
 
+- `abliteration-provider` — Pi の `/login` で保存した API キーで abliteration.ai を利用します。
 - `add-dir` — 現在のセッションに追加の workspace directory を登録します。
 - `ask-user-question` — エージェントが構造化された確認質問を逐次実行できるようにします。
 - `codex-fast` — OpenAI Codex の fast service tier を global settings に永続化して制御します。
@@ -41,6 +42,12 @@ pi config
 - `tavily` — Tavily search、extract、map、crawl、auth tools を追加します。
 - `tool-search` — `search_tools` で deferred tool 群を有効化します。
 - `wt` — `/wt` で `git-wt` worktree を作成し、現在のセッションをそこで継続します。
+
+## abliteration.ai の設定
+
+`pi config` で `abliteration-provider` を有効にし、Pi を再起動するか `/reload` してください。`/login` で **abliteration.ai** を選び、[console](https://abliteration.ai/console) で取得した API キーを入力します。キーは Pi が `~/.pi/agent/auth.json` に保存するため、環境変数は不要です。その後、`/model` で `abliteration` のモデルを選択します。
+
+[公式モデル一覧](https://docs.abliteration.ai/models) の3モデルを静的に登録します。画像入力は `abliterated-model` のみ対応します。Large V2 の推論レベルは low/high/max（無効化不可）、旧 Large は off/high/max です。プロンプトキャッシュのルーティング用にセッション単位の affinity header を有効にしています。料金の概算には Pi 連携例の古い値ではなく、[料金ページ](https://docs.abliteration.ai/pricing) の値を使用します。
 
 ## Prompt templates
 
