@@ -29,6 +29,24 @@ describe("example saved workflows", () => {
     ]);
   });
 
+  test.each([
+    ["repo_inspection", 5],
+    ["adversarial_review", 6],
+  ] as const)("%s applies read-only policy to all %i agents", async (name, agentCount) => {
+    const workflow = await resolveSavedWorkflow(EXAMPLE_WORKFLOW_ROOT, name);
+    const policies: Array<string | undefined> = [];
+
+    await runWorkflow(workflow.script, {
+      cwd: "/repo",
+      agent: (_prompt, options) => {
+        policies.push(options.toolPolicy);
+        return {};
+      },
+    });
+
+    expect(policies).toEqual(Array(agentCount).fill("readOnly"));
+  });
+
   test("repo_inspection runs with fake read-only agents", async () => {
     const workflow = await resolveSavedWorkflow(EXAMPLE_WORKFLOW_ROOT, "repo_inspection");
     const calls: Array<{ prompt: string; label?: string; phase?: string }> = [];

@@ -45,16 +45,19 @@ const findings = await parallel([
   () =>
     agent(inspectTarget + " Lens: structure and main extension/runtime boundaries.", {
       label: "structure map",
+      toolPolicy: "readOnly",
       schema: lensSchema,
     }),
   () =>
     agent(inspectTarget + " Lens: most relevant tests and verification commands.", {
       label: "test surface",
+      toolPolicy: "readOnly",
       schema: lensSchema,
     }),
   () =>
     agent(inspectTarget + " Lens: risky seams, hidden coupling, and maintenance hazards.", {
       label: "risk scan",
+      toolPolicy: "readOnly",
       schema: lensSchema,
     }),
 ]);
@@ -67,6 +70,7 @@ const verification = await agent(
     JSON.stringify(findings),
   {
     label: "evidence verifier",
+    toolPolicy: "readOnly",
     schema: {
       type: "object",
       properties: { confirmed: { type: "array" }, discarded: { type: "array" } },
@@ -80,6 +84,7 @@ return await agent(
     JSON.stringify(verification),
   {
     label: "inspection synthesis",
+    toolPolicy: "readOnly",
     schema: {
       type: "object",
       properties: {

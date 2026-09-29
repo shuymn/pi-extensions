@@ -57,18 +57,18 @@ const attacks = await parallel([
     agent(
       attackTarget +
         " Lens: edge cases and boundary inputs (empty, null, large, malformed).",
-      { label: "edge attack", schema: findingsSchema },
+      { label: "edge attack", toolPolicy: "readOnly", schema: findingsSchema },
     ),
   () =>
     agent(
       attackTarget +
         " Lens: error paths, permission mistakes, and race/cancellation issues.",
-      { label: "error path attack", schema: findingsSchema },
+      { label: "error path attack", toolPolicy: "readOnly", schema: findingsSchema },
     ),
   () =>
     agent(
       attackTarget + " Lens: missing or weak tests and verification gaps; list exact commands.",
-      { label: "test gap attack", schema: findingsSchema },
+      { label: "test gap attack", toolPolicy: "readOnly", schema: findingsSchema },
     ),
 ]);
 
@@ -81,11 +81,13 @@ const verifyTarget =
 const verifications = await parallel([
   () => agent(verifyTarget + " Pass: confirm reproducibility.", {
     label: "finding verifier",
+    toolPolicy: "readOnly",
     schema: verdictSchema,
   }),
   () =>
     agent(verifyTarget + " Pass: independent cross-check; flag anything not independently reproducible.", {
       label: "verification cross-check",
+      toolPolicy: "readOnly",
       schema: verdictSchema,
     }),
 ]);
@@ -98,6 +100,7 @@ return await agent(
     JSON.stringify(verifications),
   {
     label: "adversarial synthesis",
+    toolPolicy: "readOnly",
     schema: {
       type: "object",
       properties: {
