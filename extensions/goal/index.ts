@@ -191,13 +191,6 @@ export default function goalExtension(pi: ExtensionAPI) {
       );
       return;
     }
-    const lastAssistant = [...event.context.contextMessages]
-      .reverse()
-      .find((message) => message.role === "assistant");
-    if (lastAssistant?.role === "assistant" && lastAssistant.stopReason === "length") {
-      stop(ctx, "failed", "Assistant reached its output limit; use /goal resume to continue.");
-      return;
-    }
     // Another extension or a queued user message already owns the next request.
     if (event.continue || event.context.pendingMessages.length > 0) return;
     goal = { ...goal, continuations: goal.continuations + 1 };
