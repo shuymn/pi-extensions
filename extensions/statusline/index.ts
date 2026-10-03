@@ -1,7 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
-import { CODEX_FAST_ICON, CODEX_FAST_STATUS_KEY, isOpenAICodexModel } from "../../lib/codex-fast";
+import {
+  isOpenAIResponsesModel,
+  OPENAI_FAST_ICON,
+  OPENAI_FAST_STATUS_KEY,
+} from "../../lib/openai-fast";
 import { isTuiMode } from "../../lib/tui";
 
 const ICON_BRANCH = "";
@@ -66,8 +70,8 @@ function modelName(model: unknown, ambiguousModelNames: ReadonlySet<string>): st
 }
 
 function modelPrefix(model: unknown, extensionStatuses: ReadonlyMap<string, string>): string {
-  return extensionStatuses.has(CODEX_FAST_STATUS_KEY) && isOpenAICodexModel(model)
-    ? `${CODEX_FAST_ICON} `
+  return extensionStatuses.has(OPENAI_FAST_STATUS_KEY) && isOpenAIResponsesModel(model)
+    ? `${OPENAI_FAST_ICON} `
     : "";
 }
 

@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from "bun:test";
 import type { ContextUsage, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { CODEX_FAST_ICON, CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON } from "../../lib/codex-fast";
+import {
+  OPENAI_FAST_ICON,
+  OPENAI_FAST_STATUS_KEY,
+  OPENAI_FAST_STATUS_ON,
+} from "../../lib/openai-fast";
 import { createFakePi, type ExecCall, type ExecResult } from "../../tests/support/fake-pi";
 import statuslineExtension from "./index";
 
@@ -121,20 +125,25 @@ describe("statusline custom footer", () => {
   });
 
   test.each([
-    { model: { name: "gpt", provider: "openai-codex" }, indicator: true },
-    { model: { name: "gpt", provider: "custom", api: "openai-codex-responses" }, indicator: true },
+    { model: { name: "gpt", provider: "openai", api: "openai-responses" }, indicator: true },
+    {
+      model: { name: "gpt", provider: "openai-codex", api: "openai-codex-responses" },
+      indicator: false,
+    },
+    { model: { name: "gpt", provider: "custom", api: "openai-responses" }, indicator: false },
+    { model: { name: "gpt", provider: "openai", api: "openai-completions" }, indicator: false },
     { model: { name: "claude", provider: "anthropic" }, indicator: false },
-  ])("When Codex fast is enabled, its icon shall be limited to Codex models: %j", async ({
+  ])("When OpenAI fast is enabled, its icon shall be limited to OpenAI Responses models: %j", async ({
     model,
     indicator,
   }) => {
     const f = setup({ model });
     await f.emit("session_start");
-    expect(f.text()).not.toContain(CODEX_FAST_ICON);
-    f.statuses.set(CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON);
-    expect(f.text().includes(CODEX_FAST_ICON)).toBe(indicator);
-    f.statuses.delete(CODEX_FAST_STATUS_KEY);
-    expect(f.text()).not.toContain(CODEX_FAST_ICON);
+    expect(f.text()).not.toContain(OPENAI_FAST_ICON);
+    f.statuses.set(OPENAI_FAST_STATUS_KEY, OPENAI_FAST_STATUS_ON);
+    expect(f.text().includes(OPENAI_FAST_ICON)).toBe(indicator);
+    f.statuses.delete(OPENAI_FAST_STATUS_KEY);
+    expect(f.text()).not.toContain(OPENAI_FAST_ICON);
   });
 
   test.each([
