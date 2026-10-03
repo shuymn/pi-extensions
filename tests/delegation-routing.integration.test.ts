@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
@@ -17,7 +17,9 @@ import {
 import {
   createAgentSession,
   createCodemodeExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
+  type ExtensionFactory,
   ModelRegistry,
   ModelRuntime,
   SessionManager,
@@ -27,7 +29,11 @@ import {
 import { Type } from "typebox";
 import fallbackModelExtension from "../extensions/fallback-model";
 import subagentsExtension from "../extensions/subagents";
-import { type DelegatedSessionOptions, runDelegatedSession } from "../lib/delegated-session";
+import {
+  type DelegatedSessionOptions,
+  inheritDelegatedTool,
+  runDelegatedSession,
+} from "../lib/delegated-session";
 import { configureFallbackRouter, createFallbackVirtualModel } from "../lib/fallback-router";
 
 const dirs: string[] = [];
@@ -356,6 +362,65 @@ test("terminal output cannot be nested or batched with sibling effects", async (
   ).toBe(true);
 }, 15_000);
 
+test.each([
+  "codemode",
+  "tool_search",
+])("WHEN the caller overrides %s, delegation SHALL preserve the custom implementation", async (name) => {
+  let step = 0;
+  const execute = mock(async () => ({ content: [], details: {} }));
+  const { defaults } = await fixture(() => (++step === 1 ? toolCall(name) : {}));
+  const result = await runDelegatedSession({
+    ...defaults,
+    allowedTools: [name],
+    customTools: [
+      {
+        name,
+        label: name,
+        description: "Custom caller tool",
+        parameters: Type.Object({}),
+        execute,
+      },
+    ],
+  });
+  expect(result.status).toBe("completed");
+  expect(execute).toHaveBeenCalledTimes(1);
+}, 15_000);
+
+test("WHEN a native CLI tool comes from another bundle, delegation SHALL rebind its session state by provenance", async () => {
+  let step = 0;
+  const { defaults } = await fixture(() =>
+    ++step === 1 ? toolCall("codemode", { code: 'store("owner", "child"); text("stored");' }) : {},
+  );
+  const parentExecute = mock(async () => ({ content: [], details: {} }));
+  // CLI bundles do not necessarily share schema identity with the SDK module.
+  const inherited = inheritDelegatedTool(
+    {
+      name: "codemode",
+      label: "Codemode",
+      description: "Native CLI codemode",
+      parameters: Type.Object({ code: Type.String() }),
+      execute: parentExecute,
+    },
+    {
+      name: "codemode",
+      exposure: "direct",
+      sourceInfo: { path: "builtin:codemode" },
+    } as any,
+  );
+  const result = await runDelegatedSession({
+    ...defaults,
+    allowedTools: ["codemode"],
+    customTools: [inherited],
+  });
+  expect(result.status).toBe("completed");
+  expect(parentExecute).not.toHaveBeenCalled();
+  expect(
+    result.evidence.branch.some(
+      (entry) => entry.type === "custom" && entry.customType === "codemode-store",
+    ),
+  ).toBe(true);
+}, 15_000);
+
 test("protected children share sandbox lifetime and wait for an in-progress final reset", async () => {
   const held = await fixture(() => toolCall("hold"));
   const quick = await fixture(() => ({}));
@@ -543,6 +608,376 @@ test("abort after session creation cancels without a request and still disposes"
   expect(result.status).toBe("cancelled");
   expect(calls).toHaveLength(0);
   expect(disposed).toHaveBeenCalledTimes(1);
+}, 15_000);
+
+async function parentSession(
+  data: Awaited<ReturnType<typeof fixture>>,
+  factories: ExtensionFactory[],
+  tools: string[],
+) {
+  const settingsManager = SettingsManager.inMemory(data.defaults.settings);
+  const loader = new DefaultResourceLoader({
+    cwd: data.defaults.cwd,
+    agentDir: data.defaults.cwd,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+    extensionFactories: [subagentsExtension, ...factories],
+  });
+  await loader.reload();
+  const { session } = await createAgentSession({
+    cwd: data.defaults.cwd,
+    agentDir: data.defaults.cwd,
+    modelRuntime: data.runtime,
+    model: data.models[0],
+    thinkingLevel: "off",
+    sessionManager: SessionManager.inMemory(data.defaults.cwd),
+    settingsManager,
+    resourceLoader: loader,
+    tools,
+  });
+  await session.bindExtensions({});
+  return session;
+}
+
+test("WHEN default delegation runs, it SHALL inherit custom/deferred/model-only and SDK tools without inventing unavailable tools", async () => {
+  let childTurns = 0;
+  let parentTurns = 0;
+  const data = await fixture((_model, context) => {
+    if (
+      context.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("inherit-child"),
+      )
+    ) {
+      if (childTurns++ === 0) return toolCall("custom_probe");
+      if (childTurns === 2) return toolCall("model_only");
+      return {};
+    }
+    return parentTurns++ === 0 ? toolCall("spawn_subagent", { prompt: "inherit-child" }) : {};
+  });
+  const observed = mock();
+  let session: Awaited<ReturnType<typeof parentSession>>;
+  session = await parentSession(
+    data,
+    [
+      (pi) => {
+        pi.registerTool({
+          name: "custom_probe",
+          label: "Probe",
+          description: "Probe",
+          exposure: "deferred",
+          parameters: Type.Object({}),
+          async execute(_id, _args, _signal, _update, ctx) {
+            observed("probe");
+            expect(ctx.sessionManager.getSessionId()).not.toBe(
+              session.sessionManager.getSessionId(),
+            );
+            expect(ctx.tools.map((tool) => tool.name).sort()).toEqual(
+              ["custom_probe", "powershell", "spawn_subagent"].sort(),
+            );
+            return { content: [], details: {} };
+          },
+        });
+        pi.registerTool({
+          name: "model_only",
+          label: "Model only",
+          description: "Declared only",
+          exposure: "model-only",
+          parameters: Type.Object({}),
+          async execute() {
+            observed("model-only");
+            return { content: [], details: {} };
+          },
+        });
+      },
+    ],
+    ["spawn_subagent", "custom_probe", "model_only", "powershell"],
+  );
+  try {
+    await session.prompt("parent-default");
+    expect(observed.mock.calls).toEqual([["probe"], ["model-only"]]);
+    const childRequests = data.calls.filter((call) =>
+      call.context.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("inherit-child"),
+      ),
+    );
+    expect(
+      getCurrentTools(childRequests[0].context.messages)
+        .map((tool) => tool.name)
+        .sort(),
+    ).toEqual(["custom_probe", "model_only", "powershell", "spawn_subagent"].sort());
+    const result = session.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "spawn_subagent",
+    );
+    expect(result?.role === "toolResult" && result.details).toMatchObject({ status: "completed" });
+  } finally {
+    session.dispose();
+  }
+}, 15_000);
+
+test("WHEN a read-only child inherits native file tools, it SHALL execute read, grep, find and ls", async () => {
+  let childTurns = 0;
+  let parentTurns = 0;
+  const names = ["read", "grep", "find", "ls"];
+  const data = await fixture((_model, context) => {
+    if (
+      context.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("native-read-child"),
+      )
+    ) {
+      const name = names[childTurns++];
+      if (!name) return {};
+      const args =
+        name === "read"
+          ? { path: "source.txt" }
+          : name === "grep"
+            ? { pattern: "offline", path: "." }
+            : name === "find"
+              ? { pattern: "*.txt", path: "." }
+              : { path: "." };
+      return toolCall(name, args);
+    }
+    return parentTurns++ === 0
+      ? toolCall("spawn_subagent", {
+          prompt: "native-read-child",
+          readOnly: true,
+          allowedTools: names,
+        })
+      : {};
+  });
+  writeFileSync(join(data.defaults.cwd, "source.txt"), "offline source\n");
+  const session = await parentSession(data, [], ["spawn_subagent", ...names]);
+  try {
+    // Native file tools have intrinsic read-only behavior but no SDK annotation.
+    expect(session.getAllTools().find((tool) => tool.name === "read")?.annotations).toBeUndefined();
+    await session.prompt("parent-native-read");
+    const result = session.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "spawn_subagent",
+    );
+    if (result?.role !== "toolResult") throw new Error("Missing delegation result");
+    expect(result.details).toMatchObject({ status: "completed" });
+    const evidence = (result.details as any).evidence;
+    const results = evidence.messages.filter((message: any) => message.role === "toolResult");
+    expect(results.map((message: any) => message.toolName)).toEqual(names);
+    for (const message of results) {
+      expect(message.isError).toBe(false);
+      expect(JSON.stringify(message.content)).toContain(
+        message.toolName === "read" || message.toolName === "grep" ? "offline" : "source.txt",
+      );
+    }
+  } finally {
+    session.dispose();
+  }
+}, 15_000);
+
+test.each([
+  "tavily_search",
+  "github_clone_workspace",
+])("WHEN the caller supplies a custom %s, subagents SHALL preserve its schema, callback and child context", async (name) => {
+  let childTurns = 0;
+  let parentTurns = 0;
+  const data = await fixture((_model, context) => {
+    if (
+      context.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("custom-name-child"),
+      )
+    )
+      return childTurns++ === 0 ? toolCall(name, { input: "child" }) : {};
+    return parentTurns++ === 0
+      ? toolCall("spawn_subagent", {
+          prompt: "custom-name-child",
+          readOnly: true,
+          allowedTools: [name],
+        })
+      : {};
+  });
+  const execute = mock(async (_id, args, signal, _update, ctx) => {
+    expect(args).toEqual({ input: "child" });
+    expect(signal?.aborted).toBe(false);
+    expect(ctx.sessionManager.getSessionId()).not.toBe(session.sessionManager.getSessionId());
+    expect(ctx.tools.map((tool: any) => tool.name)).toEqual([name]);
+    return { content: [{ type: "text" as const, text: "custom offline result" }], details: {} };
+  });
+  const session = await parentSession(
+    data,
+    [
+      (pi) => {
+        pi.registerTool({
+          name,
+          label: name,
+          description: "Custom offline implementation",
+          exposure: "deferred",
+          annotations: { readOnlyHint: true },
+          // Stock tools require query/url, so a faulty replacement fails validation offline.
+          parameters: Type.Object({ input: Type.String() }),
+          execute,
+        });
+      },
+    ],
+    ["spawn_subagent", name],
+  );
+  session.setActiveToolsByName(["spawn_subagent"]);
+  try {
+    await session.prompt("parent-custom-name");
+    expect(execute).toHaveBeenCalledTimes(1);
+    const result = session.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "spawn_subagent",
+    );
+    if (result?.role !== "toolResult") throw new Error("Missing delegation result");
+    expect(result.details).toMatchObject({ status: "completed" });
+    expect((result.details as any).evidence.messages).toContainEqual(
+      expect.objectContaining({ toolName: name, isError: false }),
+    );
+  } finally {
+    session.dispose();
+  }
+}, 15_000);
+
+test("WHEN a child inherits an orchestrator with allowedTools, nested execution SHALL use the child's restricted context", async () => {
+  let childTurns = 0;
+  let parentTurns = 0;
+  const denied = mock();
+  const data = await fixture((_model, context) => {
+    if (
+      context.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("restricted-child"),
+      )
+    )
+      return childTurns++ === 0 ? toolCall("orchestrator") : {};
+    return parentTurns++ === 0
+      ? toolCall("spawn_subagent", { prompt: "restricted-child", allowedTools: ["orchestrator"] })
+      : {};
+  });
+  const checked = mock();
+  const session = await parentSession(
+    data,
+    [
+      (pi) => {
+        pi.registerTool({
+          name: "orchestrator",
+          label: "Orchestrator",
+          description: "Calls tools",
+          parameters: Type.Object({}),
+          async execute(_id, _args, signal, _update, ctx) {
+            checked();
+            expect(ctx.tools.map((tool) => tool.name)).toEqual(["orchestrator"]);
+            const outcome = await ctx.executeTool("denied", {}, { signal });
+            expect(outcome.isError).toBe(true);
+            return { content: [], details: {} };
+          },
+        });
+        pi.registerTool({
+          name: "denied",
+          label: "Denied",
+          description: "Excluded",
+          parameters: Type.Object({}),
+          async execute() {
+            denied();
+            return { content: [], details: {} };
+          },
+        });
+      },
+    ],
+    ["spawn_subagent", "orchestrator", "denied"],
+  );
+  try {
+    await session.prompt("parent-restricted");
+    expect(checked).toHaveBeenCalledTimes(1);
+    expect(denied).not.toHaveBeenCalled();
+    expect(
+      session.messages.find(
+        (message) => message.role === "toolResult" && message.toolName === "spawn_subagent",
+      ),
+    ).toMatchObject({ isError: false });
+  } finally {
+    session.dispose();
+  }
+}, 15_000);
+
+test("WHEN SDK codemode and discovery are inherited, their state and tool access SHALL belong to the child", async () => {
+  let childTurns = 0;
+  let parentTurns = 0;
+  const data = await fixture((_model, context) => {
+    if (
+      context.messages.some(
+        (message) =>
+          message.role === "user" && JSON.stringify(message.content).includes("codemode-child"),
+      )
+    ) {
+      if (childTurns++ === 0) return toolCall("tool_search", { query: "deferred probe" });
+      if (childTurns === 2)
+        return toolCall("codemode", {
+          code: 'store("owner", "child"); text(await tools.deferred_probe({}));',
+        });
+      return {};
+    }
+    return parentTurns++ === 0
+      ? toolCall("spawn_subagent", {
+          prompt: "codemode-child",
+          allowedTools: ["codemode", "tool_search", "deferred_probe"],
+        })
+      : {};
+  });
+  const probe = mock();
+  const session = await parentSession(
+    data,
+    [
+      createCodemodeExtension(),
+      createToolSearchExtension(),
+      (pi) => {
+        pi.registerTool({
+          name: "deferred_probe",
+          label: "Probe",
+          description: "Deferred probe",
+          exposure: "deferred",
+          parameters: Type.Object({}),
+          async execute() {
+            probe();
+            return { content: [{ type: "text", text: "child probe" }], details: {} };
+          },
+        });
+      },
+    ],
+    ["spawn_subagent", "codemode", "tool_search", "deferred_probe"],
+  );
+  session.setActiveToolsByName(["spawn_subagent", "codemode", "tool_search"]);
+  const initialTools = session.getActiveToolNames();
+  try {
+    await session.prompt("parent-codemode");
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(session.getActiveToolNames()).toEqual(initialTools);
+    expect(
+      session.sessionManager
+        .getBranch()
+        .some((entry) => entry.type === "custom" && entry.customType === "codemode-store"),
+    ).toBe(false);
+    const result = session.messages.find(
+      (message) => message.role === "toolResult" && message.toolName === "spawn_subagent",
+    );
+    if (result?.role !== "toolResult") throw new Error("Missing delegation result");
+    expect(result.details).toMatchObject({ status: "completed" });
+    const evidence = (result.details as any).evidence;
+    expect(
+      evidence.branch.some(
+        (entry: any) => entry.type === "custom" && entry.customType === "codemode-store",
+      ),
+    ).toBe(true);
+    expect(
+      evidence.messages.find(
+        (message: any) => message.role === "toolResult" && message.toolName === "codemode",
+      ),
+    ).toMatchObject({ isError: false });
+  } finally {
+    session.dispose();
+  }
 }, 15_000);
 
 test("real codemode consumes subagent structured result and child evidence, not prose", async () => {

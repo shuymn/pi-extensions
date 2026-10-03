@@ -1,14 +1,14 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { join, resolve } from "node:path";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { ToolDefinition, ToolInfo } from "@earendil-works/pi-coding-agent";
 import type { DelegatedSessionOptions, DelegatedSessionResult } from "../../lib/delegated-session";
 import { withTimeout } from "../../tests/support/async";
 
 const calls: DelegatedSessionOptions[] = [];
 let runner: (options: DelegatedSessionOptions) => Promise<DelegatedSessionResult>;
-let oneShot = false;
 const cleanups: Array<ReturnType<typeof mock>> = [];
 const toolNames = [
   "tavily_search",
@@ -19,12 +19,12 @@ const toolNames = [
   "github_clone_workspace",
 ];
 mock.module("../../lib/delegated-session", () => ({
+  inheritDelegatedTool: (tool: AgentTool, info?: ToolInfo) => ({ ...tool, ...info }),
   runDelegatedSession: (options: DelegatedSessionOptions) => {
     calls.push(options);
     return runner(options);
   },
 }));
-mock.module("../../lib/one-shot-flow", () => ({ isOneShotPrimaryModeSelected: () => oneShot }));
 mock.module("../../lib/investigation-tools", () => ({
   createInvestigationToolset: () => {
     let closed = false;
@@ -35,6 +35,7 @@ mock.module("../../lib/investigation-tools", () => ({
     return {
       tools: toolNames.map((name) => ({
         name,
+        annotations: { readOnlyHint: true },
         async execute() {
           if (closed) throw new Error("Toolset closed");
           return { content: [], details: { usable: true } };
@@ -44,19 +45,6 @@ mock.module("../../lib/investigation-tools", () => ({
       cleanup,
     };
   },
-  isolatedAgentToolNames: (
-    _tools: unknown,
-    options: { readOnly?: boolean; extraTools?: string[] },
-  ) => [
-    "read",
-    "grep",
-    "find",
-    "ls",
-    "bash",
-    ...(options.readOnly ? [] : ["edit", "write"]),
-    ...toolNames,
-    ...(options.extraTools ?? []),
-  ],
 }));
 const { default: extension } = await import("./index");
 const dirs: string[] = [];
@@ -83,10 +71,35 @@ function setup() {
   dirs.push(cwd);
   const tools = new Map<string, ToolDefinition>();
   const handlers = new Map<string, (...args: any[]) => any>();
+  const callerTools = ["read", "grep", "find", "ls", "bash", "edit", "write", ...toolNames].map(
+    (name) =>
+      ({
+        name,
+        annotations: { readOnlyHint: !["bash", "edit", "write"].includes(name) },
+      }) as ToolDefinition,
+  );
   const pi = {
     registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
     on: (name: string, fn: any) => handlers.set(name, fn),
     getThinkingLevel: () => "high",
+    getAllTools: () =>
+      [
+        ...callerTools.map((tool) => ({
+          ...tool,
+          sourceInfo: {
+            path: toolNames.includes(tool.name)
+              ? resolve(
+                  import.meta.dirname,
+                  tool.name === "github_clone_workspace"
+                    ? "../add-dir/index.ts"
+                    : "../tavily/index.ts",
+                )
+              : "fixture",
+          },
+        })),
+        ...tools.values(),
+      ] as unknown as ToolInfo[],
+    getSettings: () => ({ retry: { enabled: false } }),
     exec: mock(),
     sendUserMessage: mock(),
     sendMessage: mock(),
@@ -97,12 +110,23 @@ function setup() {
     model,
     getSystemPrompt: () => "Parent prompt",
     modelRegistry: {},
+    get tools() {
+      return [...callerTools, ...tools.values()];
+    },
   };
   extension(pi as any);
   const invoke = (name: string, params: any = {}, signal?: AbortSignal, onUpdate?: any) =>
     tools.get(name)!.execute("id", params, signal, onUpdate, ctx as any);
   const emit = (name: string, event = {}) => handlers.get(name)!({ type: name, ...event }, ctx);
-  const value = { pi, ctx, tools, invoke, emit, shutdown: () => emit("session_shutdown") };
+  const value = {
+    pi,
+    ctx,
+    tools,
+    callerTools,
+    invoke,
+    emit,
+    shutdown: () => emit("session_shutdown"),
+  };
   shutdowns.push(value.shutdown);
   return value;
 }
@@ -112,7 +136,6 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   calls.length = 0;
   cleanups.length = 0;
-  oneShot = false;
   runner = async () => outcome();
 });
 function nested(options: DelegatedSessionOptions) {
@@ -128,7 +151,7 @@ function blockedRunner(options: DelegatedSessionOptions): Promise<DelegatedSessi
   );
 }
 
-test("registration keeps one-shot management exposure and structured outputs", () => {
+test("registration keeps native deferred discovery and structured outputs", () => {
   const first = setup();
   expect([...first.tools.keys()]).toEqual([
     "spawn_subagent",
@@ -138,9 +161,7 @@ test("registration keeps one-shot management exposure and structured outputs", (
   ]);
   expect(first.tools.get("get_subagent_result")?.exposure).toBe("deferred");
   expect(first.tools.get("spawn_subagent")?.outputSchema).toBeDefined();
-  expect(first.tools.get("spawn_subagent")?.parameters).not.toHaveProperty("properties.modelTier");
-  oneShot = true;
-  expect(setup().tools.get("stop_subagent")?.exposure).toBe("direct");
+  expect(first.tools.get("stop_subagent")?.exposure).toBe("deferred");
 });
 
 test("foreground returns structured result, evidence, usage and removes its record", async () => {
@@ -222,7 +243,69 @@ test("nested delegation intersects tools, enforces readOnly and depth, and rejec
   expect(nested(calls[1])).toBeUndefined();
   expect(calls[1].model).toBe(inheritedModel as any);
   expect(calls[1].thinkingLevel).toBe("high");
-  expect(nested(calls[0]).parameters).not.toHaveProperty("properties.modelTier");
+  expect(calls[1].settings).toBe(calls[0].settings);
+  expect(calls[1].settings).toEqual({ retry: { enabled: false } });
+});
+
+test("WHEN tools change in the caller, default children SHALL inherit the actual loadout", async () => {
+  const ctx = setup();
+  ctx.callerTools.length = 0;
+  const custom = {
+    name: "custom_mutation",
+    annotations: { readOnlyHint: false },
+  } as ToolDefinition;
+  ctx.callerTools.push(custom, { name: "powershell" } as ToolDefinition);
+  await ctx.invoke("spawn_subagent", { prompt: "first" });
+  expect(calls[0].allowedTools).toEqual(["custom_mutation", "powershell", "spawn_subagent"]);
+  expect(calls[0].customTools?.find((tool) => tool.name === custom.name)).toMatchObject(custom);
+  ctx.callerTools.push({ name: "later_tool" } as ToolDefinition);
+  await ctx.invoke("spawn_subagent", { prompt: "second" });
+  expect(calls[1].allowedTools).toContain("later_tool");
+  expect(calls[1].allowedTools).not.toContain("read");
+  expect(calls[1].allowedTools).not.toContain("tavily_search");
+  expect(calls[1].allowedTools).not.toContain("get_subagent_result");
+});
+
+test("WHEN readOnly is requested, children SHALL retain annotated custom reads but not mutation tools", async () => {
+  const ctx = setup();
+  ctx.callerTools.push(
+    { name: "custom_read", annotations: { readOnlyHint: true } } as ToolDefinition,
+    { name: "custom_write" } as ToolDefinition,
+    { name: "powershell" } as ToolDefinition,
+  );
+  await ctx.invoke("spawn_subagent", { prompt: "read", readOnly: true });
+  expect(calls[0].allowedTools).toContain("custom_read");
+  expect(calls[0].allowedTools).toContain("bash");
+  expect(calls[0].allowedTools).toContain("spawn_subagent");
+  expect(calls[0].allowedTools).not.toContain("custom_write");
+  expect(calls[0].allowedTools).not.toContain("powershell");
+  expect(calls[0].allowedTools).not.toContain("write");
+});
+
+test("WHEN a child explicitly restricts inherited custom tools, descendants SHALL not regain excluded tools", async () => {
+  const ctx = setup();
+  ctx.callerTools.push({ name: "custom_tool" } as ToolDefinition);
+  runner = async (options) => {
+    if (options.prompt === "parent") {
+      const child = nested(options);
+      await expect(
+        child.execute(
+          "id",
+          { prompt: "forbidden", allowedTools: ["write"] },
+          undefined,
+          undefined,
+          ctx.ctx as any,
+        ),
+      ).rejects.toThrow("unavailable tool: write");
+      await child.execute("id", { prompt: "child" }, undefined, undefined, ctx.ctx as any);
+    }
+    return outcome();
+  };
+  await ctx.invoke("spawn_subagent", {
+    prompt: "parent",
+    allowedTools: ["custom_tool", "spawn_subagent"],
+  });
+  expect(calls[1].allowedTools).toEqual(["custom_tool"]);
 });
 
 test("a provider failure never replays task", async () => {
@@ -284,24 +367,6 @@ test("background lifecycle is session-owned; stop propagates down the tree witho
   ).toMatchObject({ id, status: "stopped" });
 });
 
-test("background ignores launching tool abort, get charges usage only once, shutdown clears", async () => {
-  const ctx = setup();
-  const abort = new AbortController();
-  abort.abort();
-  const started = await ctx.invoke(
-    "spawn_subagent",
-    { prompt: "task", background: true },
-    abort.signal,
-  );
-  const id = (started.details as any).id;
-  expect(calls[0].signal?.aborted).toBe(false);
-  expect((await ctx.invoke("get_subagent_result", { id, wait: true })).usage?.totalTokens).toBe(3);
-  expect((await ctx.invoke("get_subagent_result", { id })).usage).toBeUndefined();
-  await ctx.shutdown();
-  expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 0 });
-  expect(cleanups[0]).toHaveBeenCalled();
-});
-
 test.each([
   false,
   true,
@@ -312,9 +377,13 @@ test.each([
   const controller = new AbortController();
   const removed = spyOn(controller.signal, "removeEventListener");
   try {
-    const started = await ctx.invoke("spawn_subagent", { prompt: "task", background: true });
-    const id = (started.details as { id: string }).id;
     if (alreadyAborted) controller.abort(new Error("wait cancelled"));
+    const started = await ctx.invoke(
+      "spawn_subagent",
+      { prompt: "task", background: true },
+      controller.signal,
+    );
+    const id = (started.details as { id: string }).id;
     const waiting = ctx.invoke("get_subagent_result", { id, wait: true }, controller.signal);
     if (!alreadyAborted) controller.abort(new Error("wait cancelled"));
     await expect(withTimeout(waiting, "Waiter remained blocked")).rejects.toThrow("wait cancelled");
@@ -336,7 +405,7 @@ test.each([
   }
 });
 
-test("WHEN a background waiter completes, it SHALL remove its abort listener", async () => {
+test("WHEN a background waiter completes, it SHALL clean up its listener, charge once and retire on shutdown", async () => {
   const ctx = setup();
   const child = Promise.withResolvers<DelegatedSessionResult>();
   runner = () => child.promise;
@@ -347,12 +416,16 @@ test("WHEN a background waiter completes, it SHALL remove its abort listener", a
     const id = (started.details as { id: string }).id;
     const waiting = ctx.invoke("get_subagent_result", { id, wait: true }, controller.signal);
     child.resolve(outcome());
-    expect((await withTimeout(waiting, "Waiter did not finish")).details).toMatchObject({
-      status: "completed",
-    });
+    const result = await withTimeout(waiting, "Waiter did not finish");
+    expect(result.details).toMatchObject({ status: "completed" });
+    expect(result.usage?.totalTokens).toBe(3);
+    expect((await ctx.invoke("get_subagent_result", { id })).usage).toBeUndefined();
     expect(removed).toHaveBeenCalledTimes(1);
     controller.abort();
     expect(calls[0].signal?.aborted).toBe(false);
+    await ctx.shutdown();
+    expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 0 });
+    expect(cleanups[0]).toHaveBeenCalledTimes(1);
   } finally {
     child.resolve(outcome());
     removed.mockRestore();

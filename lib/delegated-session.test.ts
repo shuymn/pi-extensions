@@ -1,7 +1,17 @@
 import { expect, mock, test } from "bun:test";
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import {
+  type ExtensionToolContext,
+  type ToolDefinition,
+  type ToolInfo,
+  wrapRegisteredTool,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { type DelegatedSessionOptions, runDelegatedSession } from "./delegated-session";
+import {
+  type DelegatedSessionOptions,
+  inheritDelegatedTool,
+  runDelegatedSession,
+} from "./delegated-session";
 
 function options(overrides: Partial<DelegatedSessionOptions> = {}): DelegatedSessionOptions {
   return {
@@ -26,6 +36,37 @@ function tool(name: string): ToolDefinition {
   };
 }
 
+test("WHEN a caller tool is inherited, nested access and cancellation SHALL use the child context", async () => {
+  const parentContext = { tools: [{ name: "parent_only" }] } as unknown as ExtensionToolContext;
+  const childContext = { tools: [{ name: "child_only" }] } as unknown as ExtensionToolContext;
+  const definition = tool("probe");
+  definition.execute = async (_id, _params, signal, _update, ctx) => {
+    expect(ctx).toBe(childContext);
+    expect(ctx.tools.map((tool) => tool.name)).toEqual(["child_only"]);
+    expect(signal?.aborted).toBe(true);
+    return { content: [], details: {} };
+  };
+  const wrapped = wrapRegisteredTool(
+    { definition } as Parameters<typeof wrapRegisteredTool>[0],
+    { createToolContext: () => parentContext } as unknown as Parameters<
+      typeof wrapRegisteredTool
+    >[1],
+  );
+  const inherited = inheritDelegatedTool(
+    wrapped as AgentTool,
+    {
+      annotations: { readOnlyHint: true },
+      exposure: "deferred",
+      sourceInfo: { path: "fixture" },
+    } as ToolInfo,
+  );
+  const controller = new AbortController();
+  controller.abort();
+  await inherited.execute("probe", {}, controller.signal, undefined, childContext);
+  expect(inherited.annotations?.readOnlyHint).toBe(true);
+  expect(inherited.exposure).toBe("deferred");
+});
+
 // WHEN a requested tool violates the child policy, the runner SHALL fail before discovery,
 // authentication, model execution, or any custom tool invocation.
 test.each([
@@ -48,10 +89,19 @@ test("readOnly rejects untrusted custom tools and overrides even under a built-i
   for (const name of ["read", "custom_network_write"]) {
     const definition = tool(name);
     const result = await runDelegatedSession(
-      options({ allowedTools: [name], customTools: [definition], readOnly: true }),
+      options({
+        allowedTools: [name],
+        customTools: [
+          inheritDelegatedTool(
+            { ...definition, execute: mock(async () => ({ content: [], details: {} })) },
+            { sourceInfo: { path: "custom" } } as ToolInfo,
+          ),
+        ],
+        readOnly: true,
+      }),
     );
     expect(result.error).toContain(`read-only policy denies tool: ${name}`);
-    expect(definition.execute).not.toHaveBeenCalled();
+    expect(result.evidence.messages).toEqual([]);
   }
 });
 

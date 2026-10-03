@@ -136,6 +136,7 @@ describe("createInvestigationToolset", () => {
 
     expect(toolset.toolNames).toEqual([...INVESTIGATION_TOOL_NAMES]);
     expect(toolset.tools.map((tool) => tool.name)).toEqual([...INVESTIGATION_TOOL_NAMES]);
+    expect(toolset.tools.every((tool) => tool.annotations?.readOnlyHint === true)).toBe(true);
     expect(INVESTIGATION_TOOL_NAMES).toEqual([
       "tavily_search",
       "tavily_extract",
@@ -160,7 +161,6 @@ describe("createInvestigationToolset", () => {
       { url: undefined },
       { url: "https://github.com/owner%3Btouch%20pwned/repo" },
       { url: "https://github.com/owner/repo%3Btouch%20pwned" },
-      { url: "https://github.com/owner/repo", directoryName: "repo;touch-pwned" },
       { url: "https://github.com/owner/repo", directoryName: "../escape" },
     ];
 

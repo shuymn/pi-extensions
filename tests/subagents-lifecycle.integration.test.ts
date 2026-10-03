@@ -164,7 +164,7 @@ async function fixture(waiter = false) {
           args,
           undefined,
           undefined,
-          runtime.session.extensionRunner.createContext(),
+          runtime.session.extensionRunner.createToolContext("fixture", undefined),
         );
     },
     async close() {
@@ -369,7 +369,7 @@ test("offline SDK cancelled switch/fork/tree recover, and successful replacement
     }
     f.cancelNext(undefined);
     const stale = session.getToolDefinition("spawn_subagent")!;
-    const staleContext = session.extensionRunner.createContext();
+    const staleContext = session.extensionRunner.createToolContext("late", undefined);
     expect((await f.runtime.fork(root, { position: "at" })).cancelled).toBe(false);
     expect(f.runtime.session).not.toBe(session);
     expect(

@@ -1,17 +1,21 @@
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import {
   type AgentSession,
   type AgentSessionEvent,
   createAgentSession,
   createBashToolDefinition,
+  createCodemodeExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
+  type ExtensionAPI,
   getAgentDir,
   type ModelRegistry,
   type SessionEntry,
   SessionManager,
   SettingsManager,
   type ToolDefinition,
+  type ToolInfo,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { configureFallbackRouter, getFallbackRouterCandidates } from "./fallback-router";
@@ -21,8 +25,19 @@ import { createProtectedBashOperations, type ExecFn, resetSandboxState } from ".
 import { getLatestAssistantMessageText } from "./session-messages";
 
 export const DELEGATED_RESULT_TOOL = "structured_output";
-const BUILTIN_TOOLS = new Set(["read", "grep", "find", "ls", "bash", "edit", "write"]);
+// SDK built-ins, for availability validation only; the caller supplies the child loadout.
+const BUILTIN_TOOLS = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "bash",
+  "powershell",
+  "edit",
+  "write",
+]);
 const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "ls", "bash"]);
+const inheritedToolSources = new WeakMap<ToolDefinition, string>();
 
 // The sandbox runtime is process-global. Lease its cleanup across all shared child runners,
 // so one extension/session finishing cannot reset another child's active protected bash.
@@ -109,6 +124,28 @@ export function addUsage(total: Usage, usage: Usage): void {
   for (const key of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) {
     total.cost[key] += usage.cost[key];
   }
+}
+
+/** Adapt Pi's wrapped caller tools without retaining the caller's nested execution context. */
+export function inheritDelegatedTool(tool: AgentTool, info?: ToolInfo): ToolDefinition {
+  const inherited: ToolDefinition = {
+    ...tool,
+    exposure: info?.exposure,
+    namespace: info?.namespace,
+    annotations:
+      info?.sourceInfo.path === `builtin:${tool.name}` &&
+      READ_ONLY_TOOLS.has(tool.name) &&
+      tool.name !== "bash"
+        ? { ...info.annotations, readOnlyHint: true }
+        : info?.annotations,
+    // Pi 1.0.0's wrapToolDefinition accepts a context override as its fifth argument,
+    // although AgentTool's lower-level type only declares four. Forward the child context:
+    // ctx.executeTool, cancellation and nested restrictions must belong to the child.
+    execute: (id, params, signal, update, ctx) =>
+      (tool.execute as ToolDefinition["execute"])(id, params, signal, update, ctx),
+  };
+  if (info) inheritedToolSources.set(inherited, info.sourceInfo.path);
+  return inherited;
 }
 
 function selectedToolDefinitions(options: DelegatedSessionOptions): ToolDefinition[] {
@@ -203,6 +240,27 @@ export async function runDelegatedSession(
         },
       } as ToolDefinition);
     }
+    // SDK sessions share schema identity. CLI built-ins may come from a separate bundle,
+    // so retain their source provenance too. Same-named custom tools remain custom.
+    const reboundTools = new Set<string>();
+    const toolExtensions = [
+      { factory: createCodemodeExtension(), source: "builtin:codemode" },
+      { factory: createToolSearchExtension(), source: "builtin:tool-search" },
+    ].flatMap(({ factory, source }) => {
+      let matched = false;
+      factory({
+        registerTool(tool: ToolDefinition) {
+          matched = customTools.some(
+            (inherited) =>
+              inherited.name === tool.name &&
+              (inherited.parameters === tool.parameters ||
+                inheritedToolSources.get(inherited) === source),
+          );
+          if (matched) reboundTools.add(tool.name);
+        },
+      } as ExtensionAPI);
+      return matched ? [factory] : [];
+    });
     const agentDir = getAgentDir();
     const settingsManager = SettingsManager.inMemory(
       options.settings ?? SettingsManager.create(options.cwd, agentDir).getSettings(),
@@ -217,6 +275,9 @@ export async function runDelegatedSession(
       noThemes: true,
       noContextFiles: true,
       extensionFactories: [
+        // These SDK tools capture appendEntry/setActiveTools. Recreate them in the child
+        // rather than borrowing the parent's stores, loadout or model execution context.
+        ...toolExtensions,
         (pi) => {
           pi.on("session_start", (_event, ctx) => {
             const candidates = getFallbackRouterCandidates(options.modelRegistry);
@@ -260,7 +321,7 @@ export async function runDelegatedSession(
       model: options.model,
       thinkingLevel: options.thinkingLevel,
       tools: [...allowed],
-      customTools,
+      customTools: customTools.filter((tool) => !reboundTools.has(tool.name)),
       resourceLoader: loader,
     }));
     if (options.name) session.setSessionName(options.name);
