@@ -1,71 +1,16 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { installTypeboxMock } from "../../tests/support/typebox-mock";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { DelegatedSessionOptions, DelegatedSessionResult } from "../../lib/delegated-session";
+import { withTimeout } from "../../tests/support/async";
 
-mock.module("../../lib/isolated-model-runtime", () => ({
-  createIsolatedModelRuntime: async (registry: unknown) => ({ parentRegistry: registry }),
-}));
-
-let uuidCounter = 0;
-mock.module("node:crypto", () => ({
-  randomUUID: () => `id${String(++uuidCounter).padStart(6, "0")}-0000-4000-8000-000000000000`,
-  randomBytes: (size: number) => Buffer.alloc(size),
-}));
-
-installTypeboxMock();
-
-mock.module("@earendil-works/pi-ai", () => ({
-  StringEnum: (values: readonly string[], options = {}) => ({ enum: values, ...options }),
-}));
-
-type Subscriber = (event: any) => void;
-type SessionBehavior = {
-  resultText?: string;
-  promptError?: Error;
-  promptStopReason?: string;
-  promptErrorMessage?: string;
-  blockPrompt?: boolean;
-  initialMessages?: Array<{ role: string; content: unknown }>;
-  disposeError?: Error;
-};
-type CreatedSession = any;
-
-type ToolDefinition = {
-  name: string;
-  label: string;
-  description: string;
-  parameters: unknown;
-  execute: (
-    toolCallId: string,
-    params: any,
-    signal: AbortSignal | undefined,
-    onUpdate:
-      | ((result: {
-          content: Array<{ type: "text"; text: string }>;
-          details: Record<string, unknown>;
-        }) => void)
-      | undefined,
-    ctx: FakeContext,
-  ) => Promise<{
-    content: Array<{ type: "text"; text: string }>;
-    details: Record<string, unknown>;
-  }>;
-};
-type EventHandler = (event: unknown, ctx: FakeContext) => Promise<void> | void;
-type FakeContext = ReturnType<typeof createContext>;
-
-const createAgentSessionCalls: any[] = [];
-const loaderInstances: any[] = [];
-const createdSessions: CreatedSession[] = [];
-const createdPis: any[] = [];
-const tempDirs: string[] = [];
-let nextBehaviors: SessionBehavior[] = [];
-
-const BUILTIN_TOOLS = new Set(["read", "write", "edit", "bash", "grep", "find", "ls"]);
-
-const INVESTIGATION_TOOL_NAMES = [
+const calls: DelegatedSessionOptions[] = [];
+let runner: (options: DelegatedSessionOptions) => Promise<DelegatedSessionResult>;
+let oneShot = false;
+const cleanups: Array<ReturnType<typeof mock>> = [];
+const toolNames = [
   "tavily_search",
   "tavily_extract",
   "tavily_map",
@@ -73,1484 +18,533 @@ const INVESTIGATION_TOOL_NAMES = [
   "tavily_auth_status",
   "github_clone_workspace",
 ];
-const SORTED_INVESTIGATION_TOOL_NAMES = [
-  "github_clone_workspace",
-  "tavily_auth_status",
-  "tavily_crawl",
-  "tavily_extract",
-  "tavily_map",
-  "tavily_search",
-];
-const DEFAULT_SUBAGENT_TOOL_NAMES = [
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "bash",
-  "edit",
-  "write",
-  ...INVESTIGATION_TOOL_NAMES,
-];
-const READ_ONLY_SUBAGENT_TOOL_NAMES = [
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "bash",
-  ...INVESTIGATION_TOOL_NAMES,
-];
-const DELEGATION_TOOL_NAME = "spawn_subagent";
-const SORTED_DELEGATING_INVESTIGATION_TOOL_NAMES = [
-  ...SORTED_INVESTIGATION_TOOL_NAMES,
-  DELEGATION_TOOL_NAME,
-].sort();
-const DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES = [
-  ...DEFAULT_SUBAGENT_TOOL_NAMES,
-  DELEGATION_TOOL_NAME,
-];
-const READ_ONLY_DELEGATING_SUBAGENT_TOOL_NAMES = [
-  ...READ_ONLY_SUBAGENT_TOOL_NAMES,
-  DELEGATION_TOOL_NAME,
-];
-const EXCLUDED_TOOL_NAMES = [
-  "deep_research",
-  "tavily_research",
-  "workflow",
-  "review",
-  "goal",
-  "get_subagent_result",
-  "stop_subagent",
-  "list_subagents",
-  "ask_user_question",
-  "structured_output",
-];
-
-function createSession(behavior: SessionBehavior) {
-  const subscribers: Subscriber[] = [];
-  let name = "";
-  let aborted = false;
-  let disposed = false;
-  let releasePrompt: (() => void) | undefined;
-  const promptStarted = Promise.withResolvers<void>();
-
-  const session = {
-    messages: [...(behavior.initialMessages ?? [])],
-    get name() {
-      return name;
-    },
-    get aborted() {
-      return aborted;
-    },
-    get disposed() {
-      return disposed;
-    },
-    get promptStarted() {
-      return promptStarted.promise;
-    },
-    releasePrompt() {
-      releasePrompt?.();
-    },
-    setSessionName(value: string) {
-      name = value;
-    },
-    subscribe(subscriber: Subscriber) {
-      subscribers.push(subscriber);
-      return () => {
-        const index = subscribers.indexOf(subscriber);
-        if (index >= 0) subscribers.splice(index, 1);
-      };
-    },
-    async prompt(prompt: string) {
-      (session as any).lastPrompt = prompt;
-      promptStarted.resolve();
-      for (const subscriber of subscribers) {
-        subscriber({ type: "message_start" });
-      }
-      for (const chunk of (behavior.resultText ?? "subagent result").match(/.{1,600}/gs) ?? []) {
-        for (const subscriber of subscribers) {
-          subscriber({
-            type: "message_update",
-            assistantMessageEvent: { type: "text_delta", delta: chunk },
-          });
-        }
-      }
-      if (behavior.blockPrompt) {
-        await new Promise<void>((resolve) => {
-          releasePrompt = resolve;
-        });
-      }
-      if (behavior.promptError) throw behavior.promptError;
-      session.messages.push({
-        role: "assistant",
-        content: [{ type: "text", text: behavior.resultText ?? "subagent result" }],
-        ...(behavior.promptStopReason ? { stopReason: behavior.promptStopReason } : {}),
-        ...(behavior.promptErrorMessage !== undefined
-          ? { errorMessage: behavior.promptErrorMessage }
-          : {}),
-      });
-    },
-    async abort() {
-      aborted = true;
-      releasePrompt?.();
-    },
-    dispose() {
-      disposed = true;
-      if (behavior.disposeError) throw behavior.disposeError;
-    },
-  };
-  createdSessions.push(session);
-  return session;
-}
-
-mock.module("@earendil-works/pi-coding-agent", () => ({
-  CONFIG_DIR_NAME: ".pi",
-  getAgentDir: () => "/agent-dir",
-  createBashToolDefinition: (_cwd: string, _options?: unknown) => ({
-    name: "bash",
-    label: "bash",
-    execute: async (..._args: unknown[]) => ({ content: [], details: undefined }),
-  }),
-  createLocalBashOperations: () => ({
-    exec: async (_command: string, _cwd: string, _options: unknown) => ({ exitCode: 0 }),
-  }),
-  DefaultResourceLoader: class {
-    options: unknown;
-    reloaded = false;
-    activeTools: string[] = [];
-    allowedTools = new Set<string>();
-    eventHandlers = new Map<string, Array<() => void>>();
-    registeredTools = new Set<string>();
-    constructor(options: unknown) {
-      this.options = options;
-      loaderInstances.push(this);
-    }
-    async reload() {
-      this.reloaded = true;
-      const options = this.options as {
-        extensionFactories?: Array<(pi: unknown) => void>;
-      };
-      for (const factory of options.extensionFactories ?? []) {
-        factory({
-          registerTool: (tool: { name: string }) => {
-            this.registeredTools.add(tool.name);
-          },
-          on: (eventName: string, handler: () => void) => {
-            this.eventHandlers.set(eventName, [
-              ...(this.eventHandlers.get(eventName) ?? []),
-              handler,
-            ]);
-          },
-          getActiveTools: () => [...this.activeTools],
-          setActiveTools: (tools: string[]) => {
-            this.activeTools = tools.filter(
-              (tool) =>
-                this.allowedTools.has(tool) &&
-                (BUILTIN_TOOLS.has(tool) || this.registeredTools.has(tool)),
-            );
-          },
-        });
-      }
-    }
-  },
-  SessionManager: {
-    inMemory: (cwd: string) => ({ kind: "in-memory", cwd }),
-  },
-  SettingsManager: {
-    create: (cwd: string, agentDir: string) => ({ cwd, agentDir }),
-  },
-  createAgentSession: async (options: any) => {
-    createAgentSessionCalls.push(options);
-    const loader = options.resourceLoader;
-    loader.allowedTools = new Set(options.tools ?? []);
-    // Register custom tools via the same path as extension-factory registered tools
-    for (const customTool of options.customTools ?? []) {
-      loader.registeredTools.add(customTool.name);
-    }
-    loader.activeTools = (options.tools ?? []).filter(
-      (tool: string) => BUILTIN_TOOLS.has(tool) || loader.registeredTools.has(tool),
-    );
-    for (const handler of loader.eventHandlers.get("session_start") ?? []) {
-      handler();
-    }
-    const session = createSession(nextBehaviors.shift() ?? {});
-    (session as any).activeTools = loader.activeTools;
-    (session as any).registeredTools = [...loader.registeredTools].sort();
-    (session as any).customTools = options.customTools ?? [];
-    return { session };
+mock.module("../../lib/delegated-session", () => ({
+  runDelegatedSession: (options: DelegatedSessionOptions) => {
+    calls.push(options);
+    return runner(options);
   },
 }));
-
-function createFakePi() {
-  const tools = new Map<string, ToolDefinition>();
-  const events = new Map<string, EventHandler[]>();
-  let thinkingLevel = "medium";
-
-  const pi = {
-    tools,
-    events,
-    setThinkingLevel(value: string) {
-      thinkingLevel = value;
-    },
-    registerTool(definition: ToolDefinition) {
-      tools.set(definition.name, definition);
-    },
-    on(eventName: string, handler: EventHandler) {
-      events.set(eventName, [...(events.get(eventName) ?? []), handler]);
-    },
-    getThinkingLevel: () => thinkingLevel,
-  };
-  createdPis.push(pi);
-  return pi;
-}
-
-type ContextOverrides = Partial<{
-  cwd: string;
-  modelRegistry: { id: string; find?: (provider: string, model: string) => unknown };
-  model: unknown;
-  getSystemPrompt: () => string;
-}>;
-
-function tempProjectSettings(settings: unknown): string {
-  const dir = mkdtempSync(join(tmpdir(), "pi-subagents-test-"));
-  tempDirs.push(dir);
-  mkdirSync(join(dir, ".pi"), { recursive: true });
-  writeFileSync(join(dir, ".pi", "settings.json"), `${JSON.stringify(settings)}\n`, "utf8");
-  return dir;
-}
-
-function createContext(overrides: ContextOverrides = {}) {
+mock.module("../../lib/one-shot-flow", () => ({ isOneShotPrimaryModeSelected: () => oneShot }));
+mock.module("../../lib/settings", () => ({
+  projectSettingsPath: (cwd: string) => join(cwd, ".pi", "settings.json"),
+  readExtensionSettings: (key: string, { projectPath }: { projectPath: string }) =>
+    existsSync(projectPath) ? (JSON.parse(readFileSync(projectPath, "utf8"))[key] ?? {}) : {},
+}));
+mock.module("../../lib/investigation-tools", () => ({
+  createInvestigationToolset: () => {
+    let closed = false;
+    const cleanup = mock(async () => {
+      closed = true;
+    });
+    cleanups.push(cleanup);
+    return {
+      tools: toolNames.map((name) => ({
+        name,
+        async execute() {
+          if (closed) throw new Error("Toolset closed");
+          return { content: [], details: { usable: true } };
+        },
+      })),
+      toolNames,
+      cleanup,
+    };
+  },
+  isolatedAgentToolNames: (
+    _tools: unknown,
+    options: { readOnly?: boolean; extraTools?: string[] },
+  ) => [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "bash",
+    ...(options.readOnly ? [] : ["edit", "write"]),
+    ...toolNames,
+    ...(options.extraTools ?? []),
+  ],
+}));
+const { default: extension } = await import("./index");
+const dirs: string[] = [];
+const shutdowns: Array<() => Promise<void>> = [];
+function outcome(status: DelegatedSessionResult["status"] = "completed"): DelegatedSessionResult {
   return {
-    cwd: "/repo",
-    modelRegistry: { id: "registry" },
-    model: { name: "model" },
-    getSystemPrompt: () => "parent system prompt",
-    ...overrides,
+    status,
+    result: { answer: 42 },
+    text: "Result",
+    usage: {
+      input: 1,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 3,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    evidence: { messages: [], branch: [] },
+    ...(status === "failed" ? { error: "original quota error" } : {}),
   };
 }
-
-async function loadExtension() {
-  return (await import("./index")).default;
+function setup() {
+  const cwd = mkdtempSync(join(tmpdir(), "subagents-policy-"));
+  dirs.push(cwd);
+  const tools = new Map<string, ToolDefinition>();
+  const handlers = new Map<string, (...args: any[]) => any>();
+  const pi = {
+    registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
+    on: (name: string, fn: any) => handlers.set(name, fn),
+    getThinkingLevel: () => "high",
+    exec: mock(),
+    sendUserMessage: mock(),
+    sendMessage: mock(),
+  };
+  const model = { provider: "test", id: "primary" };
+  const ctx = {
+    cwd,
+    model,
+    getSystemPrompt: () => "Parent prompt",
+    modelRegistry: {
+      find: mock((provider: string, id: string) =>
+        id === "missing" ? undefined : { provider, id },
+      ),
+    },
+  };
+  extension(pi as any);
+  const invoke = (name: string, params: any = {}, signal?: AbortSignal, onUpdate?: any) =>
+    tools.get(name)!.execute("id", params, signal, onUpdate, ctx as any);
+  const emit = (name: string, event = {}) => handlers.get(name)!({ type: name, ...event }, ctx);
+  const value = { pi, ctx, tools, invoke, emit, shutdown: () => emit("session_shutdown") };
+  shutdowns.push(value.shutdown);
+  return value;
 }
-
-async function waitForCreatedSession(index = 0): Promise<CreatedSession> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (createdSessions[index]) return createdSessions[index];
-    await Promise.resolve();
-  }
-  throw new Error(`session ${index} was not created`);
-}
-
-function findDelegationTool(session: CreatedSession): ToolDefinition {
-  const tool = session.customTools.find(
-    (candidate: ToolDefinition) => candidate.name === DELEGATION_TOOL_NAME,
-  );
-  if (!tool) throw new Error("spawn_subagent tool not found");
-  return tool;
-}
-
-async function cleanupRecords() {
-  for (const session of createdSessions) session.releasePrompt();
-  for (const pi of createdPis) {
-    const handler = pi.events.get("session_shutdown")?.[0];
-    if (handler) await handler({}, createContext());
-  }
-  createdPis.splice(0);
-}
-
+runner = async () => outcome();
 afterEach(async () => {
-  await cleanupRecords();
-  uuidCounter = 0;
-  nextBehaviors = [];
-  createAgentSessionCalls.splice(0);
-  loaderInstances.splice(0);
-  createdSessions.splice(0);
-  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const shutdown of shutdowns.splice(0)) await shutdown();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  calls.length = 0;
+  cleanups.length = 0;
+  oneShot = false;
+  runner = async () => outcome();
+});
+function nested(options: DelegatedSessionOptions) {
+  return options.customTools!.find((tool) => tool.name === "spawn_subagent")!;
+}
+async function waitForCalls(count: number) {
+  for (let i = 0; i < 100 && calls.length < count; i++) await Bun.sleep(1);
+  expect(calls.length).toBe(count);
+}
+function blockedRunner(options: DelegatedSessionOptions): Promise<DelegatedSessionResult> {
+  return new Promise((resolve) =>
+    options.signal!.addEventListener("abort", () => resolve(outcome("cancelled")), { once: true }),
+  );
+}
+
+test("registration keeps one-shot management exposure and structured outputs", () => {
+  const first = setup();
+  expect([...first.tools.keys()]).toEqual([
+    "spawn_subagent",
+    "get_subagent_result",
+    "stop_subagent",
+    "list_subagents",
+  ]);
+  expect(first.tools.get("get_subagent_result")?.exposure).toBe("deferred");
+  expect(first.tools.get("spawn_subagent")?.outputSchema).toBeDefined();
+  oneShot = true;
+  expect(setup().tools.get("stop_subagent")?.exposure).toBe("direct");
 });
 
-describe("subagents extension", () => {
-  test("registers four subagent tools and shutdown cleanup hook", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-
-    extension(pi as never);
-
-    expect([...pi.tools.keys()].sort()).toEqual([
-      "get_subagent_result",
-      "list_subagents",
-      "spawn_subagent",
-      "stop_subagent",
-    ]);
-    expect([...pi.events.keys()]).toEqual(["session_shutdown"]);
-    expect(pi.tools.get("spawn_subagent")!.parameters).toMatchObject({
-      type: "object",
-      properties: {
-        prompt: { type: "string" },
-        background: { type: "boolean", optional: true },
-        readOnly: { type: "boolean", optional: true },
-      },
-    });
-    expect(pi.tools.get("spawn_subagent")!.parameters).toMatchObject({
-      properties: {
-        modelTier: { enum: ["medium", "small"], optional: true },
-      },
-    });
-    expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Default subagents receive read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent",
-    );
-    const modelTierDescription = (pi.tools.get("spawn_subagent")!.parameters as any).properties
-      .modelTier.description;
-    expect(modelTierDescription).toContain(
-      'Omitted: inherit at top level, "medium" in delegated sessions',
-    );
-    expect(modelTierDescription).toContain(
-      'Use "small" only for bounded, easy-to-check investigation',
-    );
-    expect(modelTierDescription).toContain("verify its results");
-    expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "within one additional delegation level",
-    );
-    expect(pi.tools.get("spawn_subagent")!.description).toContain(
-      "Use get_subagent_result to check status or retrieve the result.",
-    );
-    expect(pi.tools.get("spawn_subagent")!.description).not.toContain("notifies when complete");
-    expect(
-      (pi.tools.get("spawn_subagent")!.parameters as any).properties.background.description,
-    ).toContain("use get_subagent_result to check status or retrieve the result");
-    expect(modelTierDescription).toContain("unavailable candidates fall back to the current model");
+test("foreground returns structured result, evidence, usage and removes its record", async () => {
+  const ctx = setup();
+  const updates: any[] = [];
+  runner = async (options) => {
+    options.onText?.("streamed");
+    return outcome();
+  };
+  const result = await ctx.invoke(
+    "spawn_subagent",
+    { prompt: "task", schema: { type: "object" } },
+    undefined,
+    (value: any) => updates.push(value),
+  );
+  expect(result.structuredContent).toMatchObject({
+    status: "completed",
+    result: { answer: 42 },
+    evidence: { messages: [] },
   });
+  expect(result.usage?.totalTokens).toBe(3);
+  expect(updates).toHaveLength(1);
+  expect(calls[0].schema).toEqual({ type: "object" });
+  expect(calls[0].model).toBe(ctx.ctx.model as any);
+  expect(calls[0].allowedTools).toContain("spawn_subagent");
+  expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 0 });
+});
 
-  test("foreground spawn runs an isolated subagent session and returns streamed result", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("high");
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "final answer" }];
-    const updates: string[] = [];
+test.each([
+  { allowedTools: [] },
+  { allowedTools: ["tavily_search", "tavily_extract"] },
+])("caller may restrict child task tools to %j", async ({ allowedTools }) => {
+  const ctx = setup();
+  await ctx.invoke("spawn_subagent", { prompt: "task", allowedTools });
+  expect(calls[0].allowedTools).toEqual(allowedTools);
+  expect(nested(calls[0])).toBeUndefined();
+  await expect(
+    ctx.invoke("spawn_subagent", { prompt: "task", allowedTools: ["workflow"] }),
+  ).rejects.toThrow("unavailable tool: workflow");
+});
 
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Investigate this", description: "Investigation" },
-        undefined,
-        (update: { content: Array<{ type: "text"; text: string }> }) =>
-          updates.push(update.content[0].text),
-        createContext(),
+test("nested delegation intersects tools, enforces readOnly and depth, and rejects background", async () => {
+  const ctx = setup();
+  let childTools: readonly string[] = [];
+  runner = async (options) => {
+    if (options.prompt === "parent") {
+      const tool = nested(options);
+      const execute = (params: any) =>
+        tool.execute("nested", params, undefined, undefined, ctx.ctx as any);
+      expect((await execute({ prompt: "task", background: true })).details).toMatchObject({
+        status: "rejected",
+      });
+      await expect(execute({ prompt: "task", allowedTools: ["read"] })).rejects.toThrow(
+        "unavailable tool: read",
       );
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "final answer" }],
-      details: { id: "id000001", status: "completed" },
-    });
-    expect(updates).toEqual(["Subagent id000001 running...\n\nfinal answer"]);
-    expect(createdSessions[0].name).toBe("subagent#id000001");
-    expect(createdSessions[0].disposed).toBe(true);
-    expect(createdSessions[0].registeredTools).toEqual(SORTED_DELEGATING_INVESTIGATION_TOOL_NAMES);
-    expect(createdSessions[0].activeTools).toEqual(DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES);
-    expect(createAgentSessionCalls[0]).toMatchObject({
-      cwd: "/repo",
-      agentDir: "/agent-dir",
-      thinkingLevel: "high",
-      tools: DEFAULT_DELEGATING_SUBAGENT_TOOL_NAMES,
-      model: { name: "model" },
-      modelRuntime: { parentRegistry: { id: "registry" } },
-    });
-    expect(
-      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
-    ).toEqual([...INVESTIGATION_TOOL_NAMES, DELEGATION_TOOL_NAME]);
-    for (const excluded of EXCLUDED_TOOL_NAMES) {
-      expect(createAgentSessionCalls[0].tools).not.toContain(excluded);
-      expect(createdSessions[0].registeredTools).not.toContain(excluded);
+      await expect(
+        execute({ prompt: "task", allowedTools: ["write"], readOnly: false }),
+      ).rejects.toThrow("unavailable tool: write");
+      await execute({ prompt: "child", readOnly: false });
+    } else {
+      childTools = options.allowedTools;
+      expect(options.readOnly).toBe(true);
+      expect(nested(options)).toBeUndefined();
     }
-    expect(loaderInstances[0].reloaded).toBe(true);
-    expect(loaderInstances[0].options.noExtensions).toBe(true);
-    expect(loaderInstances[0].options.extensionFactories).toEqual([]);
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain("parent system prompt");
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain("Working directory: /repo");
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Available tools: read, grep, find, ls, bash, edit, write, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
-    );
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Use spawn_subagent for independent focused checks when they materially improve confidence; verify and integrate the results.",
-    );
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Stop when complete or blocked by unavailable input, access, or authorization",
-    );
-    expect(loaderInstances[0].options.systemPromptOverride()).not.toContain(
-      "Do not call or simulate subagents recursively.",
-    );
+    return outcome();
+  };
+  await ctx.invoke("spawn_subagent", {
+    prompt: "parent",
+    readOnly: true,
+    allowedTools: ["tavily_search", "spawn_subagent"],
   });
+  expect(childTools).toEqual(["tavily_search"]);
+  expect(calls).toHaveLength(2);
+});
 
-  test("readOnly spawn restricts tools and adds read-only system prompt rule", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "read only result" }];
+test("tier is initial selection only; a provider failure never replays task", async () => {
+  const ctx = setup();
+  mkdirSync(join(ctx.ctx.cwd, ".pi"));
+  writeFileSync(
+    join(ctx.ctx.cwd, ".pi", "settings.json"),
+    JSON.stringify({
+      subagents: { modelTiers: { small: ["test/missing", "test/small:low", "test/other"] } },
+    }),
+  );
+  runner = async () => outcome("failed");
+  const result = await ctx.invoke("spawn_subagent", { prompt: "mutate once", modelTier: "small" });
+  expect(calls).toHaveLength(1);
+  expect(calls[0].model.id).toBe("small");
+  expect(calls[0].thinkingLevel).toBe("low");
+  expect(result.isError).toBe(true);
+  expect(result.structuredContent).toMatchObject({
+    error: "original quota error",
+    status: "error",
+  });
+});
 
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Inspect", readOnly: true },
+test("missing tiers inherit, invalid tier rejects and already-aborted foreground never starts", async () => {
+  const ctx = setup();
+  await ctx.invoke("spawn_subagent", { prompt: "task", modelTier: "medium" });
+  expect(calls[0].model).toBe(ctx.ctx.model as any);
+  await expect(
+    ctx.invoke("spawn_subagent", { prompt: "task", modelTier: "large" }),
+  ).rejects.toThrow("modelTier must be");
+  const controller = new AbortController();
+  controller.abort();
+  expect(
+    (await ctx.invoke("spawn_subagent", { prompt: "task" }, controller.signal)).details,
+  ).toMatchObject({ status: "stopped" });
+  expect(calls).toHaveLength(1);
+});
+
+test("background lifecycle is session-owned; stop propagates down the tree without a wake", async () => {
+  const first = setup();
+  const second = setup();
+  runner = async (options) => {
+    if (options.prompt === "parent")
+      return await nested(options)
+        .execute("nested", { prompt: "child" }, undefined, undefined, first.ctx as any)
+        .then(() => outcome("cancelled"));
+    return blockedRunner(options);
+  };
+  const started = await first.invoke("spawn_subagent", { prompt: "parent", background: true });
+  const id = (started.details as any).id;
+  await waitForCalls(2);
+  expect((await second.invoke("list_subagents")).details).toMatchObject({ count: 0 });
+  expect((await second.invoke("stop_subagent", { id })).details).toMatchObject({
+    status: "not_found",
+  });
+  await second.shutdown();
+  expect(calls[0].signal?.aborted).toBe(false);
+  const stopped = await first.invoke("stop_subagent", { id });
+  expect(stopped.details).toMatchObject({ status: "stopped" });
+  expect(calls.every((options) => options.signal?.aborted)).toBe(true);
+  expect(first.pi.sendUserMessage).not.toHaveBeenCalled();
+  expect(first.pi.sendMessage).not.toHaveBeenCalled();
+  expect(
+    (await first.invoke("get_subagent_result", { id, wait: true })).structuredContent,
+  ).toMatchObject({ id, status: "stopped" });
+});
+
+test("background ignores launching tool abort, get charges usage only once, shutdown clears", async () => {
+  const ctx = setup();
+  const abort = new AbortController();
+  abort.abort();
+  const started = await ctx.invoke(
+    "spawn_subagent",
+    { prompt: "task", background: true },
+    abort.signal,
+  );
+  const id = (started.details as any).id;
+  expect(calls[0].signal?.aborted).toBe(false);
+  expect((await ctx.invoke("get_subagent_result", { id, wait: true })).usage?.totalTokens).toBe(3);
+  expect((await ctx.invoke("get_subagent_result", { id })).usage).toBeUndefined();
+  await ctx.shutdown();
+  expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 0 });
+  expect(cleanups[0]).toHaveBeenCalled();
+});
+
+test.each([
+  false,
+  true,
+])("WHEN a background waiter is cancelled (already aborted: %s), the child SHALL remain retrievable", async (alreadyAborted) => {
+  const ctx = setup();
+  const child = Promise.withResolvers<DelegatedSessionResult>();
+  runner = () => child.promise;
+  const controller = new AbortController();
+  const removed = spyOn(controller.signal, "removeEventListener");
+  try {
+    const started = await ctx.invoke("spawn_subagent", { prompt: "task", background: true });
+    const id = (started.details as { id: string }).id;
+    if (alreadyAborted) controller.abort(new Error("wait cancelled"));
+    const waiting = ctx.invoke("get_subagent_result", { id, wait: true }, controller.signal);
+    if (!alreadyAborted) controller.abort(new Error("wait cancelled"));
+    await expect(withTimeout(waiting, "Waiter remained blocked")).rejects.toThrow("wait cancelled");
+    if (!alreadyAborted) expect(removed).toHaveBeenCalledTimes(1);
+    expect(calls[0].signal?.aborted).toBe(false);
+    expect((await ctx.invoke("get_subagent_result", { id })).details).toMatchObject({
+      id,
+      status: "running",
+    });
+    expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 1 });
+    child.resolve(outcome());
+    const result = await ctx.invoke("get_subagent_result", { id, wait: true });
+    expect(result.details).toMatchObject({ id, status: "completed" });
+    expect(result.usage?.totalTokens).toBe(3);
+    expect((await ctx.invoke("get_subagent_result", { id })).usage).toBeUndefined();
+  } finally {
+    child.resolve(outcome());
+    removed.mockRestore();
+  }
+});
+
+test("WHEN a background waiter completes, it SHALL remove its abort listener", async () => {
+  const ctx = setup();
+  const child = Promise.withResolvers<DelegatedSessionResult>();
+  runner = () => child.promise;
+  const controller = new AbortController();
+  const removed = spyOn(controller.signal, "removeEventListener");
+  try {
+    const started = await ctx.invoke("spawn_subagent", { prompt: "task", background: true });
+    const id = (started.details as { id: string }).id;
+    const waiting = ctx.invoke("get_subagent_result", { id, wait: true }, controller.signal);
+    child.resolve(outcome());
+    expect((await withTimeout(waiting, "Waiter did not finish")).details).toMatchObject({
+      status: "completed",
+    });
+    expect(removed).toHaveBeenCalledTimes(1);
+    controller.abort();
+    expect(calls[0].signal?.aborted).toBe(false);
+  } finally {
+    child.resolve(outcome());
+    removed.mockRestore();
+  }
+});
+
+test("foreground abort and shutdown cancel owned work and late delegation is rejected", async () => {
+  const ctx = setup();
+  runner = blockedRunner;
+  const controller = new AbortController();
+  const pending = ctx.invoke("spawn_subagent", { prompt: "task" }, controller.signal);
+  await waitForCalls(1);
+  controller.abort();
+  expect((await pending).details).toMatchObject({ status: "stopped" });
+  expect(
+    (
+      await nested(calls[0]).execute(
+        "late",
+        { prompt: "late" },
         undefined,
         undefined,
-        createContext(),
+        ctx.ctx as any,
+      )
+    ).details,
+  ).toMatchObject({ status: "error" });
+  const started = await ctx.invoke("spawn_subagent", { prompt: "other", background: true });
+  await ctx.shutdown();
+  expect(calls[1].signal?.aborted).toBe(true);
+  expect(
+    (await ctx.invoke("get_subagent_result", { id: (started.details as any).id })).details,
+  ).toMatchObject({ status: "not_found" });
+});
+
+// WHEN an owner leaves, descendants SHALL settle before its investigation resources close.
+test.each([
+  "session_before_switch",
+  "session_before_fork",
+  "session_before_tree",
+  "session_shutdown",
+])("%s waits for deferred descendant cancellation and blocks late spawn/progress", async (event) => {
+  const ctx = setup();
+  const settlement = Promise.withResolvers<DelegatedSessionResult>();
+  const updates = mock();
+  runner = async (options) => {
+    if (options.prompt === "parent") {
+      await nested(options).execute(
+        "child",
+        { prompt: "child" },
+        undefined,
+        undefined,
+        ctx.ctx as any,
       );
-
-    expect(createAgentSessionCalls[0].tools).toEqual(READ_ONLY_DELEGATING_SUBAGENT_TOOL_NAMES);
+      return outcome("cancelled");
+    }
+    return settlement.promise;
+  };
+  const pending = ctx.invoke("spawn_subagent", { prompt: "parent" }, undefined, updates);
+  await waitForCalls(2);
+  let finished = false;
+  const closing = ctx.emit(event).then(() => {
+    finished = true;
+  });
+  await Promise.resolve();
+  try {
+    expect(calls.every((options) => options.signal?.aborted)).toBe(true);
+    expect(cleanups[0]).not.toHaveBeenCalled();
+    expect(finished).toBe(false);
     expect(
-      createAgentSessionCalls[0].customTools.map((tool: { name: string }) => tool.name),
-    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash", DELEGATION_TOOL_NAME]);
-    expect(createdSessions[0].registeredTools).toEqual([
-      "bash",
-      ...SORTED_DELEGATING_INVESTIGATION_TOOL_NAMES,
-    ]);
-    expect(createdSessions[0].activeTools).toEqual(READ_ONLY_DELEGATING_SUBAGENT_TOOL_NAMES);
-    expect(createAgentSessionCalls[0].tools).not.toContain("edit");
-    expect(createAgentSessionCalls[0].tools).not.toContain("write");
-    expect(loaderInstances[0].options.extensionFactories).toEqual([]);
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "This session is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.",
-    );
-    expect(loaderInstances[0].options.systemPromptOverride()).toContain(
-      "Available tools: read, grep, find, ls, bash, tavily_search, tavily_extract, tavily_map, tavily_crawl, tavily_auth_status, github_clone_workspace, and spawn_subagent.",
-    );
-    expect(loaderInstances[0].options.systemPromptOverride()).not.toContain("bash, edit, write");
-  });
-
-  test("first-level sessions can spawn one nested session that cannot spawn further", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [
-      { resultText: "top-level waiting", blockPrompt: true },
-      { resultText: "nested answer" },
-    ];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Coordinate" }, undefined, undefined, createContext());
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-
-    const nestedTool = findDelegationTool(firstSession);
-    const nestedResult = await nestedTool.execute(
-      "nested-call",
-      { prompt: "Check independently" },
-      undefined,
-      undefined,
-      createContext(),
-    );
-
-    expect(nestedResult).toEqual({
-      content: [{ type: "text", text: "nested answer" }],
-      details: { id: "id000002", status: "completed" },
-    });
-    expect(createAgentSessionCalls[1]).toMatchObject({
-      model: { name: "model" },
-      thinkingLevel: "medium",
-    });
-    expect(createAgentSessionCalls[1].tools).toEqual(DEFAULT_SUBAGENT_TOOL_NAMES);
-    expect(createAgentSessionCalls[1].tools).not.toContain(DELEGATION_TOOL_NAME);
-    expect(createdSessions[1].registeredTools).toEqual(SORTED_INVESTIGATION_TOOL_NAMES);
-    expect(createdSessions[1].activeTools).toEqual(DEFAULT_SUBAGENT_TOOL_NAMES);
-    expect(loaderInstances[1].options.systemPromptOverride()).toContain(
-      "No further delegation tool is available.",
-    );
-    expect(loaderInstances[1].options.systemPromptOverride()).not.toContain(
-      "When an independent focused check would materially improve quality or confidence",
-    );
-    expect(loaderInstances[1].options.systemPromptOverride()).not.toContain(
-      "Do not call or simulate subagents recursively.",
-    );
-
-    firstSession.releasePrompt();
-    await topLevel;
-  });
-
-  test("delegated spawn rejects background mode without creating another session", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "top-level waiting", blockPrompt: true }];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Coordinate" }, undefined, undefined, createContext());
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-
-    const nestedTool = findDelegationTool(firstSession);
-    expect(nestedTool.description).toContain(
-      "Background mode is not available from delegated sessions.",
-    );
-    expect((nestedTool.parameters as any).properties.background.description).toContain(
-      "Background mode is not available from delegated sessions.",
-    );
-
-    const result = await nestedTool.execute(
-      "nested-call",
-      { prompt: "Background check", background: true },
-      undefined,
-      undefined,
-      createContext(),
-    );
-
-    expect(result).toEqual({
-      content: [
-        {
-          type: "text",
-          text: "Background mode is not available for delegated spawn_subagent calls. Run the delegated task in foreground mode instead.",
-        },
-      ],
-      details: { status: "rejected", background: false },
-    });
-    expect(createdSessions).toHaveLength(1);
-    expect(createAgentSessionCalls).toHaveLength(1);
-
-    firstSession.releasePrompt();
-    await topLevel;
-  });
-
-  test("nested sessions inherit read-only enforcement from their owner", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [
-      { resultText: "top-level waiting", blockPrompt: true },
-      { resultText: "nested read-only answer" },
-    ];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Read-only coordinate", readOnly: true },
-        undefined,
-        undefined,
-        createContext(),
-      );
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-
-    const nestedTool = findDelegationTool(firstSession);
-    expect(nestedTool.description).toContain(
-      "Spawned sessions are read-only because the calling session is read-only",
-    );
-    expect(nestedTool.description).not.toContain(
-      "Default subagents receive read, grep, find, ls, bash, edit, write",
-    );
-    expect((nestedTool.parameters as any).properties.readOnly.description).toContain(
-      "read-only regardless of this setting",
-    );
-
-    const nestedResult = await nestedTool.execute(
-      "nested-call",
-      { prompt: "Inspect safely", readOnly: false },
-      undefined,
-      undefined,
-      createContext(),
-    );
-
-    expect(nestedResult.details).toEqual({ id: "id000002", status: "completed" });
-    expect(createAgentSessionCalls[1].tools).toEqual(READ_ONLY_SUBAGENT_TOOL_NAMES);
-    expect(
-      createAgentSessionCalls[1].customTools.map((tool: { name: string }) => tool.name),
-    ).toEqual([...INVESTIGATION_TOOL_NAMES, "bash"]);
-    expect(createAgentSessionCalls[1].tools).not.toContain("edit");
-    expect(createAgentSessionCalls[1].tools).not.toContain("write");
-    expect(createAgentSessionCalls[1].tools).not.toContain(DELEGATION_TOOL_NAME);
-
-    firstSession.releasePrompt();
-    await topLevel;
-  });
-
-  test("nested modelTier defaults to configured medium and accepts small", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("high");
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          medium: "test/medium-model:low",
-          small: "test/small-model:minimal",
-        },
-      },
-    });
-    const mediumModel = { name: "medium model" };
-    const smallModel = { name: "small model" };
-    const findCalls: string[] = [];
-    const ctx = createContext({
-      cwd,
-      modelRegistry: {
-        id: "registry",
-        find(provider: string, model: string) {
-          findCalls.push(`${provider}/${model}`);
-          if (provider === "test" && model === "medium-model") return mediumModel;
-          if (provider === "test" && model === "small-model") return smallModel;
-          return undefined;
-        },
-      },
-    });
-    nextBehaviors = [
-      { resultText: "top-level waiting", blockPrompt: true },
-      { resultText: "medium nested answer" },
-      { resultText: "small nested answer" },
-    ];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Coordinate" }, undefined, undefined, ctx);
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-    const nestedTool = findDelegationTool(firstSession);
-
-    const defaultTier = await nestedTool.execute(
-      "nested-call-1",
-      { prompt: "Default tier check" },
-      undefined,
-      undefined,
-      ctx,
-    );
-    const smallTier = await nestedTool.execute(
-      "nested-call-2",
-      { prompt: "Small tier check", modelTier: "small" },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    expect(defaultTier.details).toEqual({ id: "id000002", status: "completed" });
-    expect(smallTier.details).toEqual({ id: "id000003", status: "completed" });
-    expect(createAgentSessionCalls[1]).toMatchObject({
-      model: mediumModel,
-      thinkingLevel: "low",
-    });
-    expect(createAgentSessionCalls[2]).toMatchObject({
-      model: smallModel,
-      thinkingLevel: "minimal",
-    });
-    expect(findCalls).toEqual(["test/medium-model", "test/small-model"]);
-
-    firstSession.releasePrompt();
-    await topLevel;
-  });
-
-  test("top-level explicit modelTier selects configured model", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("high");
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: { modelTiers: { medium: "test/medium-model:low" } },
-    });
-    const mediumModel = { name: "medium model" };
-    const ctx = createContext({
-      cwd,
-      modelRegistry: {
-        id: "registry",
-        find: (provider: string, model: string) =>
-          provider === "test" && model === "medium-model" ? mediumModel : undefined,
-      },
-    });
-    nextBehaviors = [{ resultText: "medium answer" }];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Use configured tier", modelTier: "medium" },
-        undefined,
-        undefined,
-        ctx,
-      );
-
-    expect(result.details).toEqual({ id: "id000001", status: "completed" });
-    expect(createAgentSessionCalls[0]).toMatchObject({
-      model: mediumModel,
-      thinkingLevel: "low",
-    });
-  });
-
-  test("modelTier arrays fall back on retryable runtime errors", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("high");
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          medium: ["test/first-model:low", "test/second-model:minimal"],
-        },
-      },
-    });
-    const firstModel = { name: "first model" };
-    const secondModel = { name: "second model" };
-    const ctx = createContext({
-      cwd,
-      modelRegistry: {
-        id: "registry",
-        find(provider: string, model: string) {
-          if (provider === "test" && model === "first-model") return firstModel;
-          if (provider === "test" && model === "second-model") return secondModel;
-          return undefined;
-        },
-      },
-    });
-    nextBehaviors = [
-      {
-        resultText: "first failed",
-        promptStopReason: "error",
-        promptErrorMessage: "429 rate limit",
-      },
-      { resultText: "second answer" },
-    ];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Use configured fallback", modelTier: "medium" },
-        undefined,
-        undefined,
-        ctx,
-      );
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "second answer" }],
-      details: { id: "id000001", status: "completed" },
-    });
-    expect(createAgentSessionCalls).toHaveLength(2);
-    expect(createAgentSessionCalls[0]).toMatchObject({
-      model: firstModel,
-      thinkingLevel: "low",
-    });
-    expect(createAgentSessionCalls[1]).toMatchObject({
-      model: secondModel,
-      thinkingLevel: "minimal",
-    });
-    expect(createdSessions[0].disposed).toBe(true);
-    expect(createdSessions[1].disposed).toBe(true);
-  });
-
-  test("modelTier comma-separated mappings fall back to inherited model after candidates are exhausted", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("xhigh");
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          small: "test/first-small:minimal, test/second-small:low",
-        },
-      },
-    });
-    const inheritedModel = { name: "inherited model" };
-    const firstModel = { name: "first small" };
-    const secondModel = { name: "second small" };
-    const ctx = createContext({
-      cwd,
-      model: inheritedModel,
-      modelRegistry: {
-        id: "registry",
-        find(provider: string, model: string) {
-          if (provider === "test" && model === "first-small") return firstModel;
-          if (provider === "test" && model === "second-small") return secondModel;
-          return undefined;
-        },
-      },
-    });
-    nextBehaviors = [
-      {
-        resultText: "first failed",
-        promptStopReason: "error",
-        promptErrorMessage: "503 service unavailable",
-      },
-      {
-        resultText: "second failed",
-        promptStopReason: "error",
-        promptErrorMessage: "model unavailable",
-      },
-      { resultText: "inherited answer" },
-    ];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Use comma-separated fallback", modelTier: "small" },
-        undefined,
-        undefined,
-        ctx,
-      );
-
-    expect(result.details).toEqual({ id: "id000001", status: "completed" });
-    expect(result.content[0].text).toBe("inherited answer");
-    expect(createAgentSessionCalls).toHaveLength(3);
-    expect(createAgentSessionCalls[0]).toMatchObject({
-      model: firstModel,
-      thinkingLevel: "minimal",
-    });
-    expect(createAgentSessionCalls[1]).toMatchObject({
-      model: secondModel,
-      thinkingLevel: "low",
-    });
-    expect(createAgentSessionCalls[2]).toMatchObject({
-      model: inheritedModel,
-      thinkingLevel: "xhigh",
-    });
-    expect(createdSessions[0].disposed).toBe(true);
-    expect(createdSessions[1].disposed).toBe(true);
-    expect(createdSessions[2].disposed).toBe(true);
-  });
-
-  test("modelTier runtime fallback stops on non-retryable errors", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          medium: ["test/first-model", "test/second-model"],
-        },
-      },
-    });
-    const firstModel = { name: "first model" };
-    const secondModel = { name: "second model" };
-    const ctx = createContext({
-      cwd,
-      modelRegistry: {
-        id: "registry",
-        find(provider: string, model: string) {
-          if (provider === "test" && model === "first-model") return firstModel;
-          if (provider === "test" && model === "second-model") return secondModel;
-          return undefined;
-        },
-      },
-    });
-    nextBehaviors = [
-      {
-        resultText: "first failed",
-        promptStopReason: "error",
-        promptErrorMessage: "401 invalid api key",
-      },
-    ];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Do not fallback", modelTier: "medium" },
-        undefined,
-        undefined,
-        ctx,
-      );
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "Subagent error: 401 invalid api key" }],
-      details: { id: "id000001", status: "error" },
-    });
-    expect(createAgentSessionCalls).toHaveLength(1);
-    expect(createAgentSessionCalls[0]).toMatchObject({ model: firstModel });
-    expect(createdSessions[0].disposed).toBe(true);
-  });
-
-  test("modelTier retry does not repeat the inherited model", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          medium: "test/inherited-model",
-        },
-      },
-    });
-    const inheritedModel = {
-      provider: "test",
-      id: "inherited-model",
-      name: "inherited model",
-    };
-    const ctx = createContext({
-      cwd,
-      model: inheritedModel,
-      modelRegistry: {
-        id: "registry",
-        find: (provider: string, model: string) =>
-          provider === "test" && model === "inherited-model" ? inheritedModel : undefined,
-      },
-    });
-    nextBehaviors = [
-      {
-        resultText: "same model failed",
-        promptStopReason: "error",
-        promptErrorMessage: "429 rate limit",
-      },
-    ];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Do not retry the same model", modelTier: "medium" },
-        undefined,
-        undefined,
-        ctx,
-      );
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "Subagent error: 429 rate limit" }],
-      details: { id: "id000001", status: "error" },
-    });
-    expect(createAgentSessionCalls).toHaveLength(1);
-    expect(createAgentSessionCalls[0]).toMatchObject({ model: inheritedModel });
-    expect(createdSessions[0].disposed).toBe(true);
-  });
-
-  test("empty error messages are treated as failed subagent attempts", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [
-      {
-        resultText: "empty error failed",
-        promptStopReason: "error",
-        promptErrorMessage: "",
-      },
-    ];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Fail with empty error" }, undefined, undefined, createContext());
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "Subagent error: " }],
-      details: { id: "id000001", status: "error" },
-    });
-    expect(createAgentSessionCalls).toHaveLength(1);
-    expect(createdSessions[0].disposed).toBe(true);
-  });
-
-  test("nested modelTier fallback keeps the owning session model selection", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("high");
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          medium: "test/medium-model:low",
-          small: "test/missing-small:minimal",
-        },
-      },
-    });
-    const rootModel = { name: "root model" };
-    const mediumModel = { name: "medium model" };
-    const ctx = createContext({
-      cwd,
-      model: rootModel,
-      modelRegistry: {
-        id: "registry",
-        find: (provider: string, model: string) =>
-          provider === "test" && model === "medium-model" ? mediumModel : undefined,
-      },
-    });
-    nextBehaviors = [
-      { resultText: "owner waiting", blockPrompt: true },
-      { resultText: "fallback nested answer" },
-    ];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Coordinate with medium", modelTier: "medium" },
-        undefined,
-        undefined,
-        ctx,
-      );
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-
-    const nestedResult = await findDelegationTool(firstSession).execute(
-      "nested-call",
-      { prompt: "Use missing small", modelTier: "small" },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    expect(nestedResult.details).toEqual({ id: "id000002", status: "completed" });
-    expect(createAgentSessionCalls[0]).toMatchObject({
-      model: mediumModel,
-      thinkingLevel: "low",
-    });
-    expect(createAgentSessionCalls[1]).toMatchObject({
-      model: mediumModel,
-      thinkingLevel: "low",
-    });
-
-    firstSession.releasePrompt();
-    await topLevel;
-  });
-
-  test("missing, invalid, and unresolved modelTier mappings fall back to inherited model", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    pi.setThinkingLevel("xhigh");
-    extension(pi as never);
-    const cwd = tempProjectSettings({
-      subagents: {
-        modelTiers: {
-          medium: "not-a-model-spec",
-          small: "test/missing-model:low",
-        },
-      },
-    });
-    const inheritedModel = { name: "inherited model" };
-    const findCalls: string[] = [];
-    const ctx = createContext({
-      cwd,
-      model: inheritedModel,
-      modelRegistry: {
-        id: "registry",
-        find(provider: string, model: string) {
-          findCalls.push(`${provider}/${model}`);
-          return undefined;
-        },
-      },
-    });
-    nextBehaviors = [
-      { resultText: "top-level waiting", blockPrompt: true },
-      { resultText: "invalid mapping answer" },
-      { resultText: "unresolved mapping answer" },
-    ];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Coordinate" }, undefined, undefined, ctx);
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-    const nestedTool = findDelegationTool(firstSession);
-
-    const invalidMapping = await nestedTool.execute(
-      "nested-call-1",
-      { prompt: "Uses default medium" },
-      undefined,
-      undefined,
-      ctx,
-    );
-    const unresolvedMapping = await nestedTool.execute(
-      "nested-call-2",
-      { prompt: "Uses missing small", modelTier: "small" },
-      undefined,
-      undefined,
-      ctx,
-    );
-
-    expect(invalidMapping.details).toEqual({ id: "id000002", status: "completed" });
-    expect(unresolvedMapping.details).toEqual({ id: "id000003", status: "completed" });
-    expect(createAgentSessionCalls[1]).toMatchObject({
-      model: inheritedModel,
-      thinkingLevel: "xhigh",
-    });
-    expect(createAgentSessionCalls[2]).toMatchObject({
-      model: inheritedModel,
-      thinkingLevel: "xhigh",
-    });
-    expect(findCalls).toEqual(["test/missing-model"]);
-
-    firstSession.releasePrompt();
-    await topLevel;
-  });
-
-  test("unsupported modelTier values are rejected before creating a session", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-
-    await expect(
-      pi.tools
-        .get("spawn_subagent")!
-        .execute(
-          "call",
-          { prompt: "Bad tier", modelTier: "large" },
-          undefined,
-          undefined,
-          createContext(),
-        ),
-    ).rejects.toThrow('modelTier must be "medium" or "small".');
-    expect(createdSessions).toHaveLength(0);
-    expect(createAgentSessionCalls).toHaveLength(0);
-  });
-
-  test("foreground spawn with an already-aborted signal stops before creating a session", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const abortController = new AbortController();
-    abortController.abort();
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Already stopped" },
-        abortController.signal,
-        undefined,
-        createContext(),
-      );
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "Subagent stopped before it started." }],
-      details: { status: "stopped" },
-    });
-    expect(createdSessions).toHaveLength(0);
-    expect(createAgentSessionCalls).toHaveLength(0);
-  });
-
-  test("delegated spawn rejects calls after its owning session is no longer active", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "owner complete" }];
-
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Owner", background: true },
-        undefined,
-        undefined,
-        createContext(),
-      );
-    const ownerSession = await waitForCreatedSession(0);
-    await pi.tools
-      .get("get_subagent_result")!
-      .execute("call", { id: "id000001", wait: true }, undefined, undefined, createContext());
-
-    const result = await findDelegationTool(ownerSession).execute(
-      "nested-call",
-      { prompt: "Too late" },
-      undefined,
-      undefined,
-      createContext(),
-    );
-
-    expect(result).toEqual({
-      content: [
-        {
-          type: "text",
-          text: "Cannot spawn delegated task because the calling session is no longer active.",
-        },
-      ],
-      details: { status: "error" },
-    });
-    expect(createdSessions).toHaveLength(1);
-    expect(createAgentSessionCalls).toHaveLength(1);
-  });
-
-  test("owner abort propagates to active nested sessions", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [
-      { resultText: "top-level partial", blockPrompt: true },
-      { resultText: "nested partial", blockPrompt: true },
-    ];
-    const abortController = new AbortController();
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Coordinate long work" },
-        abortController.signal,
-        undefined,
-        createContext(),
-      );
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-    const nested = findDelegationTool(firstSession).execute(
-      "nested-call",
-      { prompt: "Long nested check" },
-      undefined,
-      undefined,
-      createContext(),
-    );
-    const nestedSession = await waitForCreatedSession(1);
-    await nestedSession.promptStarted;
-
-    abortController.abort();
-    const [topLevelResult, nestedResult] = await Promise.all([topLevel, nested]);
-
-    expect(firstSession.aborted).toBe(true);
-    expect(nestedSession.aborted).toBe(true);
-    expect(topLevelResult.details).toEqual({ id: "id000001", status: "stopped" });
-    expect(nestedResult.details).toEqual({ id: "id000002", status: "stopped" });
-  });
-
-  test("session shutdown aborts and clears active nested sessions", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [
-      { resultText: "top-level partial", blockPrompt: true },
-      { resultText: "nested partial", blockPrompt: true },
-    ];
-
-    const topLevel = pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Coordinate long work" }, undefined, undefined, createContext());
-    const firstSession = await waitForCreatedSession(0);
-    await firstSession.promptStarted;
-    const nested = findDelegationTool(firstSession).execute(
-      "nested-call",
-      { prompt: "Long nested check" },
-      undefined,
-      undefined,
-      createContext(),
-    );
-    const nestedSession = await waitForCreatedSession(1);
-    await nestedSession.promptStarted;
-
-    await pi.events.get("session_shutdown")![0]({}, createContext());
-    await Promise.all([topLevel, nested]);
-
-    expect(firstSession.aborted).toBe(true);
-    expect(nestedSession.aborted).toBe(true);
-    expect(firstSession.disposed).toBe(true);
-    expect(nestedSession.disposed).toBe(true);
-    expect(
-      await pi.tools
-        .get("list_subagents")!
-        .execute("call", {}, undefined, undefined, createContext()),
-    ).toEqual({
-      content: [{ type: "text", text: "No subagents in this session." }],
-      details: { count: 0 },
-    });
-  });
-
-  test("session shutdown clears records even when session disposal fails", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [
-      { resultText: "partial", blockPrompt: true, disposeError: new Error("dispose boom") },
-    ];
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Long", background: true }, undefined, undefined, createContext());
-    await createdSessions[0].promptStarted;
-
-    await pi.events.get("session_shutdown")![0]({}, createContext());
-
-    expect(createdSessions[0].aborted).toBe(true);
-    expect(createdSessions[0].disposed).toBe(true);
-    expect(
-      await pi.tools
-        .get("list_subagents")!
-        .execute("call", {}, undefined, undefined, createContext()),
-    ).toEqual({
-      content: [{ type: "text", text: "No subagents in this session." }],
-      details: { count: 0 },
-    });
-  });
-
-  test("foreground spawn reports errors and removes completed records", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ promptError: new Error("boom") }];
-
-    const result = await pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Fail" }, undefined, undefined, createContext());
-
-    expect(result).toEqual({
-      content: [{ type: "text", text: "Subagent error: boom" }],
-      details: { id: "id000001", status: "error" },
-    });
-    expect(createdSessions[0].disposed).toBe(true);
-    const list = await pi.tools
-      .get("list_subagents")!
-      .execute("call", {}, undefined, undefined, createContext());
-    expect(list).toEqual({
-      content: [{ type: "text", text: "No subagents in this session." }],
-      details: { count: 0 },
-    });
-  });
-
-  test("foreground parent abort stops the subagent", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "partial", blockPrompt: true }];
-    const abortController = new AbortController();
-
-    const promise = pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Long" }, abortController.signal, undefined, createContext());
-    const session = await waitForCreatedSession();
-    await session.promptStarted;
-    abortController.abort();
-    const result = await promise;
-
-    expect(session.aborted).toBe(true);
-    expect(result.details).toEqual({ id: "id000001", status: "stopped" });
-    expect(result.content[0].text).toBe("Subagent stopped: stopped");
-  });
-
-  test("background spawn can be listed and retrieved after completion", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "background answer" }];
-
-    const started = await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Work", description: "Background job", background: true },
-        undefined,
-        undefined,
-        createContext(),
-      );
-
-    expect(started).toEqual({
-      content: [
-        {
-          type: "text",
-          text: "Subagent started in background.\nID: id000001\nDescription: Background job\n\nUse get_subagent_result with this ID to check status or retrieve the full result.",
-        },
-      ],
-      details: { id: "id000001", status: "running", background: true },
-    });
+      (await ctx.invoke("spawn_subagent", { prompt: "late", background: true })).details,
+    ).toMatchObject({ status: "error" });
     expect(
       (
-        await pi.tools
-          .get("list_subagents")!
-          .execute("call", {}, undefined, undefined, createContext())
-      ).content[0].text,
-    ).toContain("id000001 | running");
+        await nested(calls[0]).execute(
+          "late",
+          { prompt: "late" },
+          undefined,
+          undefined,
+          ctx.ctx as any,
+        )
+      ).details,
+    ).toMatchObject({ status: "error" });
+    calls[0].onText?.("late progress");
+    expect(updates).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(2);
+    expect(cleanups[0]).not.toHaveBeenCalled();
+  } finally {
+    settlement.resolve(outcome("cancelled"));
+    await Promise.all([pending, closing]);
+  }
+  expect(finished).toBe(true);
+  expect(cleanups[0]).toHaveBeenCalledTimes(1);
+  expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 0 });
+  expect(ctx.pi.sendUserMessage).not.toHaveBeenCalled();
+  expect(ctx.pi.sendMessage).not.toHaveBeenCalled();
+});
 
-    const result = await pi.tools
-      .get("get_subagent_result")!
-      .execute("call", { id: "id000001", wait: true }, undefined, undefined, createContext());
-
-    expect(result.content[0].text).toContain("Subagent id000001 | completed |");
-    expect(result.content[0].text).toContain("Description: Background job");
-    expect(result.content[0].text).toContain("background answer");
-    expect(result.details).toEqual({});
+// WHEN navigation succeeds or is cancelled by another handler, the live owner SHALL get
+// fresh resources; closures from the previous owner SHALL remain unusable.
+test.each([
+  ["session_before_switch", "session_start"],
+  ["session_before_fork", "session_start"],
+  ["session_before_tree", "session_tree"],
+  ["session_before_switch", undefined],
+  ["session_before_fork", undefined],
+  ["session_before_tree", undefined],
+])("%s followed by %s restores usable tools without reviving old closures", async (before, after) => {
+  const ctx = setup();
+  await ctx.invoke("spawn_subagent", { prompt: "old" });
+  const old = calls[0];
+  const oldTool = old.customTools!.find((tool) => tool.name === "github_clone_workspace")!;
+  await ctx.emit(before!);
+  if (after) await ctx.emit(after);
+  runner = async (options) => {
+    const tool = options.customTools!.find((entry) => entry.name === "github_clone_workspace")!;
+    expect(tool).not.toBe(oldTool);
+    expect((await tool.execute("probe", {}, undefined, undefined, ctx.ctx as any)).details).toEqual(
+      { usable: true },
+    );
+    return outcome();
+  };
+  expect((await ctx.invoke("spawn_subagent", { prompt: "fresh" })).details).toMatchObject({
+    status: "completed",
   });
+  expect(cleanups).toHaveLength(2);
+  expect(cleanups[0]).toHaveBeenCalledTimes(1);
+  expect(cleanups[1]).not.toHaveBeenCalled();
+  await expect(oldTool.execute("old", {}, undefined, undefined, ctx.ctx as any)).rejects.toThrow(
+    "Toolset closed",
+  );
+  expect(
+    (await nested(old).execute("late", { prompt: "late" }, undefined, undefined, ctx.ctx as any))
+      .details,
+  ).toMatchObject({ status: "error" });
+  expect(calls).toHaveLength(2);
+});
 
-  test("get_subagent_result handles missing and still-running subagents", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-
-    expect(
-      await pi.tools
-        .get("get_subagent_result")!
-        .execute("call", { id: "missing" }, undefined, undefined, createContext()),
-    ).toEqual({
-      content: [{ type: "text", text: "Subagent not found: missing" }],
-      details: {},
-    });
-
-    nextBehaviors = [{ resultText: "eventual", blockPrompt: true }];
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Long", background: true }, undefined, undefined, createContext());
-    await createdSessions[0].promptStarted;
-
-    const running = await pi.tools
-      .get("get_subagent_result")!
-      .execute("call", { id: "id000001" }, undefined, undefined, createContext());
-    expect(running.content[0].text).toContain("Subagent id000001 | running |");
-    expect(running.content[0].text).toContain("Still running.");
-    createdSessions[0].releasePrompt();
-    await pi.tools
-      .get("get_subagent_result")!
-      .execute("call", { id: "id000001", wait: true }, undefined, undefined, createContext());
-  });
-
-  test("stop_subagent aborts a running background subagent and reports non-running records", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "partial", blockPrompt: true }];
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Long", background: true }, undefined, undefined, createContext());
-    await createdSessions[0].promptStarted;
-
-    const stopped = await pi.tools
-      .get("stop_subagent")!
-      .execute("call", { id: "id000001" }, undefined, undefined, createContext());
-
-    expect(createdSessions[0].aborted).toBe(true);
-    expect(stopped).toEqual({
-      content: [{ type: "text", text: "Stopped subagent id000001." }],
-      details: { id: "id000001", status: "stopped" },
-    });
-    const secondStop = await pi.tools
-      .get("stop_subagent")!
-      .execute("call", { id: "id000001" }, undefined, undefined, createContext());
-    expect(secondStop.content[0].text).toBe("Subagent id000001 is not running (status: stopped).");
-    expect(
-      await pi.tools
-        .get("stop_subagent")!
-        .execute("call", { id: "missing" }, undefined, undefined, createContext()),
-    ).toEqual({
-      content: [{ type: "text", text: "Subagent not found: missing" }],
-      details: {},
-    });
-  });
-
-  test("session shutdown aborts active subagents, disposes sessions, and clears records", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "partial", blockPrompt: true }];
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute("call", { prompt: "Long", background: true }, undefined, undefined, createContext());
-    await createdSessions[0].promptStarted;
-
-    await pi.events.get("session_shutdown")![0]({}, createContext());
-
-    expect(createdSessions[0].aborted).toBe(true);
-    expect(createdSessions[0].disposed).toBe(true);
-    expect(
-      await pi.tools
-        .get("list_subagents")!
-        .execute("call", {}, undefined, undefined, createContext()),
-    ).toEqual({
-      content: [{ type: "text", text: "No subagents in this session." }],
-      details: { count: 0 },
-    });
-  });
-
-  test("foreground update text is truncated", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    nextBehaviors = [{ resultText: "x".repeat(1300) }];
-    const updates: string[] = [];
-
-    await pi.tools
-      .get("spawn_subagent")!
-      .execute(
-        "call",
-        { prompt: "Long output" },
-        undefined,
-        (update: { content: Array<{ type: "text"; text: string }> }) =>
-          updates.push(update.content[0].text),
-        createContext(),
+test("shutdown is idempotent, denies top-level spawn and only session_start can reopen it", async () => {
+  const ctx = setup();
+  let reentered: Promise<void> | undefined;
+  runner = (options) =>
+    new Promise((resolve) => {
+      options.signal!.addEventListener(
+        "abort",
+        () => {
+          reentered = ctx.shutdown();
+          resolve(outcome("cancelled"));
+        },
+        { once: true },
       );
-
-    expect(updates.at(-1)).toContain("...(truncated; call get_subagent_result for full output)");
+    });
+  await ctx.invoke("spawn_subagent", { prompt: "task", background: true });
+  await Promise.all([ctx.shutdown(), ctx.shutdown()]);
+  expect(reentered).toBeDefined();
+  await reentered;
+  await ctx.shutdown();
+  await ctx.emit("session_tree");
+  expect(cleanups[0]).toHaveBeenCalledTimes(1);
+  expect((await ctx.invoke("spawn_subagent", { prompt: "late" })).details).toMatchObject({
+    status: "error",
   });
+  expect(calls).toHaveLength(1);
+  await ctx.emit("session_start");
+  runner = async () => outcome();
+  expect((await ctx.invoke("spawn_subagent", { prompt: "fresh" })).details).toMatchObject({
+    status: "completed",
+  });
+  expect(cleanups).toHaveLength(2);
+});
+
+test("transition cleanup does not close another live runtime's records or toolset", async () => {
+  const first = setup();
+  const second = setup();
+  runner = blockedRunner;
+  await first.invoke("spawn_subagent", { prompt: "first", background: true });
+  const other = await second.invoke("spawn_subagent", { prompt: "second", background: true });
+  await first.emit("session_before_tree");
+  await first.emit("session_tree");
+  await first.shutdown();
+  expect(calls[1].signal?.aborted).toBe(false);
+  expect(
+    (await second.invoke("get_subagent_result", { id: (other.details as any).id })).details,
+  ).toMatchObject({ status: "running" });
+  expect(cleanups[1]).not.toHaveBeenCalled();
+  const tool = calls[1].customTools!.find((entry) => entry.name === "github_clone_workspace")!;
+  expect(
+    (await tool.execute("probe", {}, undefined, undefined, second.ctx as any)).details,
+  ).toEqual({ usable: true });
+  await second.shutdown();
+  expect(cleanups[1]).toHaveBeenCalledTimes(1);
 });

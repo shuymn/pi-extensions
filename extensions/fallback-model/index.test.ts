@@ -1,299 +1,113 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
+import type { Api, Model } from "@earendil-works/pi-ai";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+  ExtensionVirtualModel,
+  ModelRegistry,
+  ModelRouteRequest,
+} from "@earendil-works/pi-coding-agent";
 
-import fallbackModelExtension, {
-  FALLBACK_MODEL_FLAG,
-  parseFallbackModelList,
-  shouldFallbackForError,
-} from "./index";
+import {
+  FALLBACK_ROUTER_ID,
+  FALLBACK_ROUTER_PROVIDER,
+  getFallbackRouterCandidates,
+} from "../../lib/fallback-router";
+import fallbackModelExtension, { FALLBACK_MODEL_FLAG, parseFallbackModelList } from "./index";
 
-type Model = { provider: string; id: string };
-type EventHandler = (event: any, ctx: any) => Promise<unknown> | unknown;
-
-function createFakePi(
-  flags: Record<string, unknown> = {},
-  { setModelResults = [] }: { setModelResults?: boolean[] } = {},
-) {
-  const events = new Map<string, EventHandler[]>();
-  const flagValues = new Map(Object.entries(flags));
-  const registeredFlags = new Set<string>();
-
-  return {
-    events,
-    flags: [] as Array<{ name: string; definition: unknown }>,
-    selectedModels: [] as Model[],
-    selectedThinkingLevels: [] as string[],
-    on(eventName: string, handler: EventHandler) {
-      events.set(eventName, [...(events.get(eventName) ?? []), handler]);
-    },
+type Handler = (event: never, ctx: ExtensionContext) => unknown;
+function harness(value?: string) {
+  const flags: Array<{ name: string; definition: unknown }> = [];
+  const events = new Map<string, Handler>();
+  const definitions: ExtensionVirtualModel[] = [];
+  const pi = {
     registerFlag(name: string, definition: unknown) {
-      registeredFlags.add(name);
-      this.flags.push({ name, definition });
-      if (
-        definition &&
-        typeof definition === "object" &&
-        "default" in definition &&
-        !flagValues.has(name)
-      ) {
-        flagValues.set(name, definition.default);
-      }
+      flags.push({ name, definition });
     },
-    getFlag(name: string) {
-      if (!registeredFlags.has(name)) return undefined;
-      return flagValues.get(name);
+    getFlag() {
+      return value;
     },
-    async setModel(model: Model) {
-      this.selectedModels.push(model);
-      return setModelResults.shift() ?? true;
+    registerVirtualModel(definition: ExtensionVirtualModel) {
+      definitions.push(definition);
     },
-    setThinkingLevel(level: string) {
-      this.selectedThinkingLevels.push(level);
+    on(name: string, handler: Handler) {
+      events.set(name, handler);
     },
+    // Selection/message methods intentionally absent: any accidental use fails the test.
   };
+  fallbackModelExtension(pi as unknown as ExtensionAPI);
+  return { flags, events, definitions };
 }
-
-function createCtx({
-  currentModel = { provider: "anthropic", id: "claude-primary" },
-  available = new Map<string, Model>(),
-  hasUI = true,
-}: {
-  currentModel?: Model;
-  available?: Map<string, Model>;
-  hasUI?: boolean;
-} = {}) {
-  const notifications: Array<{ message: string; level: string }> = [];
+function context(id: string) {
+  const physical = { provider: "test", id, api: "openai-completions" } as Model<Api>;
+  const registry = {
+    find(provider: string, model: string) {
+      return provider === "test" && model === id ? physical : undefined;
+    },
+  } as ModelRegistry;
+  return { physical, registry, ctx: { modelRegistry: registry } as ExtensionContext };
+}
+function request(): ModelRouteRequest {
   return {
-    ctx: {
-      hasUI,
-      model: currentModel,
-      modelRegistry: {
-        find(provider: string, id: string) {
-          return available.get(`${provider}/${id}`);
-        },
-      },
-      ui: {
-        notify(message: string, level: string) {
-          notifications.push({ message, level });
-        },
-      },
-    },
-    notifications,
+    model: { provider: "fallback", id: "auto", api: "pi-virtual" } as Model<Api>,
+    reason: "user",
+    thinkingLevel: "medium",
+    messages: [],
   };
 }
 
-const assistantError = (errorMessage: string) => ({
-  message: {
-    role: "assistant",
-    stopReason: "error",
-    errorMessage,
-    content: [],
-  },
+test("parses explicit ordered candidates including the primary and thinking suffixes", () => {
+  expect(parseFallbackModelList("test/primary, test/backup:HIGH")).toEqual([
+    { provider: "test", model: "primary" },
+    { provider: "test", model: "backup", thinkingLevel: "high" },
+  ]);
+  expect(parseFallbackModelList(" ,invalid,/missing-provider,test/,test/model:unknown")).toEqual([
+    { provider: "test", model: "model:unknown" },
+  ]);
 });
 
-describe("fallback-model extension", () => {
-  test("parses comma-separated provider/model entries with optional effort", () => {
-    expect(
-      parseFallbackModelList("anthropic/claude, openai/gpt-5:low, google/gemini:xhigh"),
-    ).toEqual([
-      { provider: "anthropic", model: "claude" },
-      { provider: "openai", model: "gpt-5", thinkingLevel: "low" },
-      { provider: "google", model: "gemini", thinkingLevel: "xhigh" },
-    ]);
-  });
-
-  test("ignores invalid or empty fallback entries and keeps unknown colon suffixes as model ids", () => {
-    expect(parseFallbackModelList(" , invalid, /missing-provider, openai/, ok/model:bad ")).toEqual(
-      [{ provider: "ok", model: "model:bad" }],
-    );
-  });
-
-  test("registers --fallback-model string flag", () => {
-    const pi = createFakePi();
-
-    fallbackModelExtension(pi as never);
-
-    expect(pi.flags).toEqual([
-      {
-        name: FALLBACK_MODEL_FLAG,
-        definition: {
-          description:
-            'Comma-separated fallback models, e.g. "provider/model,provider/model:high". Put thinking level in the final colon segment.',
-          type: "string",
-        },
+test("registers a selectable virtual model and only a metadata session hook, without automatic selection", () => {
+  const pi = harness("test/a,test/b");
+  expect(pi.flags).toEqual([
+    {
+      name: FALLBACK_MODEL_FLAG,
+      definition: {
+        description:
+          'Ordered physical candidates including the primary model for fallback/auto, e.g. "provider/primary,provider/backup:high". Select fallback/auto explicitly.',
+        type: "string",
       },
-    ]);
+    },
+  ]);
+  expect(pi.definitions).toHaveLength(1);
+  expect(pi.definitions[0]).toMatchObject({
+    provider: FALLBACK_ROUTER_PROVIDER,
+    id: FALLBACK_ROUTER_ID,
   });
+  expect([...pi.events.keys()]).toEqual(["session_start"]);
+  const { ctx, registry } = context("a");
+  expect(pi.events.get("session_start")!({} as never, ctx)).toBeUndefined();
+  expect(getFallbackRouterCandidates(registry)).toEqual([
+    { provider: "test", model: "a" },
+    { provider: "test", model: "b" },
+  ]);
+});
 
-  test("switches to the first fallback model and applies specified effort", async () => {
-    const pi = createFakePi({ [FALLBACK_MODEL_FLAG]: "openai/gpt-5:low,google/gemini" });
-    fallbackModelExtension(pi as never);
-    const openaiModel = { provider: "openai", id: "gpt-5" };
-    const { ctx, notifications } = createCtx({
-      available: new Map([["openai/gpt-5", openaiModel]]),
-    });
+test("parent wrapper looks up each request's context registry, not a captured session", async () => {
+  const pi = harness("test/a,test/b:high");
+  const first = context("a");
+  const second = context("b");
+  pi.events.get("session_start")!({} as never, first.ctx);
+  const route = pi.definitions[0]!.route;
+  expect((await route(request(), first.ctx)).model).toBe(first.physical);
+  const other = await route(request(), second.ctx);
+  expect(other.model).toBe(second.physical);
+  expect(other.thinkingLevel).toBe("high");
+});
 
-    const result = await pi.events.get("message_end")![0]!(assistantError("429 rate limit"), ctx);
-
-    expect(pi.selectedModels).toEqual([openaiModel]);
-    expect(pi.selectedThinkingLevels).toEqual(["low"]);
-    expect(result).toEqual({
-      message: {
-        role: "assistant",
-        stopReason: "error",
-        errorMessage: "provider returned error: fallback model selected for retry",
-        content: [],
-      },
-    });
-    expect(notifications).toEqual([
-      { message: "Fallback model に切り替えます: openai/gpt-5:low", level: "warning" },
-    ]);
-  });
-
-  test("accepts thinking level suffixes case-insensitively", () => {
-    expect(parseFallbackModelList("openai/gpt-5:HIGH")).toEqual([
-      { provider: "openai", model: "gpt-5", thinkingLevel: "high" },
-    ]);
-  });
-
-  test("leaves thinking level unchanged when effort is omitted", async () => {
-    const pi = createFakePi({ [FALLBACK_MODEL_FLAG]: "google/gemini" });
-    fallbackModelExtension(pi as never);
-    const geminiModel = { provider: "google", id: "gemini" };
-    const { ctx } = createCtx({ available: new Map([["google/gemini", geminiModel]]) });
-
-    await pi.events.get("message_end")![0]!(assistantError("model unavailable"), ctx);
-
-    expect(pi.selectedModels).toEqual([geminiModel]);
-    expect(pi.selectedThinkingLevels).toEqual([]);
-  });
-
-  test("falls back sequentially across repeated errors", async () => {
-    const pi = createFakePi({ [FALLBACK_MODEL_FLAG]: "openai/gpt-5,google/gemini:xhigh" });
-    fallbackModelExtension(pi as never);
-    const openaiModel = { provider: "openai", id: "gpt-5" };
-    const geminiModel = { provider: "google", id: "gemini" };
-    const { ctx } = createCtx({
-      available: new Map([
-        ["openai/gpt-5", openaiModel],
-        ["google/gemini", geminiModel],
-      ]),
-    });
-
-    await pi.events.get("message_end")![0]!(assistantError("429"), ctx);
-    ctx.model = openaiModel;
-    await pi.events.get("message_end")![0]!(assistantError("503"), ctx);
-
-    expect(pi.selectedModels).toEqual([openaiModel, geminiModel]);
-    expect(pi.selectedThinkingLevels).toEqual(["xhigh"]);
-  });
-
-  test("skips the current model and unavailable candidates", async () => {
-    const pi = createFakePi({
-      [FALLBACK_MODEL_FLAG]: "anthropic/claude-primary,openai/missing,google/gemini",
-    });
-    fallbackModelExtension(pi as never);
-    const geminiModel = { provider: "google", id: "gemini" };
-    const { ctx } = createCtx({ available: new Map([["google/gemini", geminiModel]]) });
-
-    await pi.events.get("message_end")![0]!(assistantError("overloaded"), ctx);
-
-    expect(pi.selectedModels).toEqual([geminiModel]);
-  });
-
-  test("skips candidates when setModel declines them", async () => {
-    const pi = createFakePi(
-      { [FALLBACK_MODEL_FLAG]: "openai/gpt-5,google/gemini" },
-      { setModelResults: [false, true] },
-    );
-    fallbackModelExtension(pi as never);
-    const openaiModel = { provider: "openai", id: "gpt-5" };
-    const geminiModel = { provider: "google", id: "gemini" };
-    const { ctx } = createCtx({
-      available: new Map([
-        ["openai/gpt-5", openaiModel],
-        ["google/gemini", geminiModel],
-      ]),
-    });
-
-    const result = await pi.events.get("message_end")![0]!(assistantError("503"), ctx);
-
-    expect(pi.selectedModels).toEqual([openaiModel, geminiModel]);
-    expect(result).toEqual({
-      message: {
-        role: "assistant",
-        stopReason: "error",
-        errorMessage: "provider returned error: fallback model selected for retry",
-        content: [],
-      },
-    });
-  });
-
-  test("returns undefined when setModel declines all candidates", async () => {
-    const pi = createFakePi(
-      { [FALLBACK_MODEL_FLAG]: "openai/gpt-5,google/gemini" },
-      { setModelResults: [false, false] },
-    );
-    fallbackModelExtension(pi as never);
-    const openaiModel = { provider: "openai", id: "gpt-5" };
-    const geminiModel = { provider: "google", id: "gemini" };
-    const { ctx } = createCtx({
-      available: new Map([
-        ["openai/gpt-5", openaiModel],
-        ["google/gemini", geminiModel],
-      ]),
-    });
-
-    const result = await pi.events.get("message_end")![0]!(assistantError("503"), ctx);
-
-    expect(result).toBeUndefined();
-    expect(pi.selectedModels).toEqual([openaiModel, geminiModel]);
-  });
-
-  test("returns undefined when all candidates are unavailable", async () => {
-    const pi = createFakePi({ [FALLBACK_MODEL_FLAG]: "openai/missing,google/missing" });
-    fallbackModelExtension(pi as never);
-    const { ctx } = createCtx();
-
-    const result = await pi.events.get("message_end")![0]!(assistantError("503"), ctx);
-
-    expect(result).toBeUndefined();
-    expect(pi.selectedModels).toEqual([]);
-  });
-
-  test("switches models without notifying when UI is unavailable", async () => {
-    const pi = createFakePi({ [FALLBACK_MODEL_FLAG]: "openai/gpt-5" });
-    fallbackModelExtension(pi as never);
-    const openaiModel = { provider: "openai", id: "gpt-5" };
-    const { ctx, notifications } = createCtx({
-      available: new Map([["openai/gpt-5", openaiModel]]),
-      hasUI: false,
-    });
-
-    await pi.events.get("message_end")![0]!(assistantError("503"), ctx);
-
-    expect(pi.selectedModels).toEqual([openaiModel]);
-    expect(notifications).toEqual([]);
-  });
-
-  test("does not fallback for non-target errors", async () => {
-    const pi = createFakePi({ [FALLBACK_MODEL_FLAG]: "openai/gpt-5" });
-    fallbackModelExtension(pi as never);
-    const { ctx } = createCtx({
-      available: new Map([["openai/gpt-5", { provider: "openai", id: "gpt-5" }]]),
-    });
-
-    const result = await pi.events.get("message_end")![0]!(
-      assistantError("401 invalid api key"),
-      ctx,
-    );
-
-    expect(result).toBeUndefined();
-    expect(pi.selectedModels).toEqual([]);
-  });
-
-  test("recognizes retryable model availability errors", () => {
-    expect(shouldFallbackForError("model unavailable")).toBe(true);
-    expect(shouldFallbackForError("quota exceeded")).toBe(false);
-    expect(shouldFallbackForError("403 authorization failed")).toBe(false);
-    expect(shouldFallbackForError("401 invalid api key")).toBe(false);
-  });
+test("unconfigured router is selectable but fails explicitly when dispatched", () => {
+  const pi = harness();
+  const { ctx, registry } = context("a");
+  pi.events.get("session_start")!({} as never, ctx);
+  expect(getFallbackRouterCandidates(registry)).toEqual([]);
+  expect(() => pi.definitions[0]!.route(request(), ctx)).toThrow("requires --fallback-model");
 });

@@ -1,142 +1,107 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
-  appendOneShotFreeInput,
-  collectOneShotCliFreeInputs,
-  expandOneShotSkillPrompt,
-  registerOneShotSharedFlags,
-  resetOneShotSharedFlagsForTest,
+  isOneShotPrimaryModeSelected,
+  oneShotAuthorization,
+  parseOneShotLaunch,
 } from "./one-shot-flow";
 
-function createSkillFixture(name: string) {
-  const dir = mkdtempSync(join(tmpdir(), `pi-${name}-skill-`));
-  const skillDir = join(dir, name);
-  mkdirSync(skillDir);
-  const skillPath = join(skillDir, "SKILL.md");
-  writeFileSync(
-    skillPath,
-    `---\nname: ${name}\ndescription: Test skill\n---\n\n# ${name} skill\n\nUse this skill.\n`,
-  );
-  return { skillDir, skillPath };
+function launch(flags: Record<string, unknown>, argv: string[] = []) {
+  return parseOneShotLaunch((name) => flags[name], argv);
 }
 
-function createSharedFlagPi(values: Record<string, unknown>) {
-  const registered = new Set<string>();
-  const shutdownHandlers: Array<() => unknown | Promise<unknown>> = [];
-
-  return {
-    registered,
-    shutdownHandlers,
-    registerFlag(name: string) {
-      registered.add(name);
-    },
-    getFlag(name: string) {
-      return registered.has(name) ? values[name] : undefined;
-    },
-    on(event: string, handler: () => unknown | Promise<unknown>) {
-      if (event === "session_shutdown") shutdownHandlers.push(handler);
-    },
-  };
-}
-
-describe("one-shot flow helpers", () => {
-  test("appends free-form input as skill arguments", () => {
-    expect(appendOneShotFreeInput("/skill:commit", [" focus staged files "])).toBe(
-      "/skill:commit focus staged files",
-    );
-    expect(appendOneShotFreeInput("/skill:create-pr --japanese", [" draft only "])).toBe(
-      "/skill:create-pr --japanese\n\ndraft only",
-    );
+describe("bounded one-shot launch contract", () => {
+  test("WHEN neither primary flag is selected, the launcher SHALL be inert", () => {
+    expect(launch({})).toEqual({ ok: true });
+    expect(isOneShotPrimaryModeSelected(["--commit"])).toBe(true);
+    expect(isOneShotPrimaryModeSelected(["--create-pr=value"])).toBe(true);
+    expect(isOneShotPrimaryModeSelected(["--", "--commit"])).toBe(false);
+    expect(isOneShotPrimaryModeSelected(["--name", "--commit"])).toBe(false);
   });
 
-  test("expands one-shot skill prompts before extension sendUserMessage", () => {
-    const { skillDir, skillPath } = createSkillFixture("commit");
-    const pi = {
-      getCommands() {
-        return [
-          {
-            name: "skill:commit",
-            source: "skill",
-            sourceInfo: { path: skillPath, baseDir: skillDir },
-          },
-        ];
-      },
-    };
-
-    expect(expandOneShotSkillPrompt(pi as never, "commit", "/skill:commit --english")).toBe(
-      `<skill name="commit" location="${skillPath}">\nReferences are relative to ${skillDir}.\n\n# commit skill\n\nUse this skill.\n</skill>\n\n--english`,
-    );
-  });
-
-  test("collects CLI free-form input lost behind boolean one-shot flags", () => {
+  test("WHEN meaningful options and positional input are supplied, native parsing SHALL preserve them", () => {
     expect(
-      collectOneShotCliFreeInputs("commit", [
+      launch({ commit: true, japanese: true, branch: true, base: " origin/main " }, [
         "--model",
         "provider/model",
         "--commit",
-        "--english",
-        "focus staged files",
+        "--japanese",
+        "--branch",
         "--base",
-        "main",
-        "extra instruction",
+        "origin/main",
+        "--",
+        "focus staged files",
+        "- do not change unrelated work",
       ]),
     ).toEqual({
-      all: ["focus staged files", "extra instruction"],
-      initialMessages: ["extra instruction"],
-    });
-  });
-
-  test("matches Pi CLI parsing for neighboring value flags and print prompts", () => {
-    expect(collectOneShotCliFreeInputs("commit", ["--commit", "--other", "value", "note"])).toEqual(
-      {
-        all: ["note"],
-        initialMessages: ["note"],
+      ok: true,
+      launch: {
+        mode: "commit",
+        prompt:
+          "/skill:commit --japanese --branch --base=origin/main focus staged files\n\n- do not change unrelated work",
       },
-    );
-    expect(collectOneShotCliFreeInputs("commit", ["--commit", "-p", "---note"])).toEqual({
-      all: ["---note"],
-      initialMessages: ["---note"],
     });
-    expect(collectOneShotCliFreeInputs("commit", ["--commit", "--print", "---note"])).toEqual({
-      all: ["---note"],
-      initialMessages: ["---note"],
+    expect(launch({ "create-pr": true, english: true, update: true })).toEqual({
+      ok: true,
+      launch: { mode: "create-pr", prompt: "/skill:create-pr --english --update" },
     });
-    expect(collectOneShotCliFreeInputs("commit", ["--commit", "--name", "--base", "main"])).toEqual(
-      {
-        all: ["main"],
-        initialMessages: ["main"],
-      },
-    );
-    expect(
-      collectOneShotCliFreeInputs("commit", ["--commit", "--name", "--english", "msg"]),
-    ).toEqual({
-      all: ["msg"],
-      initialMessages: ["msg"],
+    expect(launch({ "create-pr": true, base: "main" })).toEqual({
+      ok: true,
+      launch: { mode: "create-pr", prompt: "/skill:create-pr --base=main" },
     });
   });
 
-  test("ignores argv unless the matching one-shot flag is present", () => {
-    expect(collectOneShotCliFreeInputs("create-pr", ["--commit", "note"])).toEqual({
-      all: [],
-      initialMessages: [],
-    });
+  test("WHEN flags conflict or a branch is unsafe, the launcher SHALL reject the request", () => {
+    for (const flags of [
+      { commit: true, "create-pr": true },
+      { commit: true, english: true, japanese: true },
+      { commit: true, base: "main" },
+      { commit: true, update: true },
+      { "create-pr": true, branch: true },
+      { "create-pr": true, update: true, base: "main" },
+      { commit: true, english: "false" },
+      ...["", "  ", "main --japanese", "main\nnext", "--main", "@{upstream}", 123].map((base) => ({
+        commit: true,
+        branch: true,
+        base,
+      })),
+    ])
+      expect(launch(flags).ok).toBe(false);
   });
 
-  test("clears shared flag reader on session shutdown", async () => {
-    resetOneShotSharedFlagsForTest();
-    const firstPi = createSharedFlagPi({ english: true, japanese: false, base: "old-main" });
-    const firstReader = registerOneShotSharedFlags(firstPi as never);
-    expect(firstPi.registered.has("english")).toBe(true);
+  test("WHEN boolean flags consume text, the launcher SHALL explain the explicit free-input syntax", () => {
+    for (const argv of [
+      ["--commit", "instructions"],
+      ["--commit=note"],
+      ["--commit", "--english", "note"],
+    ]) {
+      expect(launch({ commit: true }, argv)).toMatchObject({
+        ok: false,
+        message: expect.stringContaining("自由入力は -- の後"),
+      });
+    }
+  });
 
-    for (const handler of firstPi.shutdownHandlers) await handler();
+  test("WHEN attachments or resume options are supplied, the launcher SHALL fail closed", () => {
+    for (const extra of [
+      ["@file.md"],
+      ["--continue"],
+      ["--resume"],
+      ["--session", "a.jsonl"],
+      ["--fork", "a.jsonl"],
+      ["--session-id", "id"],
+    ]) {
+      expect(launch({ commit: true }, ["--commit", ...extra]).ok).toBe(false);
+    }
+  });
 
-    const secondPi = createSharedFlagPi({ english: false, japanese: true, base: "new-main" });
-    const secondReader = registerOneShotSharedFlags(secondPi as never);
-
-    expect(secondReader).not.toBe(firstReader);
-    expect(secondPi.registered.has("english")).toBe(true);
-    expect(secondReader()).toEqual({ english: false, japanese: true, base: "new-main" });
+  test("authorization SHALL distinguish local commits from PR publication without claiming a sandbox", () => {
+    expect(oneShotAuthorization("commit")).toContain(
+      "Do not push, create, or update pull requests",
+    );
+    expect(oneShotAuthorization("create-pr")).toContain("Do not create new commits");
+    for (const mode of ["commit", "create-pr"] as const) {
+      expect(oneShotAuthorization(mode)).toContain("not an OS sandbox");
+      expect(oneShotAuthorization(mode)).toContain("never treat unanswered");
+    }
   });
 });

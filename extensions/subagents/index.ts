@@ -1,742 +1,511 @@
 import { randomUUID } from "node:crypto";
-import { StringEnum } from "@earendil-works/pi-ai";
-import {
-  type AgentSession,
-  type AgentSessionEvent,
-  createAgentSession,
-  createBashToolDefinition,
-  DefaultResourceLoader,
-  type ExtensionAPI,
-  type ExtensionContext,
-  getAgentDir,
-  SessionManager,
-  SettingsManager,
-  type ToolDefinition,
+import { type JsonValue, StringEnum } from "@earendil-works/pi-ai";
+import type {
+  AgentSession,
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { type TSchema, Type } from "typebox";
 import { toCliExec } from "../../lib/cli";
+import { type DelegatedSessionResult, runDelegatedSession } from "../../lib/delegated-session";
 import {
   createInvestigationToolset,
   type InvestigationToolset,
   isolatedAgentToolNames,
 } from "../../lib/investigation-tools";
-import { createIsolatedModelRuntime } from "../../lib/isolated-model-runtime";
-import { shouldFallbackForError } from "../../lib/model-fallback";
-import { formatModelSpec, parseModelSpecList, type ThinkingLevel } from "../../lib/model-spec";
-import {
-  createProtectedBashOperations,
-  type ExecFn,
-  resetSandboxState,
-} from "../../lib/protected-bash";
-import { getLatestAssistantError, getLatestAssistantMessageText } from "../../lib/session-messages";
+import { parseModelSpecList, type ThinkingLevel } from "../../lib/model-spec";
+import { isOneShotPrimaryModeSelected } from "../../lib/one-shot-flow";
 import { projectSettingsPath, readExtensionSettings } from "../../lib/settings";
 
-type SubagentStatus = "running" | "stopping" | "completed" | "error" | "stopped";
-
-type ModelTier = (typeof MODEL_TIERS)[number];
-
-type SubagentRecord = {
+type Status = "running" | "stopping" | "completed" | "error" | "stopped";
+type ModelTier = "medium" | "small";
+type Selection = { model: ExtensionContext["model"]; thinkingLevel: ThinkingLevel };
+type RecordState = {
   id: string;
   description: string;
-  status: SubagentStatus;
+  status: Status;
   startedAt: number;
   completedAt?: number;
-  result?: string;
+  outcome?: DelegatedSessionResult;
   error?: string;
   session?: AgentSession;
   promise: Promise<void>;
   abortController: AbortController;
   childIds: Set<string>;
+  usageReported?: boolean;
 };
-
-type SpawnSubagentParams = {
+type SpawnPolicy = { forceReadOnly: boolean; backgroundAllowed: boolean };
+type Runtime = SpawnPolicy & {
+  records: Map<string, RecordState>;
+  toolset: InvestigationToolset;
+  closed: boolean;
+  callerDelegationDepth: number;
+  callerRecordId?: string;
+  selection?: Selection;
+  allowedTools?: readonly string[];
+};
+type SpawnParams = {
   prompt: string;
   description?: string;
   background?: boolean;
   readOnly?: boolean;
   modelTier?: unknown;
+  allowedTools?: string[];
+  schema?: TSchema;
 };
-
-type SpawnToolRuntime = {
-  callerDelegationDepth: number;
-  callerRecordId?: string;
-  forceReadOnly: boolean;
-  backgroundAllowed: boolean;
-  modelFallback?: SubagentModelSelection;
-};
-
-type RunSubagentOptions = {
-  id: string;
-  prompt: string;
-  abortSignal: AbortSignal;
-  readOnly: boolean;
-  delegationDepth: number;
-  modelTier?: ModelTier;
-  modelFallback?: SubagentModelSelection;
-  investigationToolset: InvestigationToolset;
-  onTextUpdate?: (text: string) => void;
-  onSessionCreated?: (session: AgentSession) => void;
-  onSessionDisposed?: (session: AgentSession) => void;
-};
-
-type SubagentModelSelection = {
-  model: ExtensionContext["model"];
-  thinkingLevel: ThinkingLevel;
-};
-
-type SubagentSettings = {
-  modelTiers?: unknown;
-};
-
-const SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent";
-const MODEL_TIERS = ["medium", "small"] as const;
-const MODEL_TIER_VALUES = new Set<string>(MODEL_TIERS);
-const SUBAGENTS_SETTINGS_KEY = "subagents";
 const MAX_DELEGATION_DEPTH = 1;
+const SPAWN = "spawn_subagent";
+const OUTPUT_SCHEMA = Type.Object(
+  {
+    status: Type.String(),
+    id: Type.Optional(Type.String()),
+    result: Type.Optional(Type.Unknown()),
+    text: Type.Optional(Type.String()),
+    error: Type.Optional(Type.String()),
+    usage: Type.Optional(Type.Unknown()),
+    evidence: Type.Optional(Type.Unknown()),
+  },
+  { additionalProperties: true },
+);
 
-const records = new Map<string, SubagentRecord>();
-
-function isActiveStatus(status: SubagentStatus): boolean {
-  return status === "running" || status === "stopping";
-}
-
-function textResult(text: string, details?: Record<string, unknown>) {
+function textResult(text: string, data: Record<string, unknown> = { status: "completed" }) {
   return {
     content: [{ type: "text" as const, text }],
-    details: details ?? {},
+    details: data,
+    structuredContent: JSON.parse(JSON.stringify(data)) as JsonValue,
   };
 }
-
-function makeId(): string {
-  return randomUUID().slice(0, 8);
+function active(record: RecordState): boolean {
+  return record.status === "running" || record.status === "stopping";
 }
-
-function truncate(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n...(truncated; call get_subagent_result for full output)`;
-}
-
-function formatToolList(tools: string[]): string {
-  if (tools.length === 0) return "";
-  if (tools.length === 1) return tools[0];
-  return `${tools.slice(0, -1).join(", ")}, and ${tools.at(-1)}`;
-}
-
-function canDelegateFromDepth(delegationDepth: number): boolean {
-  return delegationDepth < MAX_DELEGATION_DEPTH;
-}
-
-function getChildRecords(record: SubagentRecord): SubagentRecord[] {
-  return [...record.childIds]
-    .map((id) => records.get(id))
-    .filter((child): child is SubagentRecord => child !== undefined);
-}
-
-async function stopRecordTree(record: SubagentRecord): Promise<void> {
-  if (isActiveStatus(record.status)) {
-    if (record.status === "running") record.status = "stopping";
-    record.abortController.abort();
-    await record.session?.abort?.().catch(() => {});
-  }
-
-  await Promise.all(getChildRecords(record).map((child) => stopRecordTree(child)));
-}
-
-async function stopOwnedSubagents(record: SubagentRecord): Promise<void> {
-  const children = getChildRecords(record);
-  await Promise.all(children.map((child) => stopRecordTree(child)));
-  await Promise.allSettled(children.map((child) => child.promise));
-}
-
-function getLastAssistantText(session: AgentSession): string {
-  return getLatestAssistantMessageText(session.messages)?.trim() ?? "";
-}
-
-function collectAssistantText(session: AgentSession, onUpdate?: (text: string) => void) {
-  let current = "";
-  const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-    if (event.type === "message_start") current = "";
-    if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
-      current += event.assistantMessageEvent.delta;
-      onUpdate?.(current);
-    }
+function children(runtime: Runtime, record: RecordState): RecordState[] {
+  return [...record.childIds].flatMap((id) => {
+    const child = runtime.records.get(id);
+    return child ? [child] : [];
   });
-
-  return {
-    getText: () => current.trim() || getLastAssistantText(session),
-    unsubscribe,
-  };
 }
-
-function buildSystemPrompt(
-  parentSystemPrompt: string,
-  cwd: string,
-  readOnly: boolean,
-  toolset: InvestigationToolset,
-  canDelegate: boolean,
-): string {
-  const extraTools = canDelegate ? [SPAWN_SUBAGENT_TOOL_NAME] : [];
-  const defaultToolList = formatToolList(isolatedAgentToolNames(toolset, { extraTools }));
-  const readOnlyToolList = formatToolList(
-    isolatedAgentToolNames(toolset, { readOnly: true, extraTools }),
-  );
-  const delegationGuidance = canDelegate
-    ? `- Use ${SPAWN_SUBAGENT_TOOL_NAME} for independent focused checks when they materially improve confidence; verify and integrate the results.\n`
-    : "- No further delegation tool is available.\n";
-  return `${parentSystemPrompt}
-
-<delegated_task_context>
-You are a general-purpose agent running in an isolated in-memory session.
-Complete the assigned task within its authorization boundaries, including relevant verification. Stop when complete or blocked by unavailable input, access, or authorization; return a concise result with evidence and unresolved limits.
-
-Session constraints:
-- Available tools: ${readOnly ? readOnlyToolList : defaultToolList}. Inherited tool descriptions do not grant access to tools absent from this session.
-- Use absolute file paths in file references when practical.
-${delegationGuidance}${readOnly ? "- This session is read-only. Bash commands are sandboxed: repo writes are denied by the OS sandbox. Write scratch files only under /tmp or $TMPDIR. Do not attempt to edit or write files in the repository.\n" : ""}
-Working directory: ${cwd}
-</delegated_task_context>`;
+async function stopTree(runtime: Runtime, record: RecordState): Promise<void> {
+  if (active(record)) {
+    record.status = "stopping";
+    record.abortController.abort();
+  }
+  // Abort descendants before awaiting the owner: the owner's tool execution may be waiting on them.
+  await Promise.all([
+    record.session?.abort().catch(() => {}),
+    ...children(runtime, record).map((child) => stopTree(runtime, child)),
+  ]);
 }
-
-function createProtectedBashToolDef(cwd: string, execFn: ExecFn): ToolDefinition {
-  const protectedOps = createProtectedBashOperations(execFn, cwd);
-  return {
-    ...createBashToolDefinition(cwd, { operations: protectedOps }),
-    name: "bash",
-    label: "bash",
-  } as ToolDefinition;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value && typeof value === "object" && !Array.isArray(value));
-}
-
-function normalizeModelTier(value: unknown): ModelTier | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value === "string" && MODEL_TIER_VALUES.has(value)) return value as ModelTier;
+function tier(value: unknown): ModelTier | undefined {
+  if (value === undefined || value === "medium" || value === "small") return value;
   throw new Error('modelTier must be "medium" or "small".');
 }
-
-function readModelTierSpec(cwd: string, tier: ModelTier): unknown {
-  const settings = readExtensionSettings<SubagentSettings>(SUBAGENTS_SETTINGS_KEY, {
-    projectPath: projectSettingsPath(cwd),
-  });
-  const tiers = settings.modelTiers;
-  if (!isPlainObject(tiers)) return undefined;
-  return tiers[tier];
-}
-
-function modelKey(model: SubagentModelSelection["model"]): string | undefined {
-  if (!model) return undefined;
-  const { provider, id } = model;
-  if (typeof provider !== "string" || typeof id !== "string") return undefined;
-  return formatModelSpec({ provider, model: id });
-}
-
-function sameModelSelection(left: SubagentModelSelection, right: SubagentModelSelection): boolean {
-  if (left.thinkingLevel !== right.thinkingLevel) return false;
-  if (left.model === right.model) return true;
-
-  const leftKey = modelKey(left.model);
-  const rightKey = modelKey(right.model);
-  return leftKey !== undefined && leftKey === rightKey;
-}
-
-function appendModelCandidate(
-  candidates: SubagentModelSelection[],
-  candidate: SubagentModelSelection,
-): void {
-  if (!candidates.some((existing) => sameModelSelection(existing, candidate))) {
-    candidates.push(candidate);
-  }
-}
-
-function resolveSubagentModelCandidates(
+function selectModel(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  modelTier: ModelTier | undefined,
-  fallback?: SubagentModelSelection,
-): SubagentModelSelection[] {
-  const inherited = fallback ?? {
-    model: ctx.model,
-    thinkingLevel: pi.getThinkingLevel(),
-  };
-  if (modelTier === undefined) return [inherited];
-
-  const candidates: SubagentModelSelection[] = [];
-  for (const spec of parseModelSpecList(readModelTierSpec(ctx.cwd, modelTier))) {
-    const model = ctx.modelRegistry.find(spec.provider, spec.model);
-    if (model === undefined) continue;
-    appendModelCandidate(candidates, {
-      model,
-      thinkingLevel: spec.thinkingLevel ?? inherited.thinkingLevel,
-    });
-  }
-
-  appendModelCandidate(candidates, inherited);
-  return candidates;
-}
-
-function createSpawnSubagentParameters(runtime: SpawnToolRuntime) {
-  const backgroundDescription = runtime.backgroundAllowed
-    ? "Run in background and return immediately with an id; use get_subagent_result to check status or retrieve the result. Default: false."
-    : "Background mode is not available from delegated sessions. Default: false.";
-  const readOnlyDescription = runtime.forceReadOnly
-    ? "The calling session is read-only, so spawned sessions are read-only regardless of this setting."
-    : "When true, run the subagent with read-only inspection tools and sandboxed bash, without edit/write tools. Default: false.";
-
-  return Type.Object({
-    prompt: Type.String({
-      description:
-        "Self-contained task, relevant context, authorization boundaries, and success conditions.",
-    }),
-    description: Type.Optional(
-      Type.String({
-        description: "Short description shown in status/result messages.",
-      }),
-    ),
-    background: Type.Optional(
-      Type.Boolean({
-        description: backgroundDescription,
-      }),
-    ),
-    readOnly: Type.Optional(
-      Type.Boolean({
-        description: readOnlyDescription,
-      }),
-    ),
-    modelTier: Type.Optional(
-      StringEnum(MODEL_TIERS, {
-        description:
-          'Model tier resolved via subagents.modelTiers; unavailable candidates fall back to the current model. Omitted: inherit at top level, "medium" in delegated sessions. Use "small" only for bounded, easy-to-check investigation and verify its results.',
-      }),
-    ),
+  runtime: Runtime,
+  requested: ModelTier | undefined,
+): Selection {
+  const inherited = runtime.selection ?? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() };
+  if (!requested) return inherited;
+  const settings = readExtensionSettings<{ modelTiers?: Record<string, unknown> }>("subagents", {
+    projectPath: projectSettingsPath(ctx.cwd),
   });
+  for (const spec of parseModelSpecList(settings.modelTiers?.[requested])) {
+    const model = ctx.modelRegistry.find(spec.provider, spec.model);
+    if (model) return { model, thinkingLevel: spec.thinkingLevel ?? inherited.thinkingLevel };
+  }
+  return inherited;
 }
-
-function buildSpawnSubagentDescription(
-  investigationToolset: InvestigationToolset,
-  runtime: SpawnToolRuntime,
-): string {
-  const spawnedDepth = runtime.callerDelegationDepth + 1;
-  const spawnedSessionCanDelegate = canDelegateFromDepth(spawnedDepth);
-  const extraTools = spawnedSessionCanDelegate ? [SPAWN_SUBAGENT_TOOL_NAME] : [];
-  const defaultSubagentToolList = formatToolList(
-    isolatedAgentToolNames(investigationToolset, { extraTools }),
-  );
-  const readOnlySubagentToolList = formatToolList(
-    isolatedAgentToolNames(investigationToolset, { readOnly: true, extraTools }),
-  );
-  const backgroundGuidance = runtime.backgroundAllowed
-    ? "Foreground mode returns the result inline; background mode returns an id. Use get_subagent_result to check status or retrieve the result."
-    : "Foreground mode returns the result inline. Background mode is not available from delegated sessions.";
-  const delegationGuidance = spawnedSessionCanDelegate
-    ? "The delegated session may use spawn_subagent for independent focused checks within one additional delegation level when doing so materially improves quality or confidence."
-    : "The delegated session cannot delegate further.";
-  const toolGuidance = runtime.forceReadOnly
-    ? `Spawned sessions are read-only because the calling session is read-only; they receive ${readOnlySubagentToolList}.`
-    : `Default subagents receive ${defaultSubagentToolList}; read-only subagents receive ${readOnlySubagentToolList}.`;
-
-  return (
-    "Run a delegated task in a separate general-purpose agent session. " +
-    "Use this for self-contained investigation or implementation work that benefits from an isolated context. " +
-    `${toolGuidance} ` +
-    `${delegationGuidance} ` +
-    backgroundGuidance
-  );
+function availableTools(
+  toolset: InvestigationToolset,
+  runtime: Runtime,
+  readOnly: boolean,
+): string[] {
+  const tools = isolatedAgentToolNames(toolset, {
+    readOnly,
+    extraTools: runtime.callerDelegationDepth + 1 < MAX_DELEGATION_DEPTH ? [SPAWN] : [],
+  });
+  return runtime.allowedTools === undefined
+    ? tools
+    : tools.filter((name) => runtime.allowedTools?.includes(name));
 }
-
-function createSpawnSubagentToolDefinition(
+function spawnTool(
   pi: ExtensionAPI,
   ctxProvider: (ctx: ExtensionContext) => ExtensionContext,
-  investigationToolset: InvestigationToolset,
-  runtime: SpawnToolRuntime,
+  getRuntime: () => Runtime | undefined,
+  policy: SpawnPolicy,
 ): ToolDefinition {
   return {
-    name: SPAWN_SUBAGENT_TOOL_NAME,
+    name: SPAWN,
     label: "Spawn Subagent",
-    description: buildSpawnSubagentDescription(investigationToolset, runtime),
-    parameters: createSpawnSubagentParameters(runtime),
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      return executeSpawnSubagent(
-        pi,
-        ctxProvider(ctx),
-        investigationToolset,
-        runtime,
-        params as SpawnSubagentParams,
-        signal,
-        onUpdate,
-      );
+    description:
+      "Run a self-contained delegated task in an isolated session. Default tools are read, grep, find, ls, bash, edit, write, Tavily and GitHub clone tools. Read-only children use protected bash and cannot edit/write. allowedTools restricts the child (including nested delegation); [] gives no task tools. One additional foreground delegation level is available only when spawn_subagent is allowed. Native model retries continue the same conversation; tasks are never restarted on failure.",
+    annotations: { readOnlyHint: policy.forceReadOnly },
+    parameters: Type.Object({
+      prompt: Type.String({
+        description:
+          "Self-contained task, authorization boundaries, context and success conditions.",
+      }),
+      description: Type.Optional(Type.String({ description: "Short task description." })),
+      background: Type.Optional(
+        Type.Boolean({
+          description: policy.backgroundAllowed
+            ? "Return an id immediately; use get_subagent_result to retrieve the result. Default: false."
+            : "Background mode is unavailable in delegated sessions.",
+        }),
+      ),
+      readOnly: Type.Optional(
+        Type.Boolean({
+          description: policy.forceReadOnly
+            ? "Read-only is enforced regardless of this setting."
+            : "Use inspection tools and OS-sandboxed bash, without repository writes.",
+        }),
+      ),
+      modelTier: Type.Optional(
+        StringEnum(["medium", "small"], {
+          description:
+            'Initial model from subagents.modelTiers; unresolved entries fall back to the inherited model. Omitted: inherit at top level, "medium" in delegated sessions. This is not runtime failover.',
+        }),
+      ),
+      allowedTools: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Child tool allowlist, bounded by the caller's tool policy. Omit for inherited defaults; [] for no task tools.",
+        }),
+      ),
+      schema: Type.Optional(
+        Type.Record(Type.String(), Type.Unknown(), {
+          description: "JSON Schema for a required terminal structured_output result.",
+        }),
+      ),
+    }),
+    outputSchema: OUTPUT_SCHEMA,
+    async execute(_id, params, signal, onUpdate, ctx) {
+      const runtime = getRuntime();
+      if (!runtime || runtime.closed)
+        return textResult(
+          "Cannot spawn delegated task because the owning session is closing or closed.",
+          {
+            status: "error",
+          },
+        );
+      return spawn(pi, ctxProvider(ctx), runtime, params as SpawnParams, signal, onUpdate);
     },
   } as ToolDefinition;
 }
 
-async function runSubagentAttempt(
+async function spawn(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
-  options: RunSubagentOptions,
-  modelSelection: SubagentModelSelection,
-): Promise<{ session: AgentSession; result: string; errorMessage?: string }> {
-  if (options.abortSignal.aborted) throw new Error("Subagent stopped before it started.");
-
-  const agentDir = getAgentDir();
-  const canDelegate = canDelegateFromDepth(options.delegationDepth);
-  const loader = new DefaultResourceLoader({
-    cwd: ctx.cwd,
-    agentDir,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    extensionFactories: [],
-    systemPromptOverride: () =>
-      buildSystemPrompt(
-        ctx.getSystemPrompt(),
-        ctx.cwd,
-        options.readOnly,
-        options.investigationToolset,
-        canDelegate,
-      ),
-    appendSystemPromptOverride: () => [],
-  });
-  await loader.reload();
-
-  const execFn: ExecFn = (command, args, opts) =>
-    pi.exec(command, args, {
-      cwd: opts?.cwd ?? ctx.cwd,
-      timeout: opts?.timeout,
-    });
-
-  const nestedSpawnTool = canDelegate
-    ? createSpawnSubagentToolDefinition(pi, () => ctx, options.investigationToolset, {
-        callerDelegationDepth: options.delegationDepth,
-        callerRecordId: options.id,
-        forceReadOnly: options.readOnly,
-        backgroundAllowed: false,
-        modelFallback: modelSelection,
-      })
-    : undefined;
-  const extraTools = nestedSpawnTool ? [nestedSpawnTool.name] : [];
-  const customTools: ToolDefinition[] = [
-    ...options.investigationToolset.tools,
-    ...(options.readOnly ? [createProtectedBashToolDef(ctx.cwd, execFn)] : []),
-    ...(nestedSpawnTool ? [nestedSpawnTool] : []),
-  ];
-
-  const { session } = await createAgentSession({
-    cwd: ctx.cwd,
-    agentDir,
-    sessionManager: SessionManager.inMemory(ctx.cwd),
-    settingsManager: SettingsManager.create(ctx.cwd, agentDir),
-    modelRuntime: await createIsolatedModelRuntime(ctx.modelRegistry),
-    model: modelSelection.model,
-    thinkingLevel: modelSelection.thinkingLevel,
-    tools: isolatedAgentToolNames(options.investigationToolset, {
-      readOnly: options.readOnly,
-      extraTools,
-    }),
-    customTools,
-    resourceLoader: loader,
-  });
-
-  session.setSessionName(`subagent#${options.id}`);
-
-  options.onSessionCreated?.(session);
-
-  const collector = collectAssistantText(session, options.onTextUpdate);
-  const abort = () => session.abort().catch(() => {});
-  options.abortSignal.addEventListener("abort", abort, { once: true });
-
-  try {
-    if (options.abortSignal.aborted) {
-      await session.abort().catch(() => {});
-      throw new Error("Subagent stopped before it started.");
-    }
-
-    await session.prompt(options.prompt);
-    return {
-      session,
-      result: collector.getText() || "No output.",
-      errorMessage: getLatestAssistantError(session.messages),
-    };
-  } finally {
-    options.abortSignal.removeEventListener("abort", abort);
-    collector.unsubscribe();
-  }
-}
-
-async function runSubagent(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  options: RunSubagentOptions,
-): Promise<{ session: AgentSession; result: string }> {
-  const modelCandidates = resolveSubagentModelCandidates(
-    pi,
-    ctx,
-    options.modelTier,
-    options.modelFallback,
-  );
-  for (let index = 0; index < modelCandidates.length; index += 1) {
-    const attempt = await runSubagentAttempt(pi, ctx, options, modelCandidates[index]);
-    if (attempt.errorMessage === undefined)
-      return { session: attempt.session, result: attempt.result };
-
-    if (!shouldFallbackForError(attempt.errorMessage) || index === modelCandidates.length - 1) {
-      throw new Error(attempt.errorMessage);
-    }
-
-    try {
-      attempt.session.dispose?.();
-    } catch {}
-    options.onSessionDisposed?.(attempt.session);
-  }
-
-  throw new Error("Subagent failed.");
-}
-
-function disposeRecordSession(record: SubagentRecord): void {
-  const session = record.session;
-  record.session = undefined;
-  try {
-    session?.dispose?.();
-  } catch {}
-}
-
-async function executeSpawnSubagent(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  investigationToolset: InvestigationToolset,
-  runtime: SpawnToolRuntime,
-  params: SpawnSubagentParams,
+  runtime: Runtime,
+  params: SpawnParams,
   signal: AbortSignal | undefined,
-  onUpdate:
-    | ((result: {
-        content: Array<{ type: "text"; text: string }>;
-        details: Record<string, unknown>;
-      }) => void)
-    | undefined,
+  onUpdate: ((result: ReturnType<typeof textResult>) => void) | undefined,
 ) {
-  const requestedModelTier = normalizeModelTier(params.modelTier);
-  const background = runtime.backgroundAllowed && (params.background ?? false);
-  const attachParentAbort = !background;
-  if (params.background && !runtime.backgroundAllowed) {
-    return textResult(
-      "Background mode is not available for delegated spawn_subagent calls. Run the delegated task in foreground mode instead.",
-      { status: "rejected", background: false },
-    );
-  }
-
-  if (attachParentAbort && signal?.aborted) {
+  const requestedTier = tier(params.modelTier);
+  if (params.background && !runtime.backgroundAllowed)
+    return textResult("Background mode is not available for delegated spawn_subagent calls.", {
+      status: "rejected",
+      background: false,
+    });
+  const background = params.background ?? false;
+  if (!background && signal?.aborted)
     return textResult("Subagent stopped before it started.", { status: "stopped" });
-  }
-
-  const parentRecord = runtime.callerRecordId ? records.get(runtime.callerRecordId) : undefined;
+  const owner = runtime.callerRecordId ? runtime.records.get(runtime.callerRecordId) : undefined;
   if (
     runtime.callerRecordId &&
-    (parentRecord?.status !== "running" || parentRecord.abortController.signal.aborted)
-  ) {
+    (owner?.status !== "running" || owner.abortController.signal.aborted)
+  )
     return textResult(
       "Cannot spawn delegated task because the calling session is no longer active.",
-      {
-        status: "error",
-      },
+      { status: "error" },
     );
-  }
-
-  const id = makeId();
-  const description = params.description?.trim() || "Subagent task";
-  const abortController = new AbortController();
-  const parentAbort = () => abortController.abort();
-  const ownerAbort = () => abortController.abort();
-  if (attachParentAbort) signal?.addEventListener("abort", parentAbort, { once: true });
-  parentRecord?.abortController.signal.addEventListener("abort", ownerAbort, { once: true });
-  if (parentRecord?.abortController.signal.aborted) abortController.abort();
-
-  const record: SubagentRecord = {
+  const readOnly = runtime.forceReadOnly || (params.readOnly ?? false);
+  const { toolset } = runtime;
+  const available = availableTools(toolset, runtime, readOnly);
+  const denied = params.allowedTools?.find((name) => !available.includes(name));
+  if (denied) throw new Error(`Subagent allowedTools includes unavailable tool: ${denied}`);
+  const selected = [...new Set(params.allowedTools ?? available)];
+  const selection = selectModel(pi, ctx, runtime, requestedTier ?? (owner ? "medium" : undefined));
+  if (!selection.model) throw new Error("Select a model before spawning a subagent");
+  const model = selection.model;
+  const id = randomUUID().slice(0, 8);
+  const record: RecordState = {
     id,
-    description,
+    description: params.description?.trim() || "Subagent task",
     status: "running",
     startedAt: Date.now(),
     promise: Promise.resolve(),
-    abortController,
+    abortController: new AbortController(),
     childIds: new Set(),
   };
-  records.set(id, record);
-  parentRecord?.childIds.add(id);
-
+  runtime.records.set(id, record);
+  owner?.childIds.add(id);
+  const abort = () => record.abortController.abort();
+  if (!background) signal?.addEventListener("abort", abort, { once: true });
+  owner?.abortController.signal.addEventListener("abort", abort, { once: true });
+  if ((!background && signal?.aborted) || owner?.abortController.signal.aborted) abort();
   record.promise = (async () => {
     try {
-      const { session, result } = await runSubagent(pi, ctx, {
-        id,
+      const childRuntime: Runtime = {
+        ...runtime,
+        callerDelegationDepth: runtime.callerDelegationDepth + 1,
+        callerRecordId: id,
+        forceReadOnly: readOnly,
+        backgroundAllowed: false,
+        selection,
+        allowedTools: selected,
+      };
+      const nested = selected.includes(SPAWN)
+        ? spawnTool(
+            pi,
+            () => ctx,
+            () => (runtime.closed ? undefined : childRuntime),
+            childRuntime,
+          )
+        : undefined;
+      record.outcome = await runDelegatedSession({
+        cwd: ctx.cwd,
+        modelRegistry: ctx.modelRegistry,
+        model,
+        thinkingLevel: selection.thinkingLevel,
+        systemPrompt: ctx.getSystemPrompt(),
         prompt: params.prompt,
-        abortSignal: abortController.signal,
-        readOnly: runtime.forceReadOnly || (params.readOnly ?? false),
-        delegationDepth: runtime.callerDelegationDepth + 1,
-        modelTier: requestedModelTier ?? (runtime.callerRecordId ? "medium" : undefined),
-        modelFallback: runtime.modelFallback,
-        investigationToolset,
-        onTextUpdate: background
+        name: `subagent#${id}`,
+        allowedTools: selected,
+        // These host-owned investigation definitions write only detached scratch roots; they do
+        // not grant mutation tools or inherit parent tool execution capabilities.
+        customTools: [
+          ...toolset.tools.map((tool) => ({
+            ...tool,
+            annotations: { ...tool.annotations, readOnlyHint: true },
+          })),
+          ...(nested ? [nested] : []),
+        ],
+        readOnly,
+        schema: params.schema,
+        signal: record.abortController.signal,
+        exec: (command, args, opts) =>
+          pi.exec(command, args, { cwd: opts?.cwd ?? ctx.cwd, timeout: opts?.timeout }),
+        onText: background
           ? undefined
           : (text) =>
+              !runtime.closed &&
+              !record.abortController.signal.aborted &&
               onUpdate?.(
-                textResult(`Subagent ${id} running...\n\n${truncate(text, 1200)}`, {
-                  id,
-                  status: "running",
-                }),
+                textResult(
+                  `Subagent ${id} running...\n\n${text.length > 1200 ? `${text.slice(0, 1200)}\n...(truncated; call get_subagent_result for full output)` : text}`,
+                  { id, status: "running" },
+                ),
               ),
         onSessionCreated: (session) => {
           record.session = session;
         },
-        onSessionDisposed: (session) => {
-          if (record.session === session) record.session = undefined;
+        onSessionDisposed: () => {
+          record.session = undefined;
         },
       });
-      record.session = session;
-      record.status = abortController.signal.aborted ? "stopped" : "completed";
-      record.result = result;
-      record.completedAt = Date.now();
+      record.status =
+        record.abortController.signal.aborted || record.outcome.status === "cancelled"
+          ? "stopped"
+          : record.outcome.status === "completed"
+            ? "completed"
+            : "error";
+      record.error = record.outcome.error;
     } catch (error) {
-      record.status = abortController.signal.aborted ? "stopped" : "error";
+      record.status = record.abortController.signal.aborted ? "stopped" : "error";
       record.error = error instanceof Error ? error.message : String(error);
-      record.completedAt = Date.now();
     } finally {
-      try {
-        await stopOwnedSubagents(record);
-      } finally {
-        disposeRecordSession(record);
-        if (attachParentAbort) signal?.removeEventListener("abort", parentAbort);
-        parentRecord?.abortController.signal.removeEventListener("abort", ownerAbort);
-        parentRecord?.childIds.delete(id);
-      }
+      const owned = children(runtime, record);
+      await Promise.all(owned.map((child) => stopTree(runtime, child)));
+      await Promise.allSettled(owned.map((child) => child.promise));
+      record.completedAt = Date.now();
+      if (!background) signal?.removeEventListener("abort", abort);
+      owner?.abortController.signal.removeEventListener("abort", abort);
+      owner?.childIds.delete(id);
     }
   })();
-
-  if (background) {
+  if (background)
     return textResult(
-      `Subagent started in background.\nID: ${id}\nDescription: ${description}\n\nUse get_subagent_result with this ID to check status or retrieve the full result.`,
+      `Subagent started in background.\nID: ${id}\nDescription: ${record.description}\n\nUse get_subagent_result to retrieve the result.`,
       { id, status: "running", background: true },
     );
-  }
-
   await record.promise;
-  const result =
-    record.status === "completed"
-      ? textResult(record.result ?? "No output.", {
-          id,
-          status: record.status,
-        })
-      : textResult(`Subagent ${record.status}: ${record.error ?? "stopped"}`, {
-          id,
-          status: record.status,
-        });
-  records.delete(id);
-  return result;
+  runtime.records.delete(id);
+  return recordResult(record);
 }
 
-export default function (pi: ExtensionAPI) {
-  const investigationToolset = createInvestigationToolset({ exec: toCliExec(pi) });
-
-  pi.registerTool(
-    createSpawnSubagentToolDefinition(pi, (ctx) => ctx, investigationToolset, {
-      callerDelegationDepth: -1,
-      forceReadOnly: false,
-      backgroundAllowed: true,
-    }),
+function recordResult(record: RecordState) {
+  const data = { ...record.outcome, id: record.id, status: record.status, error: record.error };
+  const result = textResult(
+    record.status === "completed"
+      ? record.outcome?.text || JSON.stringify(record.outcome?.result) || "No output."
+      : `Subagent ${record.status}: ${record.error ?? record.status}`,
+    data,
   );
+  const usage = record.usageReported ? undefined : record.outcome?.usage;
+  record.usageReported = true;
+  return { ...result, ...(usage ? { usage } : {}), isError: record.status === "error" };
+}
 
+export default function subagentsExtension(pi: ExtensionAPI) {
+  // Owned by this extension runtime, not by the imported module. Separate SDK sessions cannot
+  // inspect, stop, or clean up one another's records or temporary workspaces.
+  const policy: SpawnPolicy = { forceReadOnly: false, backgroundAllowed: true };
+  let runtime: Runtime | undefined;
+  let closing: Promise<void> | undefined;
+  let shutdown = false;
+  const getRuntime = () => {
+    if (shutdown || closing || runtime?.closed) return undefined;
+    runtime ??= {
+      ...policy,
+      records: new Map(),
+      toolset: createInvestigationToolset({ exec: toCliExec(pi) }),
+      closed: false,
+      callerDelegationDepth: -1,
+    };
+    return runtime;
+  };
+  const closeOwner = (): Promise<void> => {
+    if (closing) return closing;
+    if (!runtime) return Promise.resolve();
+    const owner = runtime;
+    owner.closed = true;
+    const owned = [...owner.records.values()];
+    // Install the gate before abort listeners run; they may re-enter shutdown.
+    closing = Promise.resolve()
+      .then(async () => {
+        await Promise.all(owned.map((record) => stopTree(owner, record)));
+        await Promise.allSettled(owned.map((record) => record.promise));
+        owner.records.clear();
+        await owner.toolset.cleanup();
+        runtime = undefined;
+      })
+      .finally(() => {
+        closing = undefined;
+      });
+    return closing;
+  };
+  pi.registerTool(spawnTool(pi, (ctx) => ctx, getRuntime, policy));
+  const exposure = isOneShotPrimaryModeSelected() ? "direct" : "deferred";
   pi.registerTool({
     name: "get_subagent_result",
+    exposure,
     label: "Get Subagent Result",
-    description: "Check status and retrieve the result of a background subagent.",
+    description:
+      "Check status and retrieve a background task's structured result, usage and evidence.",
     parameters: Type.Object({
-      id: Type.String({
-        description: "The subagent id returned by the subagent tool.",
-      }),
-      wait: Type.Optional(
-        Type.Boolean({
-          description: "Wait for completion before returning. Default: false.",
-        }),
-      ),
+      id: Type.String(),
+      wait: Type.Optional(Type.Boolean({ description: "Wait for completion. Default: false." })),
     }),
-    async execute(_toolCallId, params) {
-      const record = records.get(params.id);
-      if (!record) return textResult(`Subagent not found: ${params.id}`);
-
-      if (params.wait && isActiveStatus(record.status)) {
-        await record.promise;
+    outputSchema: OUTPUT_SCHEMA,
+    async execute(_id, params, signal) {
+      const record = runtime?.records.get(params.id);
+      if (!record)
+        return textResult(`Subagent not found: ${params.id}`, {
+          status: "not_found",
+          id: params.id,
+        });
+      if (params.wait && active(record)) {
+        // Cancelling the foreground waiter must not cancel independently owned work.
+        signal?.throwIfAborted();
+        let abort: (() => void) | undefined;
+        try {
+          await Promise.race([
+            record.promise,
+            new Promise<never>((_resolve, reject) => {
+              if (!signal) return;
+              abort = () => reject(signal.reason ?? new Error("Subagent wait aborted"));
+              signal.addEventListener("abort", abort, { once: true });
+              if (signal.aborted) abort();
+            }),
+          ]);
+        } finally {
+          if (abort) signal?.removeEventListener("abort", abort);
+        }
       }
-
-      const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
-      const header = `Subagent ${record.id} | ${record.status} | ${durationMs}ms\nDescription: ${record.description}\n`;
-
-      if (record.status === "running") {
-        return textResult(`${header}\nStill running.`);
-      }
-      if (record.status === "completed") {
-        return textResult(`${header}\n${record.result ?? "No output."}`);
-      }
-      return textResult(`${header}\n${record.error ?? record.status}`);
+      if (active(record))
+        return textResult(
+          `Subagent ${record.id} | ${record.status}\nDescription: ${record.description}\n\nStill running.`,
+          { id: record.id, status: record.status },
+        );
+      const result = recordResult(record);
+      return {
+        ...result,
+        content: [
+          {
+            type: "text" as const,
+            text: `Subagent ${record.id} | ${record.status} | ${(record.completedAt ?? Date.now()) - record.startedAt}ms\nDescription: ${record.description}\n\n${result.content[0].text}`,
+          },
+        ],
+      };
     },
   });
-
   pi.registerTool({
     name: "stop_subagent",
+    exposure,
     label: "Stop Subagent",
-    description: "Stop a running background subagent by ID.",
-    parameters: Type.Object({
-      id: Type.String({
-        description: "The subagent id returned by spawn_subagent.",
-      }),
-    }),
-    async execute(_toolCallId, params) {
-      const record = records.get(params.id);
-      if (!record) return textResult(`Subagent not found: ${params.id}`);
-      if (!isActiveStatus(record.status)) {
+    description:
+      "Stop a background task and its descendants. Does not enqueue a follow-up or wake the parent.",
+    parameters: Type.Object({ id: Type.String() }),
+    outputSchema: OUTPUT_SCHEMA,
+    async execute(_id, params) {
+      const owner = runtime;
+      const record = owner?.records.get(params.id);
+      if (!owner || !record)
+        return textResult(`Subagent not found: ${params.id}`, {
+          status: "not_found",
+          id: params.id,
+        });
+      if (!active(record))
         return textResult(`Subagent ${record.id} is not running (status: ${record.status}).`, {
           id: record.id,
           status: record.status,
         });
-      }
-
-      await stopRecordTree(record);
+      await stopTree(owner, record);
       await record.promise;
-
-      return textResult(`Stopped subagent ${record.id}.`, {
-        id: record.id,
-        status: record.status,
-      });
+      return textResult(`Stopped subagent ${record.id}.`, { id: record.id, status: record.status });
     },
   });
-
   pi.registerTool({
     name: "list_subagents",
+    exposure,
     label: "List Subagents",
-    description: "List subagents created in this session with their current status and IDs.",
+    description: "List tasks owned by this session, their status and IDs.",
     parameters: Type.Object({}),
+    outputSchema: OUTPUT_SCHEMA,
     async execute() {
-      const list = [...records.values()].sort((a, b) => b.startedAt - a.startedAt);
-      if (list.length === 0) return textResult("No subagents in this session.", { count: 0 });
-
-      const lines = list.map((record) => {
-        const durationMs = (record.completedAt ?? Date.now()) - record.startedAt;
-        return `- ${record.id} | ${record.status} | ${durationMs}ms | ${record.description}`;
-      });
-
-      return textResult(`Subagents (${list.length}):\n${lines.join("\n")}`, {
-        count: list.length,
-      });
+      const list = [...(runtime?.records.values() ?? [])].sort((a, b) => b.startedAt - a.startedAt);
+      return textResult(
+        list.length
+          ? `Subagents (${list.length}):\n${list.map((record) => `- ${record.id} | ${record.status} | ${(record.completedAt ?? Date.now()) - record.startedAt}ms | ${record.description}`).join("\n")}`
+          : "No subagents in this session.",
+        {
+          status: "completed",
+          count: list.length,
+          tasks: list.map(({ id, status, description }) => ({ id, status, description })),
+        },
+      );
     },
   });
-
+  // Before-events can be cancelled by a later handler (with no cancellation event).
+  // Retire this owner permanently, but let the next top-level call lazily acquire a fresh
+  // owner if the live session continues. Nested closures retain the retired owner.
+  pi.on("session_before_switch", closeOwner);
+  pi.on("session_before_fork", closeOwner);
+  pi.on("session_before_tree", closeOwner);
+  pi.on("session_start", async () => {
+    await closeOwner();
+    shutdown = false;
+    getRuntime();
+  });
+  pi.on("session_tree", async () => {
+    await closeOwner();
+    getRuntime();
+  });
   pi.on("session_shutdown", async () => {
-    const activeRecords = [...records.values()];
-    try {
-      await Promise.all(activeRecords.map((record) => stopRecordTree(record)));
-      await Promise.allSettled(activeRecords.map((record) => record.promise));
-    } finally {
-      for (const record of activeRecords) disposeRecordSession(record);
-      records.clear();
-      await Promise.all([investigationToolset.cleanup(), resetSandboxState()]);
-    }
+    shutdown = true;
+    await closeOwner();
   });
 }

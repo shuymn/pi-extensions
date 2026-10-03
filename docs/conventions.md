@@ -10,16 +10,16 @@
 
 ## Slash Command 公開方針
 
-- 実行時の制御が必要な操作（例: `/workflow`, `/workflows`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
+- 実行時の制御・ユーザー認可が必要な操作（例: `/goal`, `/review-fix`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
 - 固定の手順を渡す `/plan` と `/impl` は `prompts/` 配下の標準 prompt templates とし、`package.json` の `pi.prompts` で公開する。引数展開と処理中のメッセージ配送は Pi 標準に任せる。
-- packaged review / research は専用 Slash Command を持たず、`/workflow review_flow` / `/workflow research_flow` で起動する。
+- review / research の手順は `skills/` に置く。review の scope・coverage・修正前チェックは runtime capability が保証し、修正認可は `/review-fix` でユーザーから受け取る。
 
 ## Dynamic Tool Loading
 
-- Tavily、`workflow`、background subagent management の大型 tool 群は登録したまま inactive にし、`search_tools` から純加算で有効化する。
-- `ask_user_question`、`compact_context`、`goal`、`spawn_subagent`、`github_clone_workspace` は常時 active にする。
+- Tavily、`review`、background subagent management の大型 tool 群は `exposure: "deferred"` で登録する。Pi 標準の `tool_search` を使う場合は `builtin:tool-search` と `defaultTools` の `+tool_search` が必要。codemode からも標準の discovery API で参照できる。
+- `ask_user_question`、`goal`、`spawn_subagent`、`github_clone_workspace` は常時 active にする。
 - deferred LLM Tool は active-only の `promptSnippet` / `promptGuidelines` を持たず、必要な契約を `description` と parameter schema に置く。
-- bounded one-shot flow が設定した active tool allowlist へ loader を再追加しない。
+- deferred exposure と `setActiveTools()` はアクセス制御ではない。child の明示的な tools allowlist、one-shot の実行時 guard により nested / deferred execution にも制限を適用する。
 
 ## TUI component
 
@@ -44,18 +44,17 @@
 ## Structured output tool
 
 - LLM に固定の JSON-like 出力を求める場合は、prose-only な JSON 指示ではなく tool parameter schema を優先する。
-- Structured schema は外部 API / CLI、質問 UI、永続化 state、副作用 tool、workflow 分岐など、コードが機械的に消費する境界に限定する。
-- LLM-to-LLM の内部 workflow handoff は Markdown / prose を基本にし、具体的な失敗や品質改善が観測されるまで schema / validation / patch tool を追加しない。
+- Structured schema は外部 API / CLI、質問 UI、永続化 state、副作用 tool、review の coverage / validation など、コードが機械的に消費する境界に限定する。
+- LLM-to-LLM の委譲結果は Markdown / prose を基本にし、コードが分岐・検証する場合に schema を指定する。
 - 文字列 enum は Google API 互換性のため `@earendil-works/pi-ai` の `StringEnum` を使い、`Type.Union` / `Type.Literal` で表現しない。
 - 最終または中間成果物の提出で turn を終える tool は `terminate: true` を返す。
-- `content` はモデルに渡る tool result として、判断に必要な回答・状態・未回答情報を含める。`details` は UI や extension が使う構造化データであり、モデルへの伝達には使わない。
-- recoverable な workflow 提出失敗は `{ ok, warnings }`（必要なら `reason`）を含む structured result で返し、実行不能な tool failure は throw する。
+- `content` はモデルに渡る tool result として、判断に必要な回答・状態・未回答情報を含める。`details` は UI や extension 用であり、モデルへの伝達には使わない。codemode 向けの完全なデータは `outputSchema` と `structuredContent` で返す。
+- 部分失敗や中断は明示的な status と証跡で返す。実行不能な tool failure は throw し、失敗を空の成功結果に変換しない。
 - 外部 CLI JSON の parse、質問 UI、state persistence の result は、具体的な再利用ニーズが出るまで structured-output helper に一般化しない。
 
 ## 進捗表示
 
 - 長期的に参照する進行状態・作業状態は `aboveEditor` widget で示す。
-- dynamic workflow の状態表示は `aboveEditor` を標準にする。
 - `belowEditor` widget は spinner、elapsed time、外部 CLI 実行中など短命・補助的な進捗表示に使う。
 - 外部 CLI など待ち時間が読みにくい処理は spinner と elapsed time を表示する。
 - 短い完了通知は `ctx.ui.notify()` でよい。

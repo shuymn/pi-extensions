@@ -10,9 +10,8 @@ import {
 import { createTavilyToolDefinitions, TAVILY_TOOL_NAMES } from "./tavily-tools";
 
 /**
- * Low-level investigation LLM tools mounted into isolated agent sessions
- * (spawn_subagent and workflow agent()). Order is stable so callers can assert
- * it directly.
+ * Investigation tools explicitly mounted into delegated sessions by spawn_subagent.
+ * Order is stable so callers can assert it directly.
  */
 export const INVESTIGATION_TOOL_NAMES = [
   ...TAVILY_TOOL_NAMES,
@@ -53,7 +52,7 @@ export function isolatedAgentToolNames(
  * Build the shared investigation toolset. The Tavily tools run through the
  * provided CliExec; the GitHub clone tool runs git directly and registers its
  * cloned workspaces in a detached (non-persisted) way. Cloned temp roots are
- * tracked here and removed only on the parent session shutdown via cleanup().
+ * tracked here and removed via cleanup() after the owning session's children settle.
  */
 export function createInvestigationToolset({ exec }: { exec: CliExec }): InvestigationToolset {
   const tempRoots = new Set<string>();

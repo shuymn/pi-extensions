@@ -71,12 +71,6 @@ function modelPrefix(model: unknown, extensionStatuses: ReadonlyMap<string, stri
     : "";
 }
 
-function contextWindow(model: unknown): number | undefined {
-  if (!model || typeof model !== "object") return undefined;
-  const value = (model as { contextWindow?: unknown }).contextWindow;
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
 function formatTime(date: Date): string {
   return date.toLocaleTimeString("ja-JP", { hour12: false });
 }
@@ -104,6 +98,7 @@ export default function (pi: ExtensionAPI) {
   let lastTurnDuration: number | undefined;
 
   pi.on("session_start", async (_event, ctx) => {
+    lastReadyTime = formatTime(new Date());
     turnStartTime = undefined;
     lastTurnDuration = undefined;
     if (!ctx.hasUI || !isTuiMode(ctx)) return;
@@ -150,10 +145,11 @@ export default function (pi: ExtensionAPI) {
               : "";
           parts[parts.length - 1] += ` via ${rgb(255, 80, 80, effortModel)}${durationPart}`;
 
-          const usage = ctx.getContextUsage();
-          const window = contextWindow(ctx.model);
-          if (usage && window && typeof usage.tokens === "number") {
-            parts.push(`ctx ${dot((usage.tokens / window) * 100, 80, 30)}`);
+          // Pi uses the effective physical model's limits for virtual selections and
+          // reports unknown usage after compaction. Do not divide by ctx.model's window.
+          const percent = ctx.getContextUsage()?.percent;
+          if (typeof percent === "number" && Number.isFinite(percent)) {
+            parts.push(`ctx ${dot(percent, 80, 30)}`);
           }
 
           return [truncateToWidth(parts.join(SEP), width, "")];
@@ -192,5 +188,10 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("thinking_level_select", async () => {
     rerender();
+  });
+
+  pi.on("session_shutdown", (_event, ctx) => {
+    // Another extension may have replaced our footer and already disposed it.
+    if (requestFooterRender && ctx.hasUI && isTuiMode(ctx)) ctx.ui.setFooter(undefined);
   });
 }

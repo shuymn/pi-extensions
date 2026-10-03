@@ -1,9 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { createFakePi } from "../../tests/support/fake-pi";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import type { Provider, RefreshModelsContext } from "@earendil-works/pi-ai";
 import extension, {
   COMMANDCODE_ANTHROPIC_API,
   COMMANDCODE_ANTHROPIC_BASE_URL,
-  COMMANDCODE_API_KEY_CONFIG_FALLBACK,
   COMMANDCODE_DISPLAY_NAME,
   COMMANDCODE_FALLBACK_MODELS,
   COMMANDCODE_MODELS_URL,
@@ -14,7 +13,6 @@ import extension, {
   createCommandCodeModelConfig,
   fetchCommandCodeModels,
   parseCommandCodeModels,
-  resolveCommandCodeModels,
 } from "./index";
 
 function jsonResponse(payload: unknown, init: ResponseInit = {}): Response {
@@ -23,6 +21,33 @@ function jsonResponse(payload: unknown, init: ResponseInit = {}): Response {
     headers: { "content-type": "application/json" },
   });
 }
+
+function registerProvider(): Provider {
+  let provider: Provider | undefined;
+  expect(
+    extension({
+      registerProvider(value: Provider) {
+        provider = value;
+      },
+    } as never),
+  ).toBeUndefined();
+  if (!provider) throw new Error("Provider was not registered");
+  return provider;
+}
+
+function refreshContext(overrides: Partial<RefreshModelsContext> = {}): RefreshModelsContext {
+  return {
+    allowNetwork: true,
+    signal: new AbortController().signal,
+    publish: async ({ update }) => {
+      update?.();
+      return true;
+    },
+    ...overrides,
+  };
+}
+
+afterEach(() => mock.restore());
 
 describe("commandcode-provider extension", () => {
   test("maps Claude models to the Anthropic Messages endpoint", () => {
@@ -148,39 +173,92 @@ describe("commandcode-provider extension", () => {
     expect(models[0]?.id).toBe("gpt-5.5");
   });
 
-  test("falls back to a curated model list when live discovery fails", async () => {
-    const fetchImpl = (async () =>
-      jsonResponse({ error: "unavailable" }, { status: 503 })) as unknown as typeof fetch;
-
-    const models = await resolveCommandCodeModels(fetchImpl);
-
-    expect(models.map((model) => model.id)).toEqual(
-      COMMANDCODE_FALLBACK_MODELS.map((model) => model.id),
+  test("registers synchronously with fallback models and does not fetch offline", async () => {
+    const fetchMock = spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected fetch"));
+    const provider = registerProvider();
+    expect(provider.id).toBe(COMMANDCODE_PROVIDER_ID);
+    expect(provider.name).toBe(COMMANDCODE_DISPLAY_NAME);
+    expect(provider.baseUrl).toBe(COMMANDCODE_OPENAI_BASE_URL);
+    expect(provider.auth.apiKey).toBeDefined();
+    expect(provider.auth.oauth).toBeUndefined();
+    expect(provider.getModels()).toEqual(
+      COMMANDCODE_FALLBACK_MODELS.map(createCommandCodeModelConfig),
     );
+    await provider.refreshModels?.(refreshContext({ allowNetwork: false }));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(provider.getAllModels?.()).toEqual(provider.getModels());
   });
 
-  test("falls back when the models response is not valid JSON", async () => {
-    const fetchImpl = (async () =>
-      new Response("not-json", {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch;
-
-    const models = await resolveCommandCodeModels(fetchImpl);
-
-    expect(models.map((model) => model.id)).toEqual(
-      COMMANDCODE_FALLBACK_MODELS.map((model) => model.id),
+  test("replaces the fallback and removes models missing from later live catalogs", async () => {
+    const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({ data: [{ id: "claude-sonnet-4-6" }, { id: "new-model" }] }),
     );
+    const provider = registerProvider();
+    await provider.refreshModels?.(refreshContext());
+    expect(provider.getModels().map((model) => model.id)).toEqual([
+      "claude-sonnet-4-6",
+      "new-model",
+    ]);
+    fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "new-model" }] }));
+    await provider.refreshModels?.(refreshContext());
+    expect(provider.getModels().map((model) => model.id)).toEqual(["new-model"]);
+    expect(provider.getAllModels?.()).toEqual(provider.getModels());
   });
 
-  test("falls back when the models response is empty", async () => {
-    const fetchImpl = (async () => jsonResponse({ data: [] })) as unknown as typeof fetch;
+  for (const [name, response] of [
+    ["HTTP failure", () => jsonResponse({}, { status: 503 })],
+    ["invalid JSON", () => new Response("not-json")],
+    ["empty catalog", () => jsonResponse({ data: [] })],
+  ] as const) {
+    test(`reports ${name} while retaining the initial or latest successful catalog`, async () => {
+      const fetchMock = spyOn(globalThis, "fetch").mockResolvedValue(response());
+      const provider = registerProvider();
+      const fallback = provider.getModels();
+      await expect(provider.refreshModels?.(refreshContext())).rejects.toThrow();
+      expect(provider.getModels()).toBe(fallback);
+      fetchMock.mockResolvedValue(jsonResponse({ data: [{ id: "live-model" }] }));
+      await provider.refreshModels?.(refreshContext());
+      const live = provider.getModels();
+      fetchMock.mockResolvedValue(response());
+      await expect(provider.refreshModels?.(refreshContext())).rejects.toThrow();
+      expect(provider.getModels()).toBe(live);
+    });
+  }
 
-    const models = await resolveCommandCodeModels(fetchImpl);
+  test("does not mutate the catalog when the runtime rejects publication", async () => {
+    spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ data: [{ id: "stale-model" }] }));
+    const provider = registerProvider();
+    const fallback = provider.getModels();
+    const publish = mock(async () => false);
+    await provider.refreshModels?.(refreshContext({ publish }));
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(provider.getModels()).toBe(fallback);
+  });
 
-    expect(models.map((model) => model.id)).toEqual(
-      COMMANDCODE_FALLBACK_MODELS.map((model) => model.id),
-    );
+  test("combines caller cancellation with the discovery timeout", async () => {
+    const controller = new AbortController();
+    const timeout = new AbortController();
+    const timeoutMock = spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    let requestSignal: AbortSignal | null | undefined;
+    spyOn(globalThis, "fetch").mockImplementation(((_url, init) => {
+      requestSignal = init?.signal;
+      return new Promise<Response>((_resolve, reject) => {
+        requestSignal?.addEventListener("abort", () => reject(requestSignal?.reason));
+      });
+    }) as typeof fetch);
+    const provider = registerProvider();
+    const fallback = provider.getModels();
+    const refresh = provider.refreshModels?.(refreshContext({ signal: controller.signal }));
+    controller.abort(new Error("Cancelled"));
+    await expect(refresh).rejects.toThrow("Cancelled");
+    expect(requestSignal?.aborted).toBe(true);
+    expect(timeoutMock).toHaveBeenCalledWith(10_000);
+    expect(provider.getModels()).toBe(fallback);
+
+    const timedRefresh = provider.refreshModels?.(refreshContext());
+    timeout.abort(new Error("Timed out"));
+    await expect(timedRefresh).rejects.toThrow("Timed out");
+    expect(provider.getModels()).toBe(fallback);
   });
 
   test("aborts hung model discovery requests", async () => {
@@ -192,41 +270,5 @@ describe("commandcode-provider extension", () => {
       })) as typeof fetch;
 
     await expect(fetchCommandCodeModels(fetchImpl, AbortSignal.timeout(50))).rejects.toThrow();
-  });
-
-  test("registers Command Code as a pi API-key provider with discovered models", async () => {
-    const previousFetch = globalThis.fetch;
-    globalThis.fetch = (async () =>
-      jsonResponse({
-        data: [
-          { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", context_length: 1_000_000 },
-          {
-            id: "deepseek/deepseek-v4-flash",
-            name: "DeepSeek V4 Flash",
-            context_length: 1_000_000,
-          },
-        ],
-      })) as unknown as typeof fetch;
-
-    try {
-      const pi = createFakePi();
-
-      await extension(pi as never);
-
-      const provider = pi.providers.get(COMMANDCODE_PROVIDER_ID);
-      expect(provider).toBeDefined();
-      expect(provider?.name).toBe(COMMANDCODE_DISPLAY_NAME);
-      expect(provider?.baseUrl).toBe(COMMANDCODE_OPENAI_BASE_URL);
-      expect(provider?.api).toBe(COMMANDCODE_OPENAI_API);
-      expect(provider?.apiKey).toBe(COMMANDCODE_API_KEY_CONFIG_FALLBACK);
-      expect(provider?.oauth).toBeUndefined();
-      expect(provider?.authHeader).toBeUndefined();
-      expect((provider?.models as Array<{ id: string }>).map((model) => model.id)).toEqual([
-        "claude-sonnet-4-6",
-        "deepseek/deepseek-v4-flash",
-      ]);
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
   });
 });
