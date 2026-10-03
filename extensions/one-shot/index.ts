@@ -7,15 +7,14 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   ONE_SHOT_PRIMARY_FLAGS,
-  ONE_SHOT_SAFE_TOOLS,
   oneShotAuthorization,
   parseOneShotLaunch,
   registerOneShotFlags,
 } from "../../lib/one-shot-flow";
 import { notifyIfUI } from "../../lib/tui";
 
-/** Hosts both bounded modes in Pi's existing TUI/RPC UI. No workflow, parser,
- * skill-expansion, or agent-loop implementation lives here. */
+/** Hosts both one-shot modes with native interaction when needed. No workflow,
+ * parser, skill-expansion, or agent-loop implementation lives here. */
 export default function oneShotExtension(pi: ExtensionAPI): void {
   registerOneShotFlags(pi);
   const argv = process.argv.slice(2);
@@ -32,7 +31,6 @@ export default function oneShotExtension(pi: ExtensionAPI): void {
     );
   }
   const initialInputs = new Set(args.messages);
-  const allowedTools = new Set<string>(ONE_SHOT_SAFE_TOOLS);
   let state: "inactive" | "starting" | "running" | "stopping" | "closed" = "inactive";
   let launchInput: string | undefined;
   let skillPrefix: string | undefined;
@@ -67,22 +65,13 @@ export default function oneShotExtension(pi: ExtensionAPI): void {
     state = "starting";
     const { mode, prompt } = parsed.launch;
     try {
-      if (!ctx.hasUI)
-        throw new Error("one-shot には質問に回答できる TUI または RPC UI が必要です。");
       if (!ctx.model) throw new Error("one-shot にはモデルの選択が必要です。");
-      if (!ctx.modelRegistry.hasConfiguredAuth(ctx.model)) {
-        throw new Error("one-shot のモデル認証が設定されていません。");
-      }
       if (
         ctx.sessionManager
           .getBranch()
           .some((entry) => entry.type === "message" || entry.type === "compaction")
       ) {
         throw new Error("one-shot は履歴のない新規セッションで実行してください。");
-      }
-      const tools = pi.getAllTools();
-      if (!tools.some((tool) => tool.name === "ask_user_question" && tool.exposure !== "hidden")) {
-        throw new Error(`--${mode} には ask_user_question LLM Tool が必要です。`);
       }
       const commands = pi.getCommands();
       const skill = commands.find((command) => command.name === `skill:${mode}`);
@@ -94,9 +83,6 @@ export default function oneShotExtension(pi: ExtensionAPI): void {
       if (!skillBody) throw new Error(`skill:${mode} の本文が空です。`);
       skillPrefix = `<skill name="${mode}" location="${skill.sourceInfo.path}">`;
       authorization = oneShotAuthorization(mode);
-      pi.setActiveTools(
-        ONE_SHOT_SAFE_TOOLS.filter((name) => tools.some((tool) => tool.name === name)),
-      );
       launchInput = prompt;
       pi.sendUserMessage(prompt, { expandPromptTemplates: true });
     } catch (error) {
@@ -107,59 +93,59 @@ export default function oneShotExtension(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("input", (event, ctx) => {
+  pi.on("input", (event) => {
     if (state === "inactive") return;
     if (state === "starting" && event.source === "extension" && event.text === launchInput) {
       launchInput = undefined;
       return;
     }
-    // CLI positional inputs are already included in launchInput. All other prompts
-    // (including extension continuations) are out of scope; questionnaire answers
-    // travel through ctx.ui and do not pass this input hook.
-    if (state !== "closed" && event.source !== "extension" && !initialInputs.has(event.text)) {
-      notifyIfUI(
-        ctx,
-        "one-shot 実行中の追加指示は受け付けません。質問ダイアログで回答してください。",
-        "warning",
-      );
+    // CLI positional inputs are already included in launchInput. Suppress their
+    // replay and extension-generated prompts, but accept live human instructions
+    // until settlement. Questionnaire answers travel through ctx.ui instead.
+    if (state === "running" && event.source !== "extension" && !initialInputs.has(event.text)) {
+      return;
     }
     return { action: "handled" };
   });
 
   pi.on("before_agent_start", (event, ctx) => {
     if (state === "inactive") return;
-    // Validate the native expansion against the preflight body, including a file
-    // that becomes empty/unreadable between the input and before-start hooks.
-    const bodyOffset = event.prompt.indexOf("\n\n") + 2;
-    if (
-      state !== "starting" ||
-      !skillPrefix ||
-      !skillBody ||
-      !event.prompt.startsWith(`${skillPrefix}\n`) ||
-      bodyOffset < 2 ||
-      !event.prompt.slice(bodyOffset).startsWith(`${skillBody}\n</skill>`)
-    ) {
-      close(ctx, "one-shot の skill 展開を確認できないため、実行を停止しました。");
+    if (state === "starting") {
+      // Validate native expansion once, including a skill that becomes empty or
+      // unreadable between preflight and before-start. Later human input is not
+      // another skill launch.
+      const bodyOffset = event.prompt.indexOf("\n\n") + 2;
+      if (
+        !skillPrefix ||
+        !skillBody ||
+        !event.prompt.startsWith(`${skillPrefix}\n`) ||
+        bodyOffset < 2 ||
+        !event.prompt.slice(bodyOffset).startsWith(`${skillBody}\n</skill>`)
+      ) {
+        close(ctx, "one-shot の skill 展開を確認できないため、実行を停止しました。");
+        return;
+      }
+      state = "running";
+    } else if (state !== "running") {
+      close(ctx);
       return;
     }
-    state = "running";
     if (event.systemPromptOptions.forceSystemPrompt !== undefined) {
       event.systemPromptOptions.forceSystemPrompt += `\n\n${authorization}`;
     } else {
       event.systemPromptOptions.appendSystemPrompt += `\n\n${authorization}`;
     }
-    event.systemPromptOptions.selectedTools = pi.getActiveTools();
   });
 
   pi.on("tool_call", (event) => {
     if (state === "inactive") return;
-    // setActiveTools only controls declarations: codemode/deferred registrations
-    // remain callable. Native nested calls pass through this same guard.
-    if (state !== "running" || !allowedTools.has(event.toolName)) {
+    // Keep the lifecycle guard for direct and native nested calls without imposing
+    // a second tool policy on Pi's loadout or the user's authorization.
+    if (state !== "running") {
       return {
         block: true,
-        reason: `Tool ${event.toolName} is not available in this bounded one-shot run.`,
-        terminate: state !== "running",
+        reason: `Tool ${event.toolName} is not available outside this active one-shot run.`,
+        terminate: true,
       };
     }
   });

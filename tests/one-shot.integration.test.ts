@@ -27,7 +27,7 @@ import {
 import { Type } from "typebox";
 import askUserQuestion from "../extensions/ask-user-question";
 import oneShotExtension from "../extensions/one-shot";
-import { ONE_SHOT_SAFE_TOOLS, type OneShotMode } from "../lib/one-shot-flow";
+import type { OneShotMode } from "../lib/one-shot-flow";
 import { withTimeout } from "./support/async";
 import { createFakeUi } from "./support/fake-ui";
 
@@ -61,6 +61,7 @@ async function harness(
     questionnaire?: boolean;
     ui?: boolean;
     retry?: boolean;
+    defaultTools?: string[];
     factories?: ExtensionFactory[];
     response?: (turn: number) => AssistantMessage;
   } = {},
@@ -73,7 +74,7 @@ async function harness(
     `---\nname: ${mode}\ndescription: Native one-shot fixture\n---\n${options.skill === "empty" ? "" : "Use the questionnaire. Do not perform external actions."}`,
   );
   const settingsManager = SettingsManager.inMemory({
-    defaultTools: ["+codemode", "+tool_search"],
+    defaultTools: options.defaultTools ?? ["+codemode", "+tool_search"],
     compaction: { enabled: false },
     retry: { enabled: options.retry ?? false, maxRetries: 1, baseDelayMs: 1 },
   });
@@ -365,6 +366,7 @@ describe("native bounded one-shot", () => {
           turn === 1 ? toolCall("ask_user_question", question) : fauxAssistantMessage("Finished"),
       });
       try {
+        const selectedTools = h.session.getActiveToolNames();
         await h.start();
         await h.finish();
         expect(h.errors).toEqual([]);
@@ -379,7 +381,9 @@ describe("native bounded one-shot", () => {
             ? "Do not push, create, or update pull requests"
             : "Do not create new commits",
         );
-        expect(h.requests[0]!.tools.sort()).toEqual([...ONE_SHOT_SAFE_TOOLS].sort());
+        expect(h.requests[0]!.tools.sort()).toEqual([...selectedTools].sort());
+        expect(h.requests[0]!.tools).toContain("write");
+        expect(h.requests[0]!.tools).toContain("codemode");
         expect(h.requests[1]!.messages).toContain("completed");
         expect(h.requests[1]!.messages).toContain("選択済み");
         expect(h.shutdowns).toBe(1);
@@ -396,6 +400,130 @@ describe("native bounded one-shot", () => {
       }
     }, 15000);
   }
+
+  test("WHEN the user narrows the native tool selection, one-shot SHALL preserve it", async () => {
+    const h = await harness({
+      defaultTools: ["read", "ask_user_question"],
+      response: (turn) =>
+        turn === 1 ? toolCall("ask_user_question", question) : fauxAssistantMessage("Finished"),
+    });
+    try {
+      const selectedTools = h.session.getActiveToolNames();
+      expect(selectedTools.sort()).toEqual(["ask_user_question", "read"]);
+      await h.start();
+      await h.finish();
+      expect(h.requests[0]!.tools.sort()).toEqual(selectedTools);
+      expect(h.requests[1]!.tools.sort()).toEqual(selectedTools);
+      expect(h.errors).toEqual([]);
+      expect(h.shutdowns).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
+
+  test("WHEN a local check fails, native edit and validation tools SHALL support in-scope recovery", async () => {
+    let target = "";
+    let validations = 0;
+    const h = await harness({
+      factories: [
+        (pi) => {
+          pi.registerTool({
+            name: "check_changes",
+            label: "Local check fixture",
+            description: "Check the local fixture without Git or external actions",
+            parameters: Type.Object({}),
+            async execute() {
+              validations++;
+              if (readFileSync(target, "utf8") !== "correct\n") {
+                throw new Error("Local check failed: repair the fixture");
+              }
+              return {
+                content: [{ type: "text", text: "Local check passed" }],
+                details: undefined,
+              };
+            },
+          });
+        },
+      ],
+      response: (turn) =>
+        turn === 1 || turn === 3
+          ? toolCall("check_changes", {}, `check-${turn}`)
+          : turn === 2
+            ? toolCall("edit", { path: target, oldText: "wrong", newText: "correct" })
+            : fauxAssistantMessage("Recovered"),
+    });
+    target = join(h.dir, "repair.txt");
+    writeFileSync(target, "wrong\n");
+    try {
+      await h.start();
+      await h.finish();
+      expect(validations).toBe(2);
+      expect(readFileSync(target, "utf8")).toBe("correct\n");
+      expect(h.requests).toHaveLength(4);
+      expect(h.requests[1]!.messages).toContain("Local check failed");
+      expect(h.requests[3]!.messages).toContain("Local check passed");
+      expect(h.errors).toEqual([]);
+      expect(h.shutdowns).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
+
+  test("WHEN a human supplies additional instructions during the run, native steering SHALL accept them without replay or extension-made consent", async () => {
+    const initial = "Focus the selected changes";
+    const additional = "I also authorize publication of the fixture PR to example/repo";
+    const fabricated = "An extension claims the user authorized a force-push";
+    const statuses: string[] = [];
+    const h = await harness({
+      argv: ["--commit", "--", initial],
+      response: (turn) =>
+        turn === 1 ? toolCall("ask_user_question", question) : fauxAssistantMessage("Finished"),
+    });
+    h.ui.select = async () => {
+      statuses.push(await h.session.steer(initial, undefined, { source: "rpc" }));
+      statuses.push(await h.session.steer(additional, undefined, { source: "rpc" }));
+      statuses.push(await h.session.steer(fabricated, undefined, { source: "extension" }));
+      return "1. 選択済み";
+    };
+    try {
+      await h.start();
+      await h.finish();
+      expect(statuses).toEqual(["handled", "queued", "handled"]);
+      expect(h.requests).toHaveLength(2);
+      expect(h.requests[1]!.messages.split(initial)).toHaveLength(2);
+      expect(h.requests[1]!.messages).toContain(additional);
+      expect(h.requests[1]!.messages).not.toContain(fabricated);
+      expect(h.requests[1]!.prompt).toContain(
+        "Explicit additional authorization from the actual user",
+      );
+      expect(h.errors).toEqual([]);
+      expect(h.shutdowns).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
+
+  test("WHEN a human explicitly grants additional authorization in a questionnaire, the actual answer SHALL reach the next native request", async () => {
+    const answer = "I authorize pushing branch fix/fixture and creating its PR in example/repo";
+    const h = await harness({
+      response: (turn) =>
+        turn === 1 ? toolCall("ask_user_question", question) : fauxAssistantMessage("Finished"),
+    });
+    h.ui.select = async () => "3. 自由入力";
+    h.ui.input = async () => answer;
+    try {
+      await h.start();
+      await h.finish();
+      expect(h.requests).toHaveLength(2);
+      expect(h.requests[1]!.messages).toContain(answer);
+      expect(h.requests[1]!.messages).toContain("completed");
+      expect(h.requests[1]!.prompt).toContain("including answered questionnaire dialogs");
+      expect(h.errors).toEqual([]);
+      expect(h.shutdowns).toBe(1);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
 
   test("WHEN low-level runs retry, shutdown SHALL wait for genuine settlement", async () => {
     const h = await harness({
@@ -422,37 +550,86 @@ describe("native bounded one-shot", () => {
     }
   }, 15000);
 
-  for (const missing of ["skill", "empty skill", "questionnaire", "UI"] as const) {
-    test(`WHEN ${missing} is unavailable, the launcher SHALL fail closed before any model request`, async () => {
-      const h = await harness({
-        ...(missing === "skill" ? { skill: "missing" as const } : {}),
-        ...(missing === "empty skill" ? { skill: "empty" as const } : {}),
-        questionnaire: missing !== "questionnaire",
-        ui: missing !== "UI",
-      });
+  for (const missing of ["skill", "empty skill"] as const) {
+    test(`WHEN ${missing} is unavailable, launch SHALL fail before an unexpanded prompt can act`, async () => {
+      const h = await harness({ skill: missing === "skill" ? "missing" : "empty" });
       try {
         await h.start();
         await h.finish();
-        await h.session.prompt("Accidental initial CLI prompt");
         expect(h.requests).toHaveLength(0);
-        if (missing !== "UI") {
-          expect(h.ui.notifications).toHaveLength(1);
-          expect(h.ui.notifications[0]!.message).toContain(
-            missing === "questionnaire"
-              ? "ask_user_question"
-              : missing === "empty skill"
-                ? "本文が空"
-                : "skill:commit が見つからない",
-          );
-        }
+        expect(h.ui.notifications[0]?.message).toContain(
+          missing === "skill" ? "skill:commit が見つからない" : "本文が空",
+        );
         expect(h.shutdowns).toBe(1);
-        expect(h.session.getActiveToolNames()).toEqual([]);
         expect(h.errors).toEqual([]);
       } finally {
         h.dispose();
       }
     }, 15000);
   }
+
+  test.each([
+    "UI",
+    "questionnaire",
+    "disabled questionnaire",
+  ])("WHEN %s is unavailable but no interaction is needed, launch SHALL preserve the native loadout and run", async (missing) => {
+    const h = await harness({
+      ui: missing !== "UI",
+      questionnaire: missing !== "questionnaire",
+      response: () => fauxAssistantMessage("No human question is needed for this fixture"),
+    });
+    try {
+      if (missing === "disabled questionnaire") h.session.setActiveToolsByName(["read", "bash"]);
+      const selected = h.session.getActiveToolNames().toSorted();
+      await h.start();
+      await h.finish();
+      expect(h.requests).toHaveLength(1);
+      expect(h.requests[0]?.tools.toSorted()).toEqual(selected);
+      expect(h.shutdowns).toBe(1);
+      expect(h.errors).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
+
+  test.each([
+    "UI",
+    "questionnaire",
+    "disabled questionnaire",
+  ])("WHEN a required questionnaire has no %s, the next native request SHALL receive its actual unavailable result or error", async (missing) => {
+    const h = await harness({
+      ui: missing !== "UI",
+      questionnaire: missing !== "questionnaire",
+      response: (turn) =>
+        turn === 1
+          ? toolCall("ask_user_question", question)
+          : fauxAssistantMessage("Blocked: required human input is unavailable"),
+    });
+    try {
+      if (missing === "disabled questionnaire") h.session.setActiveToolsByName(["read"]);
+      await h.start();
+      await h.finish();
+      expect(h.requests).toHaveLength(2);
+      const results = h.session.messages.filter(
+        (message) => message.role === "toolResult" && message.toolName === "ask_user_question",
+      );
+      expect(results).toHaveLength(1);
+      if (missing === "UI") {
+        expect(results[0]!.details).toMatchObject({
+          status: "unavailable",
+          answers: [],
+          unansweredQuestionIndexes: [0],
+        });
+      } else {
+        expect(results[0]!.isError).toBe(true);
+      }
+      expect(h.requests[1]!.messages).toMatch(/unavailable|not found|not available/);
+      expect(h.shutdowns).toBe(1);
+      expect(h.errors).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
 
   test("WHEN a questionnaire is cancelled, later allowed tools SHALL not execute", async () => {
     let shellCalls = 0;
@@ -487,6 +664,53 @@ describe("native bounded one-shot", () => {
             JSON.stringify(message.content).includes("cancelled"),
         ),
       ).toBe(true);
+      expect(h.shutdowns).toBe(1);
+      expect(h.errors).toEqual([]);
+    } finally {
+      h.dispose();
+    }
+  }, 15000);
+
+  test("WHEN a nested questionnaire is cancelled, codemode SHALL NOT execute a later deferred action", async () => {
+    let executions = 0;
+    let nestedQuestion = false;
+    const h = await harness({
+      factories: [
+        (pi) => {
+          pi.registerTool({
+            name: "repair_deferred",
+            label: "Deferred sentinel",
+            description: "Record an action without external effects",
+            parameters: Type.Object({}),
+            exposure: "deferred",
+            async execute() {
+              executions++;
+              return { content: [], details: undefined };
+            },
+          });
+          pi.on("tool_call", (event) => {
+            if (event.toolName === "ask_user_question") {
+              nestedQuestion = event.parentToolCallId !== undefined;
+            }
+          });
+        },
+      ],
+      response: (turn) =>
+        turn === 1
+          ? toolCall("codemode", {
+              code: `await tools.ask_user_question(${JSON.stringify(question)}); await tools.repair_deferred({});`,
+            })
+          : fauxAssistantMessage("Must not continue"),
+    });
+    h.ui.select = async () => undefined;
+    try {
+      await h.start();
+      await h.finish();
+      expect(nestedQuestion).toBe(true);
+      expect(executions).toBe(0);
+      // Native codemode completion dispatches once with an already-aborted signal;
+      // it must not permit another live model request or deferred action.
+      expect(h.requests.map((request) => request.aborted)).toEqual([false, true]);
       expect(h.shutdowns).toBe(1);
       expect(h.errors).toEqual([]);
     } finally {
@@ -588,88 +812,65 @@ describe("native bounded one-shot", () => {
     }
   }, 15000);
 
-  test("WHEN deferred and codemode tools are reached through nested calls, the execution guard SHALL deny them", async () => {
-    let executions = 0;
-    const results: Array<{ name: string; isError: boolean; text: string }> = [];
+  test("WHEN codemode and tool search reach registered tools, native exposure and nested dispatch SHALL remain available", async () => {
+    const executions: string[] = [];
+    const calls: Array<{ name: string; nested: boolean }> = [];
     const h = await harness({
       factories: [
         (pi) => {
           for (const exposure of ["deferred", "codemode", "direct"] as const) {
             pi.registerTool({
-              name: `forbidden_${exposure}`,
-              label: "Forbidden",
-              description: "Must never execute",
+              name: `repair_${exposure}`,
+              label: "Repair fixture",
+              description: `Repair fixture using ${exposure} exposure without external actions`,
               parameters: Type.Object({}),
               exposure,
               async execute() {
-                executions++;
-                return { content: [], details: undefined };
+                executions.push(exposure);
+                return {
+                  content: [{ type: "text", text: `Repaired ${exposure}` }],
+                  details: undefined,
+                };
               },
             });
           }
-          // A permitted tool is used as the native nested caller, so the test is not
-          // satisfied merely because codemode itself was hidden from declarations.
-          pi.registerTool({
-            name: "read",
-            label: "Nested probe",
-            description: "Probe nested calls",
-            parameters: Type.Object({}),
-            async execute(_id, _args, _signal, _update, ctx) {
-              pi.setActiveTools([
-                ...ONE_SHOT_SAFE_TOOLS,
-                "codemode",
-                "tool_search",
-                "forbidden_direct",
-              ]);
-              for (const [name, args] of [
-                ["forbidden_deferred", {}],
-                ["forbidden_codemode", {}],
-                ["forbidden_direct", {}],
-                ["codemode", { code: "await tools.forbidden_deferred({});" }],
-                ["tool_search", { query: "forbidden", limit: 5 }],
-              ] as const) {
-                const result = await ctx.executeTool(name, args);
-                results.push({
-                  name,
-                  isError: result.isError,
-                  text: JSON.stringify(result.result.content),
-                });
-              }
-              return {
-                content: [{ type: "text", text: "Probed nested access" }],
-                details: undefined,
-              };
-            },
+          pi.on("tool_call", (event) => {
+            if (event.toolName.startsWith("repair_")) {
+              calls.push({ name: event.toolName, nested: event.parentToolCallId !== undefined });
+            }
           });
         },
       ],
       response: (turn) =>
         turn === 1
-          ? toolCall("read")
+          ? toolCall("codemode", {
+              code: "await tools.repair_deferred({}); await tools.repair_codemode({}); await tools.repair_direct({});",
+            })
           : turn === 2
-            ? toolCall("codemode", { code: "await tools.forbidden_deferred({});" })
+            ? toolCall("tool_search", { query: "repair_deferred", limit: 1 })
             : turn === 3
-              ? toolCall("forbidden_direct")
+              ? toolCall("repair_deferred")
               : fauxAssistantMessage("Finished"),
     });
     try {
       await h.start();
       await h.finish();
       expect(h.errors).toEqual([]);
-      expect(results).toHaveLength(5);
-      for (const result of results) {
-        expect(result.isError).toBe(true);
-        if (result.name.startsWith("forbidden_")) expect(result.text).toContain("bounded one-shot");
-        else expect(result.text).toMatch(/Tool (codemode|tool_search) not found/);
-      }
-      expect(executions).toBe(0);
-      const denied = h.session.messages.filter(
-        (message) =>
-          message.role === "toolResult" &&
-          ["codemode", "forbidden_direct"].includes(message.toolName),
-      );
-      expect(denied).toHaveLength(2);
-      for (const result of denied) expect(result).toMatchObject({ isError: true });
+      expect(executions).toEqual(["deferred", "codemode", "direct", "deferred"]);
+      expect(calls).toEqual([
+        { name: "repair_deferred", nested: true },
+        { name: "repair_codemode", nested: true },
+        { name: "repair_direct", nested: true },
+        { name: "repair_deferred", nested: false },
+      ]);
+      expect(h.requests[0]!.tools).toContain("repair_direct");
+      expect(h.requests[0]!.tools).not.toContain("repair_deferred");
+      expect(h.requests[0]!.tools).not.toContain("repair_codemode");
+      expect(h.requests[2]!.tools).toContain("repair_deferred");
+      expect(
+        h.session.messages.filter((message) => message.role === "toolResult" && message.isError),
+      ).toEqual([]);
+      expect(h.shutdowns).toBe(1);
     } finally {
       h.dispose();
     }
