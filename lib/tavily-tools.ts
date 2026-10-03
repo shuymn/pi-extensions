@@ -2,7 +2,7 @@ import { type JsonValue, StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 
-import { type CliExec, cliResultForTool, runCli } from "./cli";
+import { type CliExec, type CliToolResult, cliResultForTool, runCli } from "./cli";
 import { addOptions, cliTimeoutMs } from "./tavily-cli";
 
 const SEARCH_DEPTHS = ["ultra-fast", "fast", "basic", "advanced"] as const;
@@ -24,12 +24,7 @@ const outputSchema = Type.Object(
       "Complete, untruncated JSON object from tvly --json. Fields depend on the command.",
   },
 );
-type ToolUpdateHandler =
-  | ((update: {
-      content: Array<{ type: "text"; text: string }>;
-      details: Record<string, unknown>;
-    }) => void)
-  | undefined;
+type ToolUpdateHandler = ((update: CliToolResult) => void) | undefined;
 
 function sendStatus(onUpdate: ToolUpdateHandler, text: string) {
   onUpdate?.({ content: [{ type: "text", text }], details: {} });
@@ -246,7 +241,7 @@ type CrawlParams = Static<typeof crawlSchema>;
 
 type AuthParams = Record<string, never>;
 
-type TavilyToolSpec<TParams extends object> = {
+type TavilyToolSpec<TParams> = {
   name: string;
   label: string;
   description: string;
@@ -257,16 +252,7 @@ type TavilyToolSpec<TParams extends object> = {
   timeoutMs: (params: TParams) => number;
 };
 
-type RegisteredTavilyToolSpec = {
-  name: string;
-  label: string;
-  description: string;
-  parameters: TSchema;
-  buildArgs: (params: unknown) => string[];
-  validate?: (params: unknown) => void;
-  progressText?: (params: unknown) => string;
-  timeoutMs: (params: unknown) => number;
-};
+type RegisteredTavilyToolSpec = TavilyToolSpec<unknown>;
 
 function defineTavilyToolSpec<TParams extends object>(
   spec: TavilyToolSpec<TParams>,

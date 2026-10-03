@@ -31,11 +31,10 @@ export type InvestigationToolset = {
  */
 export function createInvestigationToolset({ exec }: { exec: CliExec }): InvestigationToolset {
   const tempRoots = new Set<string>();
-  let closed = false;
   let cleanupPromise: Promise<void> | undefined;
 
   const trackTempRoot = (tempRoot: string) => {
-    if (closed) {
+    if (cleanupPromise) {
       // The session is shutting down; do not retain new clones. Remove the
       // freshly created root immediately and surface the shutdown to the caller.
       void rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -50,7 +49,6 @@ export function createInvestigationToolset({ exec }: { exec: CliExec }): Investi
 
   const cleanup = (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
-    closed = true;
     const roots = [...tempRoots];
     tempRoots.clear();
     cleanupPromise = Promise.allSettled(

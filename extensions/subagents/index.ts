@@ -239,11 +239,11 @@ async function spawn(
     );
   const readOnly = runtime.forceReadOnly || (params.readOnly ?? false);
   const available = availableTools(pi, ctx, declared, runtime, readOnly);
-  const availableNames = available.map((tool) => tool.name);
-  const denied = params.allowedTools?.find((name) => !availableNames.includes(name));
+  const availableNames = new Set(available.map((tool) => tool.name));
+  const denied = params.allowedTools?.find((name) => !availableNames.has(name));
   if (denied) throw new Error(`Subagent allowedTools includes unavailable tool: ${denied}`);
-  const selected = [...new Set(params.allowedTools ?? availableNames)];
-  const selectedTools = available.filter((tool) => selected.includes(tool.name));
+  const selected = new Set(params.allowedTools ?? availableNames);
+  const selectedTools = available.filter((tool) => selected.has(tool.name));
   const selection = runtime.selection ?? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() };
   const settings = runtime.settings ?? pi.getSettings();
   if (!selection.model) throw new Error("Select a model before spawning a subagent");
@@ -276,7 +276,7 @@ async function spawn(
         settings,
         inheritedTools: selectedTools,
       };
-      const nested = selected.includes(SPAWN)
+      const nested = selected.has(SPAWN)
         ? spawnTool(pi, () => (runtime.closed ? undefined : childRuntime), childRuntime)
         : undefined;
       record.outcome = await runDelegatedSession({
@@ -288,7 +288,7 @@ async function spawn(
         systemPrompt: ctx.getSystemPrompt(),
         prompt: params.prompt,
         name: `subagent#${id}`,
-        allowedTools: selected,
+        allowedTools: [...selected],
         customTools: [
           ...selectedTools.filter((tool) => tool.name !== SPAWN),
           ...(nested ? [nested] : []),

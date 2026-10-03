@@ -283,7 +283,8 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
   pi.registerCommand("companion", {
     description: "Control the Glimpse cursor companion overlay",
     handler: async (args, ctx) => {
-      const command = args.trim() || "toggle";
+      const requested = args.trim() || "toggle";
+      const command = requested === "toggle" ? (enabled ? "off" : "on") : requested;
 
       if (command === "on") {
         notifyEnableResult(ctx, await enable(ctx));
@@ -293,16 +294,6 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
       if (command === "off") {
         disable(ctx);
         notifyIfUI(ctx, "Companion を無効化しました。", "info");
-        return;
-      }
-
-      if (command === "toggle") {
-        if (enabled) {
-          disable(ctx);
-          notifyIfUI(ctx, "Companion を無効化しました。", "info");
-        } else {
-          notifyEnableResult(ctx, await enable(ctx));
-        }
         return;
       }
 
