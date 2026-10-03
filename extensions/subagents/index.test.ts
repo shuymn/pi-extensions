@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -25,11 +25,6 @@ mock.module("../../lib/delegated-session", () => ({
   },
 }));
 mock.module("../../lib/one-shot-flow", () => ({ isOneShotPrimaryModeSelected: () => oneShot }));
-mock.module("../../lib/settings", () => ({
-  projectSettingsPath: (cwd: string) => join(cwd, ".pi", "settings.json"),
-  readExtensionSettings: (key: string, { projectPath }: { projectPath: string }) =>
-    existsSync(projectPath) ? (JSON.parse(readFileSync(projectPath, "utf8"))[key] ?? {}) : {},
-}));
 mock.module("../../lib/investigation-tools", () => ({
   createInvestigationToolset: () => {
     let closed = false;
@@ -101,11 +96,7 @@ function setup() {
     cwd,
     model,
     getSystemPrompt: () => "Parent prompt",
-    modelRegistry: {
-      find: mock((provider: string, id: string) =>
-        id === "missing" ? undefined : { provider, id },
-      ),
-    },
+    modelRegistry: {},
   };
   extension(pi as any);
   const invoke = (name: string, params: any = {}, signal?: AbortSignal, onUpdate?: any) =>
@@ -147,6 +138,7 @@ test("registration keeps one-shot management exposure and structured outputs", (
   ]);
   expect(first.tools.get("get_subagent_result")?.exposure).toBe("deferred");
   expect(first.tools.get("spawn_subagent")?.outputSchema).toBeDefined();
+  expect(first.tools.get("spawn_subagent")?.parameters).not.toHaveProperty("properties.modelTier");
   oneShot = true;
   expect(setup().tools.get("stop_subagent")?.exposure).toBe("direct");
 });
@@ -173,8 +165,14 @@ test("foreground returns structured result, evidence, usage and removes its reco
   expect(updates).toHaveLength(1);
   expect(calls[0].schema).toEqual({ type: "object" });
   expect(calls[0].model).toBe(ctx.ctx.model as any);
+  expect(calls[0].thinkingLevel).toBe("high");
   expect(calls[0].allowedTools).toContain("spawn_subagent");
   expect((await ctx.invoke("list_subagents")).details).toMatchObject({ count: 0 });
+  ctx.ctx.model = { provider: "test", id: "changed" };
+  ctx.pi.getThinkingLevel = () => "low";
+  await ctx.invoke("spawn_subagent", { prompt: "later" });
+  expect(calls[1].model).toBe(ctx.ctx.model as any);
+  expect(calls[1].thinkingLevel).toBe("low");
 });
 
 test.each([
@@ -192,7 +190,7 @@ test.each([
 
 test("nested delegation intersects tools, enforces readOnly and depth, and rejects background", async () => {
   const ctx = setup();
-  let childTools: readonly string[] = [];
+  const inheritedModel = ctx.ctx.model;
   runner = async (options) => {
     if (options.prompt === "parent") {
       const tool = nested(options);
@@ -207,11 +205,9 @@ test("nested delegation intersects tools, enforces readOnly and depth, and rejec
       await expect(
         execute({ prompt: "task", allowedTools: ["write"], readOnly: false }),
       ).rejects.toThrow("unavailable tool: write");
+      ctx.ctx.model = { provider: "test", id: "changed" };
+      ctx.pi.getThinkingLevel = () => "low";
       await execute({ prompt: "child", readOnly: false });
-    } else {
-      childTools = options.allowedTools;
-      expect(options.readOnly).toBe(true);
-      expect(nested(options)).toBeUndefined();
     }
     return outcome();
   };
@@ -220,24 +216,20 @@ test("nested delegation intersects tools, enforces readOnly and depth, and rejec
     readOnly: true,
     allowedTools: ["tavily_search", "spawn_subagent"],
   });
-  expect(childTools).toEqual(["tavily_search"]);
   expect(calls).toHaveLength(2);
+  expect(calls[1].allowedTools).toEqual(["tavily_search"]);
+  expect(calls[1].readOnly).toBe(true);
+  expect(nested(calls[1])).toBeUndefined();
+  expect(calls[1].model).toBe(inheritedModel as any);
+  expect(calls[1].thinkingLevel).toBe("high");
+  expect(nested(calls[0]).parameters).not.toHaveProperty("properties.modelTier");
 });
 
-test("tier is initial selection only; a provider failure never replays task", async () => {
+test("a provider failure never replays task", async () => {
   const ctx = setup();
-  mkdirSync(join(ctx.ctx.cwd, ".pi"));
-  writeFileSync(
-    join(ctx.ctx.cwd, ".pi", "settings.json"),
-    JSON.stringify({
-      subagents: { modelTiers: { small: ["test/missing", "test/small:low", "test/other"] } },
-    }),
-  );
   runner = async () => outcome("failed");
-  const result = await ctx.invoke("spawn_subagent", { prompt: "mutate once", modelTier: "small" });
+  const result = await ctx.invoke("spawn_subagent", { prompt: "mutate once" });
   expect(calls).toHaveLength(1);
-  expect(calls[0].model.id).toBe("small");
-  expect(calls[0].thinkingLevel).toBe("low");
   expect(result.isError).toBe(true);
   expect(result.structuredContent).toMatchObject({
     error: "original quota error",
@@ -245,34 +237,37 @@ test("tier is initial selection only; a provider failure never replays task", as
   });
 });
 
-test("missing tiers inherit, invalid tier rejects and already-aborted foreground never starts", async () => {
+test("already-aborted foreground never starts", async () => {
   const ctx = setup();
-  await ctx.invoke("spawn_subagent", { prompt: "task", modelTier: "medium" });
-  expect(calls[0].model).toBe(ctx.ctx.model as any);
-  await expect(
-    ctx.invoke("spawn_subagent", { prompt: "task", modelTier: "large" }),
-  ).rejects.toThrow("modelTier must be");
   const controller = new AbortController();
   controller.abort();
   expect(
     (await ctx.invoke("spawn_subagent", { prompt: "task" }, controller.signal)).details,
   ).toMatchObject({ status: "stopped" });
-  expect(calls).toHaveLength(1);
+  expect(calls).toHaveLength(0);
 });
 
 test("background lifecycle is session-owned; stop propagates down the tree without a wake", async () => {
   const first = setup();
   const second = setup();
+  const inheritedModel = first.ctx.model;
   runner = async (options) => {
-    if (options.prompt === "parent")
+    if (options.prompt === "parent") {
+      first.ctx.model = { provider: "test", id: "changed" };
+      first.pi.getThinkingLevel = () => "low";
       return await nested(options)
         .execute("nested", { prompt: "child" }, undefined, undefined, first.ctx as any)
         .then(() => outcome("cancelled"));
+    }
     return blockedRunner(options);
   };
   const started = await first.invoke("spawn_subagent", { prompt: "parent", background: true });
   const id = (started.details as any).id;
   await waitForCalls(2);
+  for (const options of calls) {
+    expect(options.model).toBe(inheritedModel as any);
+    expect(options.thinkingLevel).toBe("high");
+  }
   expect((await second.invoke("list_subagents")).details).toMatchObject({ count: 0 });
   expect((await second.invoke("stop_subagent", { id })).details).toMatchObject({
     status: "not_found",

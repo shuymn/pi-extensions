@@ -25,7 +25,7 @@ The shared delegated module is not a workflow engine. It accepts a task and expl
 
 ## Delegated sessions and models
 
-Each child owns its conversation, router state, tools, and cancellation. Supported router definitions are instantiated in each runtime; parent session-bound router closures are not shared. Pi 1.0.0's extension-facing ModelRegistry cannot export arbitrary router definitions, so unsupported foreign virtual models must fail explicitly rather than silently switching to a physical model.
+Each subagent inherits the caller's model and thinking level at spawn time and owns its conversation, router state, tools, and cancellation. Supported router definitions are instantiated in each runtime; parent session-bound router closures are not shared. Pi 1.0.0's extension-facing ModelRegistry cannot export arbitrary router definitions, so unsupported foreign virtual models must fail explicitly rather than silently switching to a physical model.
 
 Physical provider access preserves request-time authentication, including refreshed credentials, runtime overrides, and model-specific request headers. Model fallback uses the native retry path, not a new session that replays the original task. It neither rewrites provider errors nor adds retries beyond Pi's eligibility and budget. Candidate providers are explicitly configured because cross-provider fallback changes where context is sent.
 

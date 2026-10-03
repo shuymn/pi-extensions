@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { type JsonValue, StringEnum } from "@earendil-works/pi-ai";
+import type { JsonValue } from "@earendil-works/pi-ai";
 import type {
   AgentSession,
   ExtensionAPI,
@@ -14,12 +14,10 @@ import {
   type InvestigationToolset,
   isolatedAgentToolNames,
 } from "../../lib/investigation-tools";
-import { parseModelSpecList, type ThinkingLevel } from "../../lib/model-spec";
+import type { ThinkingLevel } from "../../lib/model-spec";
 import { isOneShotPrimaryModeSelected } from "../../lib/one-shot-flow";
-import { projectSettingsPath, readExtensionSettings } from "../../lib/settings";
 
 type Status = "running" | "stopping" | "completed" | "error" | "stopped";
-type ModelTier = "medium" | "small";
 type Selection = { model: ExtensionContext["model"]; thinkingLevel: ThinkingLevel };
 type RecordState = {
   id: string;
@@ -50,7 +48,6 @@ type SpawnParams = {
   description?: string;
   background?: boolean;
   readOnly?: boolean;
-  modelTier?: unknown;
   allowedTools?: string[];
   schema?: TSchema;
 };
@@ -96,27 +93,6 @@ async function stopTree(runtime: Runtime, record: RecordState): Promise<void> {
     ...children(runtime, record).map((child) => stopTree(runtime, child)),
   ]);
 }
-function tier(value: unknown): ModelTier | undefined {
-  if (value === undefined || value === "medium" || value === "small") return value;
-  throw new Error('modelTier must be "medium" or "small".');
-}
-function selectModel(
-  pi: ExtensionAPI,
-  ctx: ExtensionContext,
-  runtime: Runtime,
-  requested: ModelTier | undefined,
-): Selection {
-  const inherited = runtime.selection ?? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() };
-  if (!requested) return inherited;
-  const settings = readExtensionSettings<{ modelTiers?: Record<string, unknown> }>("subagents", {
-    projectPath: projectSettingsPath(ctx.cwd),
-  });
-  for (const spec of parseModelSpecList(settings.modelTiers?.[requested])) {
-    const model = ctx.modelRegistry.find(spec.provider, spec.model);
-    if (model) return { model, thinkingLevel: spec.thinkingLevel ?? inherited.thinkingLevel };
-  }
-  return inherited;
-}
 function availableTools(
   toolset: InvestigationToolset,
   runtime: Runtime,
@@ -140,7 +116,7 @@ function spawnTool(
     name: SPAWN,
     label: "Spawn Subagent",
     description:
-      "Run a self-contained delegated task in an isolated session. Default tools are read, grep, find, ls, bash, edit, write, Tavily and GitHub clone tools. Read-only children use protected bash and cannot edit/write. allowedTools restricts the child (including nested delegation); [] gives no task tools. One additional foreground delegation level is available only when spawn_subagent is allowed. Native model retries continue the same conversation; tasks are never restarted on failure.",
+      "Run a self-contained delegated task in an isolated session, inheriting the caller's model and thinking level. Default tools are read, grep, find, ls, bash, edit, write, Tavily and GitHub clone tools. Read-only children use protected bash and cannot edit/write. allowedTools restricts the child (including nested delegation); [] gives no task tools. One additional foreground delegation level is available only when spawn_subagent is allowed. Native model retries continue the same conversation; tasks are never restarted on failure.",
     annotations: { readOnlyHint: policy.forceReadOnly },
     parameters: Type.Object({
       prompt: Type.String({
@@ -160,12 +136,6 @@ function spawnTool(
           description: policy.forceReadOnly
             ? "Read-only is enforced regardless of this setting."
             : "Use inspection tools and OS-sandboxed bash, without repository writes.",
-        }),
-      ),
-      modelTier: Type.Optional(
-        StringEnum(["medium", "small"], {
-          description:
-            'Initial model from subagents.modelTiers; unresolved entries fall back to the inherited model. Omitted: inherit at top level, "medium" in delegated sessions. This is not runtime failover.',
         }),
       ),
       allowedTools: Type.Optional(
@@ -203,7 +173,6 @@ async function spawn(
   signal: AbortSignal | undefined,
   onUpdate: ((result: ReturnType<typeof textResult>) => void) | undefined,
 ) {
-  const requestedTier = tier(params.modelTier);
   if (params.background && !runtime.backgroundAllowed)
     return textResult("Background mode is not available for delegated spawn_subagent calls.", {
       status: "rejected",
@@ -227,7 +196,7 @@ async function spawn(
   const denied = params.allowedTools?.find((name) => !available.includes(name));
   if (denied) throw new Error(`Subagent allowedTools includes unavailable tool: ${denied}`);
   const selected = [...new Set(params.allowedTools ?? available)];
-  const selection = selectModel(pi, ctx, runtime, requestedTier ?? (owner ? "medium" : undefined));
+  const selection = runtime.selection ?? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() };
   if (!selection.model) throw new Error("Select a model before spawning a subagent");
   const model = selection.model;
   const id = randomUUID().slice(0, 8);
