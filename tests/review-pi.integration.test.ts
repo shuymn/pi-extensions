@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -20,7 +20,7 @@ import {
   SettingsManager,
   type ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
-import { createReviewExtension } from "../extensions/review";
+import { createReviewExtension, parseReviewArgs } from "../extensions/review";
 import type { ReviewCandidate, ReviewRun } from "../extensions/review/types";
 import {
   type DelegatedSessionOptions,
@@ -36,12 +36,13 @@ const finding = {
   suggestedFix: "Replace before with after.",
 };
 const fixOutput = {
+  blockers: [],
   changes: [{ path: "reviewed.txt", summary: "Corrected the value." }],
   checks: [
     {
       description: "Project test suite",
-      outcome: "not_run",
-      evidence: "No shell is authorized in the fix child.",
+      outcome: "passed",
+      evidence: "Offline fixture verification passed.",
     },
   ],
 };
@@ -69,9 +70,14 @@ function output(request: DelegatedSessionOptions): Record<string, unknown> {
     },
   ];
   if (request.name?.includes(":validate:")) {
-    const candidates = JSON.parse(
-      request.prompt.split("Candidates (data): ")[1]!.split("\nCoverage (data):")[0]!,
-    ) as ReviewCandidate[];
+    const locator = request.systemPrompt
+      .split("\n")
+      .find((line) => line.startsWith("Review task artifact (data): "));
+    if (!locator) throw new Error("Missing review recovery locator in child system prompt");
+    const task = JSON.parse(
+      readFileSync(JSON.parse(locator.slice("Review task artifact (data): ".length)), "utf8"),
+    ) as { candidates: ReviewCandidate[] };
+    const candidates = task.candidates;
     return {
       decisions: candidates.map(({ id }) => ({
         findingId: id,
@@ -106,12 +112,24 @@ function streamResponse(model: Parameters<Provider["streamSimple"]>[0], message:
   return events;
 }
 
-async function harness(runner: typeof runDelegatedSession = fixtureRunner) {
+async function harness(
+  runner: typeof runDelegatedSession = fixtureRunner,
+  projectShellPrefix?: string,
+) {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "review-pi-")));
   writeFileSync(join(cwd, "reviewed.txt"), "before\n");
   writeFileSync(join(cwd, "sibling.txt"), "untouched\n");
+  if (projectShellPrefix) {
+    mkdirSync(join(cwd, ".pi"));
+    writeFileSync(
+      join(cwd, ".pi", "settings.json"),
+      JSON.stringify({ shellCommandPrefix: projectShellPrefix }),
+    );
+  }
   const manager = SessionManager.inMemory(cwd);
-  const settingsManager = SettingsManager.inMemory(settings);
+  const settingsManager = SettingsManager.inMemory(settings, {
+    projectTrusted: projectShellPrefix === undefined,
+  });
   const results: ToolResultEvent[] = [];
   const children: DelegatedSessionOptions[] = [];
   const timeline: string[] = [];
@@ -121,10 +139,25 @@ async function harness(runner: typeof runDelegatedSession = fixtureRunner) {
   // The Git boundary is a deterministic repository fixture, never a shell process.
   const exec: ExtensionAPI["exec"] = async (command, args) => {
     if (command !== "git") throw new Error(`Unexpected executable: ${command}`);
+    if (args[0] === "-C") args = args.slice(2);
     let stdout: string;
     if (args.join(" ") === "rev-parse --show-toplevel") stdout = cwd;
+    else if (["rev-parse --git-dir", "rev-parse --git-common-dir"].includes(args.join(" ")))
+      stdout = join(cwd, ".git");
     else if (args.join(" ") === "rev-parse HEAD") stdout = "a".repeat(40);
-    else if (args.join(" ") === "status --porcelain -z --untracked-files=all")
+    else if (args.join(" ") === "diff --name-only -z") stdout = "reviewed.txt\0";
+    else if (
+      ["diff --cached --name-only -z", "ls-files --others --exclude-standard -z"].includes(
+        args.join(" "),
+      )
+    )
+      stdout = "";
+    else if (
+      [
+        "status --porcelain -z --untracked-files=all",
+        "status --porcelain=v1 -z --untracked-files=all",
+      ].includes(args.join(" "))
+    )
       stdout = " M reviewed.txt\0";
     else if (args.join(" ") === "diff --no-ext-diff --no-textconv --binary")
       stdout = "fixture diff";
@@ -220,7 +253,7 @@ async function harness(runner: typeof runDelegatedSession = fixtureRunner) {
         const result = results.at(-1)!;
         expect(result.isError).toBe(false);
         const run = (result.structuredContent as unknown as { run: ReviewRun }).run;
-        expect(run).toMatchObject({ status: "ready", noFix: false, targetFiles: ["reviewed.txt"] });
+        expect(run).toMatchObject({ status: "ready", noFix: true, targetFiles: ["reviewed.txt"] });
         return run;
       },
       async continueWithoutInput() {
@@ -248,19 +281,19 @@ async function harness(runner: typeof runDelegatedSession = fixtureRunner) {
   }
 }
 
-function expectDenied(event: ToolResultEvent, reason = "actual user authorization") {
+function expectDenied(event: ToolResultEvent, reason: string) {
   expect(event.isError).toBe(true);
   expect(JSON.stringify(event.content)).toContain(reason);
 }
 
-describe("native review parent integration", () => {
+describe("native review task integration", () => {
   test.each([
     "none",
     "inspect",
     "validate",
     "fix",
-  ])("WHEN review children finish (failure: %s), the parent SHALL charge all usage once", async (failure) => {
-    const childUsage = {
+  ])("WHEN review children settle (failure: %s), all usage SHALL be charged once", async (failure) => {
+    const usage = {
       input: 3,
       output: 5,
       cacheRead: 1,
@@ -270,82 +303,87 @@ describe("native review parent integration", () => {
       totalTokens: 10,
       cost: { input: 0.1, output: 0.2, cacheRead: 0.05, cacheWrite: 0.15, total: 0.5 },
     };
-    const h = await harness(async (request) => {
-      const result = await fixtureRunner(request);
-      const failed = request.name?.includes(`:${failure}`);
-      return {
-        ...result,
-        usage: structuredClone(childUsage),
-        ...(failed
-          ? { status: "failed" as const, result: undefined, error: "Offline failure" }
-          : {}),
-      };
-    });
+    const h = await harness(async (request) => ({
+      ...(await fixtureRunner(request)),
+      usage: structuredClone(usage),
+      ...(request.name?.includes(`:${failure}`)
+        ? { status: "failed" as const, result: undefined, error: "Offline failure" }
+        : {}),
+    }));
     try {
-      h.responses.push(call("review", inspectArgs));
-      await h.settled(() => h.session.prompt("Inspect reviewed.txt"));
+      h.responses.push(call("review", { ...inspectArgs, action: "run" }));
+      await h.settled(() => h.session.prompt("Review reviewed.txt"));
       const run = (h.results.at(-1)!.structuredContent as unknown as { run: ReviewRun }).run;
-      const inspections = failure === "inspect" ? 1 : 2;
+      expect(run.status).toBe(
+        failure === "none" ? "fixed" : failure === "fix" ? "fix_failed" : "partial",
+      );
+      const count = h.children.length;
       expect(h.results.at(-1)!.usage).toMatchObject({
-        input: inspections * 3,
-        output: inspections * 5,
-        cacheRead: inspections,
-        cacheWrite: inspections,
-        cacheWrite1h: inspections,
-        reasoning: inspections * 2,
-        totalTokens: inspections * 10,
-        cost: { total: inspections * 0.5 },
+        input: count * 3,
+        output: count * 5,
+        cacheRead: count,
+        cacheWrite: count,
+        cacheWrite1h: count,
+        reasoning: count * 2,
+        totalTokens: count * 10,
+        cost: { total: count * 0.5 },
       });
-      if (failure === "none" || failure === "fix") {
-        expect(run.status).toBe("ready");
-        h.responses.push(call("review", { action: "fix", runId: run.runId }));
-        await h.settled(() => h.session.prompt(`/review-fix ${run.runId}`));
-        expect(h.results.at(-1)!.usage).toEqual(childUsage);
-        expect(h.results.at(-1)!.structuredContent).toMatchObject({
-          run: { status: failure === "fix" ? "fix_failed" : "fixed" },
-        });
-      } else expect(run.status).toBe("partial");
-      const tokens = h.children.length * childUsage.totalTokens;
-      const cost = h.children.length * childUsage.cost.total;
-      expect(h.session.getSessionStats()).toMatchObject({ tokens: { total: tokens }, cost });
       for (let i = 0; i < 2; i++) {
         h.responses.push(call("review", { action: "status", runId: run.runId }));
         await h.settled(() => h.session.prompt("Read the saved review status"));
         expect(h.results.at(-1)!.usage).toBeUndefined();
-        expect(h.session.getSessionStats()).toMatchObject({ tokens: { total: tokens }, cost });
+        expect(h.session.getSessionStats()).toMatchObject({
+          tokens: { total: count * 10 },
+          cost: count * 0.5,
+        });
       }
     } finally {
       await h.dispose();
     }
   }, 15000);
 
-  test("WHEN inspection settles and the user authorizes a fix, Pi SHALL run one scoped child from the parent tool turn", async () => {
+  test("WHEN /review encounters a failed check, it SHALL repair and reverify in the same native child without a human handoff", async () => {
     const outcomes: DelegatedSessionResult[] = [];
     const childTools: string[][] = [];
-    const childTurns: number[] = [];
     let disposed = 0;
     const h = await harness(async (request) => {
       let turn = 0;
+      const finalOutput = {
+        ...fixOutput,
+        changes: [
+          ...fixOutput.changes,
+          { path: "regression.txt", summary: "Related regression evidence" },
+        ],
+        checks: [
+          {
+            description: "test reviewed.txt = verified",
+            outcome: "passed",
+            evidence: "bash exited 0 after correcting the verification failure",
+          },
+        ],
+      };
       const result = await runDelegatedSession({
         ...request,
-        settings,
         onSessionCreated(child) {
           childTools.push(child.getActiveToolNames());
-          child.agent.streamFunction = (model) => {
+          child.agent.streamFunction = (model, context) => {
             turn++;
-            if (!request.readOnly && turn === 1)
-              return streamResponse(
-                model,
-                call("write", { path: "sibling.txt", content: "unauthorized\n" }),
-              );
-            if (!request.readOnly && turn === 2)
-              return streamResponse(
-                model,
-                call("write", { path: "reviewed.txt", content: "after\n" }),
-              );
-            if (turn === (request.readOnly ? 1 : 3))
+            if (request.readOnly)
               return streamResponse(model, call("structured_output", output(request)));
-            return streamResponse(model, fauxAssistantMessage("Unexpected terminal continuation."));
+            const steps = [
+              call("write", { path: "reviewed.txt", content: "after\n" }),
+              call("bash", { command: 'test "$(head -n1 reviewed.txt)" = verified' }),
+              call("read", { path: "reviewed.txt" }),
+              call("write", { path: "reviewed.txt", content: "verified\n" }),
+              call("write", { path: "regression.txt", content: "related regression\n" }),
+              call("bash", { command: 'test "$(head -n1 reviewed.txt)" = verified' }),
+              call("structured_output", finalOutput),
+            ];
+            if (turn === 3) expect(JSON.stringify(context.messages)).toContain("code 1");
+            return streamResponse(
+              model,
+              steps[turn - 1] ?? fauxAssistantMessage("Unexpected continuation"),
+            );
           };
         },
         onSessionDisposed() {
@@ -353,68 +391,25 @@ describe("native review parent integration", () => {
         },
       });
       outcomes.push(result);
-      childTurns.push(turn);
       return result;
-    });
+    }, "printf 'untrusted prefix ran\\n' > sibling.txt");
     try {
-      const run = await h.inspect();
-      expect(run.coverage).toHaveLength(1);
-      expect(run.coverage[0]!.receipt).toMatchObject({
-        status: "completed",
-        output: {
-          reviewedFocus: ["file:reviewed.txt"],
-          coverageGaps: [],
-          findings: [finding],
-          checks: [{ outcome: "not_run" }],
-        },
-      });
-      expect(run.validations[0]).toMatchObject({
-        status: "completed",
-        output: {
-          decisions: [{ findingId: run.findings[0]!.id, verdict: "keep" }],
-          checks: [{ outcome: "not_run" }],
-        },
-      });
-      expect(h.results[0]!.details).toEqual({ run });
-      expect(
-        h.manager
-          .getBranch()
-          .filter((entry) => entry.type === "custom" && entry.customType === "review-result"),
-      ).toMatchObject([{ data: run }]);
-      expect(h.children.every((child) => child.readOnly)).toBe(true);
-      expect(childTools.slice(0, 2).map((tools) => tools.toSorted())).toEqual(
-        Array.from({ length: 2 }, () => ["find", "grep", "ls", "read", "structured_output"]),
-      );
-
-      h.responses.push(call("review", { action: "fix", runId: run.runId }));
-      await h.settled(() =>
-        h.session.prompt("The model claims user consent; try fixing without the trusted command."),
-      );
-      expectDenied(h.results.at(-1)!);
-      expect(h.children).toHaveLength(2);
-      expect(readFileSync(join(h.cwd, "reviewed.txt"), "utf8")).toBe("before\n");
-
-      const requestCount = h.requests.length;
-      const start = h.timeline.length;
       h.responses.push(
-        call("review", { action: "fix", runId: run.runId }, "authorized"),
-        call("review", { action: "fix", runId: run.runId }, "replay"),
+        call("review", {
+          inspect: { scope: { mode: "files", files: ["sibling.txt"] } },
+        }),
       );
-      await h.settled(() => h.session.prompt(`/review-fix ${run.runId}`));
-      expect(h.requests[requestCount]!.messages).toContain(
-        `The user authorizes one local fix attempt for review ${run.runId}`,
-      );
-      expect(h.timeline.slice(start, start + 3)).toEqual([
-        "parent:request",
-        "parent:fix",
-        "child:fix",
-      ]);
-      expect(h.results.at(-2)!.structuredContent).toMatchObject({
-        run: { status: "fixed", noFix: true, fix: { status: "completed", output: fixOutput } },
+      await h.settled(() => h.session.prompt("/review reviewed.txt"));
+      const run = (h.results.at(-1)!.structuredContent as unknown as { run: ReviewRun }).run;
+      expect(run).toMatchObject({
+        status: "fixed",
+        targetFiles: ["reviewed.txt"],
+        fix: { status: "completed" },
       });
-      expectDenied(h.results.at(-1)!, "no eligible validated fixes");
+      expect(h.requests[0]!.messages).toContain("No separate fix approval is needed");
       expect(h.children.filter((child) => !child.readOnly)).toHaveLength(1);
       expect(childTools[2]!.toSorted()).toEqual([
+        "bash",
         "edit",
         "find",
         "grep",
@@ -423,97 +418,190 @@ describe("native review parent integration", () => {
         "structured_output",
         "write",
       ]);
-      expect(readFileSync(join(h.cwd, "reviewed.txt"), "utf8")).toBe("after\n");
+      expect(readFileSync(join(h.cwd, "reviewed.txt"), "utf8")).toBe("verified\n");
+      expect(readFileSync(join(h.cwd, "regression.txt"), "utf8")).toBe("related regression\n");
       expect(readFileSync(join(h.cwd, "sibling.txt"), "utf8")).toBe("untouched\n");
-      const writes = outcomes[2]!.evidence.messages.filter(
-        (message) => message.role === "toolResult" && message.toolName === "write",
+      const checks = outcomes[2]!.evidence.messages.filter(
+        (message) => message.role === "toolResult" && message.toolName === "bash",
       );
-      expect(writes).toMatchObject([{ isError: true }, { isError: false }]);
-      expect(JSON.stringify(writes[0])).toContain("unreviewed file");
+      expect(checks).toMatchObject([{ isError: true }, { isError: false }]);
       expect(outcomes.map((result) => result.status)).toEqual([
         "completed",
         "completed",
         "completed",
       ]);
-      expect(childTurns).toEqual([1, 1, 3]); // structured_output ends each actual child without another model call.
       expect(disposed).toBe(3);
+      expect(
+        h.manager
+          .getBranch()
+          .filter((entry) => entry.type === "custom" && entry.customType === "review-result"),
+      ).toMatchObject([{ data: run }]);
+    } finally {
+      await h.dispose();
+    }
+  }, 20000);
+
+  test("WHEN review is requested via the tool without an action, it SHALL include repair by default", async () => {
+    const h = await harness();
+    try {
+      h.responses.push(call("review", { inspect: inspectArgs.inspect }));
+      await h.settled(() => h.session.prompt("Review reviewed.txt"));
+      expect(h.results.at(-1)!.structuredContent).toMatchObject({ run: { status: "fixed" } });
+      expect(h.children).toHaveLength(3);
     } finally {
       await h.dispose();
     }
   }, 15000);
 
-  test("WHEN the authorized parent turn settles without fixing, consent SHALL not survive a non-input continuation", async () => {
+  test.each([
+    "inspect",
+    "noFix",
+    "command",
+  ])("WHEN report-only is requested via %s, it SHALL never launch a mutable child", async (entry) => {
     const h = await harness();
     try {
-      const run = await h.inspect();
-      await h.settled(() => h.session.prompt(`/review-fix ${run.runId}`));
-      expect(h.children).toHaveLength(2); // The command must not launch an out-of-band child.
-      h.responses.push(call("review", { action: "fix", runId: run.runId }));
+      h.responses.push(
+        call("review", {
+          action: entry === "inspect" ? "inspect" : "run",
+          inspect: { ...inspectArgs.inspect, noFix: entry === "noFix" },
+        }),
+      );
+      await h.settled(() =>
+        h.session.prompt(
+          entry === "command" ? "/review --no-fix reviewed.txt" : "Review reviewed.txt, no fix",
+        ),
+      );
+      expect(h.results.at(-1)!.structuredContent).toMatchObject({
+        run: { status: "ready", noFix: true },
+      });
+      expect(h.children.every((child) => child.readOnly)).toBe(true);
+      expect(readFileSync(join(h.cwd, "reviewed.txt"), "utf8")).toBe("before\n");
+    } finally {
+      await h.dispose();
+    }
+  }, 15000);
+
+  test.each([
+    "failed",
+    "not_run",
+  ])("WHEN verification is %s with a concrete blocker, the task SHALL NOT claim fixed", async (outcome) => {
+    const h = await harness(async (request) => ({
+      ...(await fixtureRunner(request)),
+      ...(request.readOnly
+        ? {}
+        : {
+            result: {
+              ...fixOutput,
+              checks: [
+                {
+                  description: "PTY verification",
+                  outcome,
+                  evidence: "Required executable is unavailable",
+                },
+              ],
+              blockers: [
+                {
+                  kind: "environment",
+                  reason: "PTY executable unavailable",
+                  nextAction: "Install the required executable and rerun review",
+                },
+              ],
+            },
+          }),
+    }));
+    try {
+      h.responses.push(call("review", { action: "run", inspect: inspectArgs.inspect }));
+      await h.settled(() => h.session.prompt("Review reviewed.txt"));
+      expect(h.results.at(-1)!.structuredContent).toMatchObject({
+        run: {
+          status: "fix_failed",
+          fix: { output: { checks: [{ outcome }], blockers: [{ kind: "environment" }] } },
+        },
+      });
+    } finally {
+      await h.dispose();
+    }
+  }, 15000);
+
+  test("WHEN a command turn settles unused, a continuation SHALL NOT inherit its scope or no-fix mode", async () => {
+    const h = await harness();
+    try {
+      await h.settled(() => h.session.prompt("/review --no-fix sibling.txt"));
+      h.responses.push(call("review", { ...inspectArgs, action: "run" }));
       await h.continueWithoutInput();
-      expectDenied(h.results.at(-1)!);
-      expect(h.children.filter((child) => !child.readOnly)).toHaveLength(0);
+      expect(h.results.at(-1)!.structuredContent).toMatchObject({
+        run: { status: "fixed", targetFiles: ["reviewed.txt"], noFix: false },
+      });
     } finally {
       await h.dispose();
     }
   }, 15000);
 
-  test("WHEN the authorized parent turn is aborted, a later continuation SHALL require fresh consent", async () => {
-    const h = await harness();
+  test("WHEN repair is aborted, the child SHALL settle with partial edits without an automatic replay", async () => {
+    const started = Promise.withResolvers<void>();
+    const h = await harness(async (request) => {
+      if (request.readOnly) return fixtureRunner(request);
+      writeFileSync(join(request.cwd, "reviewed.txt"), "partial\n");
+      started.resolve();
+      await new Promise<void>((resolve) => {
+        request.signal?.addEventListener("abort", () => resolve(), { once: true });
+        if (request.signal?.aborted) resolve();
+      });
+      return { ...(await fixtureRunner(request)), status: "cancelled", result: undefined };
+    });
     try {
-      const run = await h.inspect();
-      const started = Promise.withResolvers<void>();
-      h.session.agent.streamFunction = (model, _context, options) => {
-        const events = createAssistantMessageEventStream();
-        const abort = () => {
-          const response = {
-            ...fauxAssistantMessage(""),
-            api: model.api,
-            provider: model.provider,
-            model: model.id,
-            stopReason: "aborted" as const,
-          };
-          events.push({ type: "error", reason: "aborted", error: response });
-          events.end();
-        };
-        options?.signal?.addEventListener("abort", abort, { once: true });
-        if (options?.signal?.aborted) abort();
-        started.resolve();
-        return events;
-      };
-      await h.session.prompt(`/review-fix ${run.runId}`);
+      h.responses.push(call("review", { action: "run", inspect: inspectArgs.inspect }));
+      const pending = h.session.prompt("Review reviewed.txt");
       await started.promise;
-      await h.settled(() => h.session.abort());
-      expect(h.children).toHaveLength(2);
-      h.session.agent.streamFunction = h.stream;
-      h.responses.push(call("review", { action: "fix", runId: run.runId }));
-      await h.continueWithoutInput();
-      expectDenied(h.results.at(-1)!);
-      expect(h.children.filter((child) => !child.readOnly)).toHaveLength(0);
+      await h.session.abort();
+      await pending;
+      expect(h.children.filter((child) => !child.readOnly)).toHaveLength(1);
+      expect(readFileSync(join(h.cwd, "reviewed.txt"), "utf8")).toBe("partial\n");
+      expect(h.results.at(-1)!.structuredContent).toMatchObject({
+        run: { status: "fix_failed", fix: { status: "aborted" } },
+      });
     } finally {
       await h.dispose();
     }
   }, 15000);
 
-  test("WHEN the session tree changes, retained receipts SHALL NOT restore a live Review Run or its consent", async () => {
+  test("WHEN the session tree changes, receipts SHALL NOT restore a live Review Run", async () => {
     const h = await harness();
     try {
       const run = await h.inspect();
       const receipt = h.manager
         .getBranch()
         .find((entry) => entry.type === "custom" && entry.customType === "review-result")!;
-      await h.settled(() => h.session.prompt(`/review-fix ${run.runId}`));
       expect(await h.session.navigateTree(receipt.id)).toMatchObject({ cancelled: false });
       expect(h.manager.getBranch()).toContainEqual(receipt);
-      const requests = h.requests.length;
-      await h.session.prompt(`/review-fix ${run.runId}`);
-      await h.session.waitForIdle();
-      expect(h.requests).toHaveLength(requests); // Stale command fails closed before triggering a turn.
-      h.responses.push(call("review", { action: "fix", runId: run.runId }));
+      h.responses.push(call("review", { action: "status", runId: run.runId }));
       await h.continueWithoutInput();
       expectDenied(h.results.at(-1)!, "Unknown review run");
-      expect(h.children.filter((child) => !child.readOnly)).toHaveLength(0);
     } finally {
       await h.dispose();
     }
   }, 15000);
+});
+
+test("WHEN /review options select scope, parsing SHALL retain no-fix and reject ambiguous choices", () => {
+  expect(parseReviewArgs("")).toEqual({ scope: { mode: "working" }, noFix: false });
+  expect(parseReviewArgs("--cached --no-fix")).toEqual({ scope: { mode: "staged" }, noFix: true });
+  expect(parseReviewArgs("--base main")).toEqual({
+    scope: { mode: "base", base: "main" },
+    noFix: false,
+  });
+  expect(parseReviewArgs("--pr=42 -- security")).toEqual({
+    scope: { mode: "pr", pr: "42" },
+    noFix: false,
+    focus: ["security"],
+  });
+  for (const args of [
+    "--base",
+    "--pr=",
+    "--staged reviewed.txt",
+    "--pr 42 --base main",
+    "../outside.txt",
+    "--unknown",
+  ])
+    expect(() => parseReviewArgs(args)).toThrow();
 });
