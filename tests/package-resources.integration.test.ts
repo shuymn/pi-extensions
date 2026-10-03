@@ -21,10 +21,17 @@ test("Pi loads the declared optional capabilities, skills and prompt templates a
     const loaded = loader.getExtensions();
     expect(loaded.errors).toEqual([]);
     const paths = loaded.extensions.map((extension) => extension.path);
-    for (const name of ["goal", "one-shot", "review", "subagents", "fallback-model"]) {
+    for (const name of [
+      "goal",
+      "one-shot",
+      "review",
+      "subagents",
+      "fallback-model",
+      "openai-fast",
+    ]) {
       expect(paths.some((path) => path.endsWith(`/extensions/${name}/index.ts`))).toBe(true);
     }
-    for (const name of ["compact", "commit", "create-pr", "dynamic-workflows"]) {
+    for (const name of ["compact", "commit", "create-pr", "dynamic-workflows", "codex-fast"]) {
       expect(paths.some((path) => path.endsWith(`/extensions/${name}/index.ts`))).toBe(false);
     }
     expect(

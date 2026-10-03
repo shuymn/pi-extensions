@@ -313,9 +313,6 @@ for (const mode of ["commit", "create-pr"] as const) {
 test("When a user starts a Goal, Pi shall continue natively and settle exactly once after completion", async () => {
   const f = await fixture();
   try {
-    expect(f.runtime.session.getAllTools().map((tool) => tool.name)).not.toContain(
-      "compact_context",
-    );
     await f.run("/goal start Implement fix | Regression passes | Checks pass", {}, {}, done());
     expect(f.contexts).toHaveLength(3);
     expect(f.events).toEqual([
@@ -619,21 +616,31 @@ for (const interruption of ["abort", "human-wait"] as const) {
   });
 }
 
-for (const stopReason of ["error", "length"] as const) {
-  test(`When the native run ends with ${stopReason}, Goal shall record failure without automatic work`, async () => {
-    const f = await fixture();
-    try {
-      await f.run("/goal start Work | Checked", {
-        stopReason,
-        errorMessage: "Offline failure probe",
-      });
-      expect(f.contexts).toHaveLength(1);
-      expect(f.state()?.status).toBe("failed");
-    } finally {
-      await f.close();
-    }
-  });
-}
+test("When the native run ends with error, Goal shall record failure without automatic replay", async () => {
+  const f = await fixture();
+  try {
+    await f.run("/goal start Work | Checked", {
+      stopReason: "error",
+      errorMessage: "Offline failure probe",
+    });
+    expect(f.contexts).toHaveLength(1);
+    expect(f.state()?.status).toBe("failed");
+  } finally {
+    await f.close();
+  }
+});
+
+test("When an authorized Goal reaches its output limit, it shall continue to completion without a manual resume", async () => {
+  const f = await fixture();
+  try {
+    await f.run("/goal start Work | Checked", { stopReason: "length" }, done());
+    expect(f.contexts).toHaveLength(2);
+    expect(f.state()).toMatchObject({ status: "completed", continuations: 1 });
+    expect(f.events.filter((event) => event === "agent_settled")).toHaveLength(1);
+  } finally {
+    await f.close();
+  }
+});
 
 test("When native Pi compacts a running Goal, the Goal shall continue without owning compaction", async () => {
   const f = await fixture({ compaction: true });

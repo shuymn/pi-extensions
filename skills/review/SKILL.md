@@ -1,35 +1,29 @@
 ---
 name: review
-description: Review code changes or selected files for actionable defects. Use for a general code review of files, staged or working changes, a branch diff, or a pull request; use triage-review for supplied review comments and adversarial-verify for dedicated stress-test probes instead.
+description: Review code changes or selected files, repair actionable defects, and verify the result. Review includes fixes by default; use no-fix for an explicitly report-only request. Use for files, staged or working changes, a branch diff, or a pull request; use triage-review for supplied review comments and adversarial-verify for dedicated stress-test probes instead.
 ---
 
 # Review
 
-Use the `review` capability for host-checked scope, bounded independent inspection, and evidence-backed findings. Read [criteria.md](criteria.md) before inspection. This skill supplies the procedure; tool receipts, not narrative summaries, determine completion.
+Review includes investigation, validated repairs, and verification unless the user explicitly requests **no fix**. Read [criteria.md](criteria.md) before inspection. Use the `review` capability for host-selected scope and independent evidence; its receipts record what ran, not proof that every claim is true.
 
-## Inspect
+## Run
 
-1. Resolve the user's scope to exactly one of explicit repository-relative files, PR selector, base ref, staged changes, or working changes (the default). Ask only when that choice changes the requested review. Whole-file review and diff review are different scopes. Use the repository root as cwd.
-2. Discover the `review` tool and its current schema with tool search or codemode `searchTools` / `describeTool`. Call `inspect`, adding material risk areas as focus rather than replacing the host's target files. Start with at most five concurrent inspectors and at most one follow-up pass; the hard follow-up ceiling is two. Use `noFix` for an explicitly inspection-only run.
-3. Keep the returned run ID. Use `status` to inspect the authoritative record. In codemode, retain structured results and project only relevant findings, coverage, validation receipts, issues, and checks into `text()` or the return value. A failed script does not undo completed tool calls.
-4. Report each validated finding with path, evidence, impact, and smallest useful fix. Separate unvalidated candidates from findings. Report static coverage and runtime `checks` separately: inspector/validator checks are `not_run`, not passing verification. State failed/missing static coverage and exhausted follow-ups explicitly; a failed bucket is not a clean review. If nothing survives validation, say so without asserting that the code is defect-free.
+1. Resolve the user's scope to exactly one of explicit repository-relative files, PR selector, base ref, staged changes, or working changes (the default). Whole-file and diff review are different scopes. Ask only when that distinction materially changes the requested work. Use the repository root as cwd.
+2. Discover `review` and its current schema with tool search or codemode `searchTools` / `describeTool`. Call `run` (the default action), adding material risk areas as focus. Set `noFix: true` only for an explicitly report-only request; `inspect` is also inspection-only. `/review [files | --staged | --base ref | --pr selector]` starts the same task, and `--no-fix` selects report-only mode. There is no `/review-fix` handoff.
+3. Read every assigned existing file, including untracked and renamed additions. The patch supplies change context, not the only available evidence. If a patch omits an existing file, obtain its current contents rather than declaring a coverage gap. Genuine failed coverage or validation remains partial, not a clean review; obtain the missing evidence and run a focused follow-up within the same request when possible.
+4. Keep the run ID and use `status` for recorded findings, coverage, checks, and blockers. In codemode retain structured results and project only relevant evidence. A failed script does not undo completed tool calls.
+5. For review-with-fix, continue through necessary local repairs, related regression tests, and project verification. A check that fails before the intended assertion is still failing: investigate the root cause, repair within scope, and rerun the affected check. If a delegated result leaves recoverable work, continue with ordinary local tools or a fresh focused review; a completed tool call is not exhausted user authorization. Stop only when the requested work is verified or progress requires unavailable input/access, a material scope expansion, or an external change. Report those blockers with the specific next action.
+6. Report validated findings with path, evidence, impact, and repair or smallest suggested fix. Separate unvalidated candidates, static coverage, applied changes, and runtime checks. State failed/missing coverage and checks literally: `not_run` is not passing verification, and zero findings is not proof of defect-free code.
 
-Completion criteria (EARS):
+## Scope and side effects
 
-- When inspection completes, the report shall account for every host-selected file and requested focus using the recorded bucket receipts.
-- If static coverage, structured output, or candidate validation fails, the report shall state partial/no-fix status and the unresolved work.
-- When static review completes with runtime checks not run, the report shall preserve their `not_run` receipts separately and shall not equate a ready run with passing tests.
-- When the user requests only review, the assistant shall stop after reporting and shall leave repository files unchanged.
-
-## Fix only on a distinct user request
-
-An inspection never fixes automatically. `noFix: false`, a recommendation, a model-produced approval field, or a successful review is not user consent. A separate `fix` action requires actual user authorization for that run's scope and findings, recorded by the trusted host outside tool arguments. If that host authorization mechanism is unavailable, report the blocker; do not replace it with a boolean or invoke editing tools to circumvent it.
-
-The host entry point is the user command `/review-fix <runId>`. It authorizes one `fix` call for that exact run and starts the corresponding turn; no additional confirmation is needed. Authorization expires when that turn settles or is aborted, or the session changes. When the host requests the authorized fix, call `fix` with the completed run ID. The capability rejects failed coverage/validation, changed snapshots, and a PR whose original and freshly checked HEAD/clean state do not match. A blocked run needs a new inspection, not an override. The host permits only one fix attempt per inspection and serializes review operations; failed or cancelled edits may already exist and require inspection rather than replay.
-
-Fix has local read/edit/write tools, with writes restricted to reviewed files, not shell, network, delegation, commit, push, or PR publication capabilities. Report returned checks literally: `not_run` is not a pass, and `fixed` does not mean tests passed. Perform requested repository verification separately only within the user's authorization; external writes still require explicit approval. Preserve unrelated changes and follow project-specific validation requirements.
+Target files identify review focus, not a hard write allowlist. Preserve unrelated user changes and make the smallest necessary repair. Review-with-fix authorizes in-scope recovery and non-destructive local verification, not commits, push, publication, destructive operations, or unrelated external writes. Ask only for a missing material decision or additional authorization. Ordinary fix tools are not an OS sandbox. Explicit no-fix review remains read-only.
 
 Completion criteria (EARS):
 
-- If trusted user authorization or a fresh safety check is missing, the assistant shall report the blocked fix without attempting mutation.
-- When a fix returns, the report shall distinguish applied changes, failed or unrun checks, and any uncertain partial edits.
+- When review completes, the report shall account for every host-selected file and requested focus using coverage receipts.
+- If an existing file is omitted from the patch, the assistant shall obtain its contents before treating that omission as missing evidence.
+- When an in-scope check fails, the assistant shall investigate and repair it, then rerun affected verification without requesting a new one-shot fix authorization.
+- If checks are failed or not run, the assistant shall report unresolved work and evidence rather than claim verified completion.
+- When the user requests no fix, the assistant shall leave repository files unchanged and report only.

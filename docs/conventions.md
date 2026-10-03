@@ -10,16 +10,16 @@
 
 ## Slash Command 公開方針
 
-- 実行時の制御・ユーザー認可が必要な操作（例: `/goal`, `/review-fix`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
+- 実行時の制御・ユーザー認可が必要な操作（例: `/goal`, `/review`, `/wt`, `/add-dir`）は直接 Slash Command として登録する。
 - 固定の手順を渡す `/plan` と `/impl` は `prompts/` 配下の標準 prompt templates とし、`package.json` の `pi.prompts` で公開する。引数展開と処理中のメッセージ配送は Pi 標準に任せる。
-- review / research の手順は `skills/` に置く。review の scope・coverage・修正前チェックは runtime capability が保証し、修正認可は `/review-fix` でユーザーから受け取る。
+- review / research の手順は `skills/` に置く。review は既定で修正・検証まで含み、明示された no-fix のみ調査専用にする。scope・coverage・修正前チェックは runtime capability が記録・確認し、別コマンドによる修正認可の橋渡しは要求しない。
 
 ## Dynamic Tool Loading
 
 - Tavily、`review`、background subagent management の大型 tool 群は `exposure: "deferred"` で登録する。Pi 標準の `tool_search` を使う場合は `builtin:tool-search` と `defaultTools` の `+tool_search` が必要。codemode からも標準の discovery API で参照できる。
 - `ask_user_question`、`goal`、`spawn_subagent`、`github_clone_workspace` は常時 active にする。
 - deferred LLM Tool は active-only の `promptSnippet` / `promptGuidelines` を持たず、必要な契約を `description` と parameter schema に置く。
-- deferred exposure と `setActiveTools()` はアクセス制御ではない。child の明示的な tools allowlist、one-shot の実行時 guard により nested / deferred execution にも制限を適用する。
+- capabilities は既定で開く。作業範囲・通常の失敗回復は指示で扱い、明示的な read-only / tools 制限や実証済みの失敗に対してのみ必要な実行制約を加える。deferred exposure と `setActiveTools()` はアクセス制御ではない。明示的な child 制限は nested execution にも引き継ぎ、one-shot の終了後 guard は終了済みの処理を再開させない。
 
 ## TUI component
 

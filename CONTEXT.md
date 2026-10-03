@@ -45,7 +45,7 @@ The host-resolved set of repository files or changes an inspection or authorized
 _Avoid_: Prompt focus, review instructions
 
 **Review Run**:
-One host-checked inspection of a Target Scope with coverage receipts, candidate validation, and at most one separately authorized fix attempt.
+One review of a Target Scope with coverage receipts, candidate validation, and in-scope repair and verification by default; an explicitly no-fix request is inspection-only.
 _Avoid_: Workflow Run, agent session
 
 **Goal**:
@@ -57,7 +57,7 @@ An explicitly selected model whose child-local or parent-local router chooses a 
 _Avoid_: Task retry, automatic provider switching
 
 **One-shot Run**:
-An explicitly invoked commit or PR procedure with a bounded tool set, human questions when needed, and automatic shutdown after settlement.
+An explicitly invoked commit or PR procedure with the native tool selection, human questions when needed, and automatic shutdown after settlement.
 _Avoid_: Print mode, Goal
 
 **Research Task**:
@@ -74,6 +74,6 @@ _Avoid_: Inferred consent, automatic approval
 
 ## Boundaries
 
-An inspection is not permission to fix. Review receipts record what ran and what was reported; they do not prove a finding or citation is true. Deferred exposure is not a capability restriction, and repository-write protection is not complete host or network isolation.
+A review request includes necessary local fixes and verification unless explicitly no-fix; an inspection-only request is not permission to edit. Review receipts record what ran and what was reported; they do not prove a finding or citation is true. Deferred exposure is not a capability restriction, and repository-write protection is not complete host or network isolation.
 
 Native codemode composes tools; it does not replace Subagent Sessions. Native compaction manages context; it does not start or resume a Goal. See [the execution design](docs/design.md) for these responsibility boundaries.

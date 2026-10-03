@@ -1,21 +1,27 @@
 import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { JsonValue } from "@earendil-works/pi-ai";
 import type {
   AgentSession,
   ExtensionAPI,
   ExtensionContext,
+  ExtensionToolContext,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { type TSchema, Type } from "typebox";
 import { toCliExec } from "../../lib/cli";
-import { type DelegatedSessionResult, runDelegatedSession } from "../../lib/delegated-session";
+import {
+  type DelegatedSessionOptions,
+  type DelegatedSessionResult,
+  inheritDelegatedTool,
+  runDelegatedSession,
+} from "../../lib/delegated-session";
 import {
   createInvestigationToolset,
   type InvestigationToolset,
-  isolatedAgentToolNames,
 } from "../../lib/investigation-tools";
 import type { ThinkingLevel } from "../../lib/model-spec";
-import { isOneShotPrimaryModeSelected } from "../../lib/one-shot-flow";
 
 type Status = "running" | "stopping" | "completed" | "error" | "stopped";
 type Selection = { model: ExtensionContext["model"]; thinkingLevel: ThinkingLevel };
@@ -41,7 +47,8 @@ type Runtime = SpawnPolicy & {
   callerDelegationDepth: number;
   callerRecordId?: string;
   selection?: Selection;
-  allowedTools?: readonly string[];
+  settings?: DelegatedSessionOptions["settings"];
+  inheritedTools?: readonly ToolDefinition[];
 };
 type SpawnParams = {
   prompt: string;
@@ -94,29 +101,63 @@ async function stopTree(runtime: Runtime, record: RecordState): Promise<void> {
   ]);
 }
 function availableTools(
-  toolset: InvestigationToolset,
+  pi: ExtensionAPI,
+  ctx: ExtensionToolContext,
+  declared: readonly AgentTool[],
   runtime: Runtime,
   readOnly: boolean,
-): string[] {
-  const tools = isolatedAgentToolNames(toolset, {
-    readOnly,
-    extraTools: runtime.callerDelegationDepth + 1 < MAX_DELEGATION_DEPTH ? [SPAWN] : [],
-  });
-  return runtime.allowedTools === undefined
-    ? tools
-    : tools.filter((name) => runtime.allowedTools?.includes(name));
+): ToolDefinition[] {
+  const metadata = new Map(pi.getAllTools().map((tool) => [tool.name, tool]));
+  const callerTools =
+    runtime.inheritedTools ??
+    [...new Map([...declared, ...ctx.tools].map((tool) => [tool.name, tool])).values()].map(
+      (tool) => inheritDelegatedTool(tool, metadata.get(tool.name)),
+    );
+  const detached = new Map(runtime.toolset.tools.map((tool) => [tool.name, tool]));
+  return (
+    callerTools
+      // Background records belong to their owner; children have foreground delegation only.
+      .filter(
+        (tool) => !["get_subagent_result", "stop_subagent", "list_subagents"].includes(tool.name),
+      )
+      .filter(
+        (tool) => tool.name !== SPAWN || runtime.callerDelegationDepth + 1 < MAX_DELEGATION_DEPTH,
+      )
+      .map((tool) => {
+        const replacement = detached.get(tool.name);
+        const source = metadata.get(tool.name)?.sourceInfo?.path;
+        const ownedSource = resolve(
+          import.meta.dirname,
+          tool.name === "github_clone_workspace" ? "../add-dir/index.ts" : "../tavily/index.ts",
+        );
+        // Only the package's own implementations need detached resource ownership.
+        // A caller's same-named override must retain its schema and callback.
+        return replacement && source === ownedSource
+          ? { ...replacement, exposure: tool.exposure, namespace: tool.namespace }
+          : tool;
+      })
+      .filter(
+        (tool) =>
+          !readOnly ||
+          tool.name === "bash" ||
+          tool.name === SPAWN ||
+          (tool.name !== "edit" &&
+            tool.name !== "write" &&
+            tool.annotations?.readOnlyHint === true),
+      )
+  );
 }
 function spawnTool(
   pi: ExtensionAPI,
-  ctxProvider: (ctx: ExtensionContext) => ExtensionContext,
   getRuntime: () => Runtime | undefined,
   policy: SpawnPolicy,
 ): ToolDefinition {
+  let declared: readonly AgentTool[] = [];
   return {
     name: SPAWN,
     label: "Spawn Subagent",
     description:
-      "Run a self-contained delegated task in an isolated session, inheriting the caller's model and thinking level. Default tools are read, grep, find, ls, bash, edit, write, Tavily and GitHub clone tools. Read-only children use protected bash and cannot edit/write. allowedTools restricts the child (including nested delegation); [] gives no task tools. One additional foreground delegation level is available only when spawn_subagent is allowed. Native model retries continue the same conversation; tasks are never restarted on failure.",
+      "Run a self-contained delegated task in an isolated session, inheriting the caller's model, thinking level and available tools. Session-owned background management is not inherited. Read-only children use protected bash and read-only tools. allowedTools restricts the child (including nested delegation); [] gives no task tools. One additional foreground delegation level is available only when spawn_subagent is allowed. Native model retries continue the same conversation; tasks are never restarted on failure.",
     annotations: { readOnlyHint: policy.forceReadOnly },
     parameters: Type.Object({
       prompt: Type.String({
@@ -141,7 +182,7 @@ function spawnTool(
       allowedTools: Type.Optional(
         Type.Array(Type.String(), {
           description:
-            "Child tool allowlist, bounded by the caller's tool policy. Omit for inherited defaults; [] for no task tools.",
+            "Child tool allowlist, bounded by the caller's available tools. Omit to inherit them; [] for no task tools.",
         }),
       ),
       schema: Type.Optional(
@@ -151,6 +192,11 @@ function spawnTool(
       ),
     }),
     outputSchema: OUTPUT_SCHEMA,
+    prepareLoadout(loadout) {
+      // ctx.tools includes callable/deferred tools but excludes model-only declarations.
+      declared = loadout.declared;
+      return undefined;
+    },
     async execute(_id, params, signal, onUpdate, ctx) {
       const runtime = getRuntime();
       if (!runtime || runtime.closed)
@@ -160,14 +206,15 @@ function spawnTool(
             status: "error",
           },
         );
-      return spawn(pi, ctxProvider(ctx), runtime, params as SpawnParams, signal, onUpdate);
+      return spawn(pi, ctx, declared, runtime, params as SpawnParams, signal, onUpdate);
     },
   } as ToolDefinition;
 }
 
 async function spawn(
   pi: ExtensionAPI,
-  ctx: ExtensionContext,
+  ctx: ExtensionToolContext,
+  declared: readonly AgentTool[],
   runtime: Runtime,
   params: SpawnParams,
   signal: AbortSignal | undefined,
@@ -191,12 +238,14 @@ async function spawn(
       { status: "error" },
     );
   const readOnly = runtime.forceReadOnly || (params.readOnly ?? false);
-  const { toolset } = runtime;
-  const available = availableTools(toolset, runtime, readOnly);
-  const denied = params.allowedTools?.find((name) => !available.includes(name));
+  const available = availableTools(pi, ctx, declared, runtime, readOnly);
+  const availableNames = new Set(available.map((tool) => tool.name));
+  const denied = params.allowedTools?.find((name) => !availableNames.has(name));
   if (denied) throw new Error(`Subagent allowedTools includes unavailable tool: ${denied}`);
-  const selected = [...new Set(params.allowedTools ?? available)];
+  const selected = new Set(params.allowedTools ?? availableNames);
+  const selectedTools = available.filter((tool) => selected.has(tool.name));
   const selection = runtime.selection ?? { model: ctx.model, thinkingLevel: pi.getThinkingLevel() };
+  const settings = runtime.settings ?? pi.getSettings();
   if (!selection.model) throw new Error("Select a model before spawning a subagent");
   const model = selection.model;
   const id = randomUUID().slice(0, 8);
@@ -224,32 +273,24 @@ async function spawn(
         forceReadOnly: readOnly,
         backgroundAllowed: false,
         selection,
-        allowedTools: selected,
+        settings,
+        inheritedTools: selectedTools,
       };
-      const nested = selected.includes(SPAWN)
-        ? spawnTool(
-            pi,
-            () => ctx,
-            () => (runtime.closed ? undefined : childRuntime),
-            childRuntime,
-          )
+      const nested = selected.has(SPAWN)
+        ? spawnTool(pi, () => (runtime.closed ? undefined : childRuntime), childRuntime)
         : undefined;
       record.outcome = await runDelegatedSession({
         cwd: ctx.cwd,
         modelRegistry: ctx.modelRegistry,
         model,
         thinkingLevel: selection.thinkingLevel,
+        settings,
         systemPrompt: ctx.getSystemPrompt(),
         prompt: params.prompt,
         name: `subagent#${id}`,
-        allowedTools: selected,
-        // These host-owned investigation definitions write only detached scratch roots; they do
-        // not grant mutation tools or inherit parent tool execution capabilities.
+        allowedTools: [...selected],
         customTools: [
-          ...toolset.tools.map((tool) => ({
-            ...tool,
-            annotations: { ...tool.annotations, readOnlyHint: true },
-          })),
+          ...selectedTools.filter((tool) => tool.name !== SPAWN),
           ...(nested ? [nested] : []),
         ],
         readOnly,
@@ -356,8 +397,8 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       });
     return closing;
   };
-  pi.registerTool(spawnTool(pi, (ctx) => ctx, getRuntime, policy));
-  const exposure = isOneShotPrimaryModeSelected() ? "direct" : "deferred";
+  pi.registerTool(spawnTool(pi, getRuntime, policy));
+  const exposure = "deferred";
   pi.registerTool({
     name: "get_subagent_result",
     exposure,

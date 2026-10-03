@@ -76,6 +76,8 @@ export async function prepareReviewScope(
         ),
       ]);
       targetFiles.push(...nulPaths(staged), ...nulPaths(untracked));
+      // Untracked additions are available to the inspectors at their selected paths.
+      // Do not read/inline them before the shared count and bounded-file preflight.
       diff = `Unstaged changes:\n${patch}\nStaged changes:\n${stagedPatch}`;
     }
   }
@@ -201,7 +203,7 @@ async function fingerprint(files: string[], host: Host, signal?: AbortSignal): P
       if (!stat.isFile() || stat.size > MAX_BYTES) {
         throw new Error(`Review target is not a bounded regular file: ${file}`);
       }
-      const content = await readFile(path);
+      const content = await readFile(path, { signal });
       if (content.byteLength > MAX_BYTES)
         throw new Error(`Review target grew beyond 2 MiB: ${file}`);
       hash.update(JSON.stringify([file, "file", content.byteLength]));

@@ -189,7 +189,7 @@ describe("fallback router", () => {
     expect(failure.message.errorMessage).toBe("429 original provider text");
   });
 
-  test("fails explicitly for empty, entirely absent, virtual, or disappeared sticky candidates", async () => {
+  test("fails explicitly for empty, entirely absent, or virtual candidates", async () => {
     expect(() => createFallbackVirtualModel(registry(), []).route(request())).toThrow(
       "requires --fallback-model",
     );
@@ -199,13 +199,170 @@ describe("fallback router", () => {
     expect(() =>
       createFallbackVirtualModel(registry([model("a", "pi-virtual")]), config).route(request()),
     ).toThrow("must be a physical model");
+  });
+
+  test("missing successful sticky candidates recover to unattempted configured backups", async () => {
+    const models = [a, b, c];
+    const router = createFallbackVirtualModel(registry(models), config);
+    const primary = await router.route(request());
+    const sticky = await router.route(
+      request({ reason: "retry", state: primary.state, failed: failed(a) }),
+    );
+    const before = structuredClone(sticky.state);
+    models.splice(models.indexOf(b), 1);
+    const recovered = await router.route(
+      request({
+        reason: "continuation",
+        state: sticky.state,
+        previous: { model: b, thinkingLevel: "off" },
+      }),
+    );
+    expect(recovered).toEqual({
+      model: c,
+      thinkingLevel: "high",
+      state: { attempted: ["test/a", "test/b", "test/c"], current: "test/c" },
+    });
+    expect(sticky.state).toEqual(before);
+    const continued = await router.route(
+      request({
+        reason: "continuation",
+        state: recovered.state,
+        previous: { model: c, thinkingLevel: "minimal" },
+      }),
+    );
+    expect(continued.model).toBe(c);
+    expect(continued.thinkingLevel).toBe("minimal");
+    expect(continued.state).toBe(recovered.state);
+  });
+
+  test("missing state-only sticky selection recovers without mutating a fork's state", async () => {
+    const models = [a, b, c];
+    const router = createFallbackVirtualModel(registry(models), config);
+    const first = await router.route(request());
+    const state = Object.freeze({
+      ...(first.state as { attempted: string[]; current: string }),
+      attempted: Object.freeze(["test/a"]),
+    });
+    models.shift();
+    const recovered = await router.route(request({ reason: "continuation", state }));
+    expect(recovered).toEqual({
+      model: b,
+      thinkingLevel: "medium",
+      state: { attempted: ["test/a", "test/b"], current: "test/b" },
+    });
+    expect(state).toEqual({ attempted: ["test/a"], current: "test/a" });
+    models.unshift(a);
+    expect(await router.route(request({ reason: "continuation", state }))).toEqual({
+      model: a,
+      thinkingLevel: "low",
+      state,
+    });
+    expect(
+      (await router.route(request({ reason: "continuation", state: recovered.state }))).model,
+    ).toBe(b);
+  });
+
+  test("continuation can reuse recovered attempted candidates without resetting retry history", async () => {
     const models = [a, b];
+    const router = createFallbackVirtualModel(registry(models), config.slice(0, 2));
+    const first = await router.route(request());
+    const sticky = await router.route(
+      request({ reason: "retry", state: first.state, failed: failed(a) }),
+    );
+    models.splice(0, models.length);
+    // The primary returns to the catalog, while the successful backup disappears.
+    models.push(a);
+    const recovered = await router.route(
+      request({
+        reason: "continuation",
+        state: sticky.state,
+        previous: { model: b, thinkingLevel: "off" },
+      }),
+    );
+    expect(recovered).toEqual({
+      model: a,
+      thinkingLevel: "low",
+      state: { attempted: ["test/a", "test/b"], current: "test/a" },
+    });
+    expect(sticky.state).toEqual({ attempted: ["test/a", "test/b"], current: "test/b" });
+    models.push(b);
+    const failure = failed(a, "503 still failing after continuation");
+    const exhausted = await router.route(
+      request({ reason: "retry", state: recovered.state, failed: failure }),
+    );
+    expect(exhausted.model).toBe(a);
+    expect(exhausted.state).toBe(recovered.state);
+    expect(failure.message.errorMessage).toBe("503 still failing after continuation");
+    expect(() => router.route(request({ reason: "retry", state: recovered.state }))).toThrow(
+      "No unattempted physical",
+    );
+  });
+
+  test("state-only continuation can reuse configured candidates after exhaustion", async () => {
+    const state = Object.freeze({
+      attempted: Object.freeze(["test/a", "test/b", "test/c"]),
+      current: "test/c",
+    });
+    const router = createFallbackVirtualModel(registry([b]), config);
+    const result = await router.route(request({ reason: "continuation", state }));
+    expect(result).toEqual({
+      model: b,
+      thinkingLevel: "medium",
+      state: { attempted: ["test/a", "test/b", "test/c"], current: "test/b" },
+    });
+    expect(state.current).toBe("test/c");
+    expect((await router.route(request({ reason: "direct", state: result.state }))).model).toBe(b);
+    expect((await router.route(request({ reason: "user", state: result.state }))).state).toEqual({
+      attempted: ["test/b"],
+      current: "test/b",
+    });
+  });
+
+  test("missing sticky models with no configured catalog candidate fail instead of inventing models", async () => {
+    const unconfigured = model("unconfigured");
+    const models = [a, unconfigured];
     const router = createFallbackVirtualModel(registry(models), config);
     const first = await router.route(request());
     models.shift();
+    for (const previous of [{ model: a }, undefined]) {
+      expect(() =>
+        router.route(request({ reason: "continuation", state: first.state, previous })),
+      ).toThrow("No unattempted physical");
+    }
+    expect(first.state).toEqual({ attempted: ["test/a"], current: "test/a" });
+  });
+
+  test("cross-provider recovery requires explicit candidates, not matching model ids", async () => {
+    const otherA = { ...a, provider: "other" };
+    const otherB = { ...b, provider: "other" };
+    const state = { attempted: ["test/a"], current: "test/a" };
+    const unconfigured = createFallbackVirtualModel(registry([otherA, otherB]), config);
     expect(() =>
-      router.route(request({ reason: "continuation", state: first.state, previous: { model: a } })),
-    ).toThrow("no longer in the catalog");
+      unconfigured.route(request({ reason: "continuation", state, previous: { model: a } })),
+    ).toThrow("No unattempted physical");
+    const optedIn = createFallbackVirtualModel(registry([otherA, otherB]), [
+      ...config,
+      { provider: "other", model: "b", thinkingLevel: "high" },
+    ]);
+    expect(
+      await optedIn.route(request({ reason: "continuation", state, previous: { model: a } })),
+    ).toEqual({
+      model: otherB,
+      thinkingLevel: "high",
+      state: { attempted: ["test/a", "other/b"], current: "other/b" },
+    });
+  });
+
+  test("native retry exhaustion cannot route to an unconfigured or disappeared failed model", async () => {
+    const state = { attempted: ["test/a"], current: "test/a" };
+    const router = createFallbackVirtualModel(registry([a, b]), config.slice(0, 1));
+    expect(() => router.route(request({ reason: "retry", state, failed: failed(b) }))).toThrow(
+      "No unattempted physical",
+    );
+    const unavailable = createFallbackVirtualModel(registry([b]), config.slice(0, 1));
+    expect(() => unavailable.route(request({ reason: "retry", state, failed: failed(a) }))).toThrow(
+      "No unattempted physical",
+    );
   });
 
   test("native routing retries without a failed message advance only to unattempted candidates", async () => {

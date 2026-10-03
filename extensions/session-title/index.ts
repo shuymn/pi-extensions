@@ -1,8 +1,12 @@
-import { complete } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseModelSpec } from "../../lib/model-spec";
-import { projectSettingsPath, readExtensionSettings } from "../../lib/settings";
+import {
+  projectSettingsPath,
+  readExtensionSettings,
+  readGlobalExtensionSettings,
+} from "../../lib/settings";
 import {
   extractTextBlocks,
   extractUserText,
@@ -13,7 +17,7 @@ import {
 
 const SESSION_TITLE_SETTINGS_KEY = "session-title";
 const DEFAULT_TITLE_MODEL = {
-  provider: "openai-codex",
+  provider: "openai",
   model: "gpt-5.3-codex-spark",
   thinkingLevel: "low",
 } as const;
@@ -50,7 +54,6 @@ export default function sessionTitleExtension(pi: ExtensionAPI): void {
 
   let sessionToken = 0;
   let armed = false;
-  let pending = false;
   let activeController: AbortController | undefined;
 
   function abortActiveGeneration() {
@@ -61,7 +64,6 @@ export default function sessionTitleExtension(pi: ExtensionAPI): void {
   pi.on("session_start", async (event, ctx) => {
     abortActiveGeneration();
     sessionToken += 1;
-    pending = false;
     if (shouldSkipSessionTitle(pi)) {
       armed = false;
       return;
@@ -77,18 +79,17 @@ export default function sessionTitleExtension(pi: ExtensionAPI): void {
     abortActiveGeneration();
     sessionToken += 1;
     armed = false;
-    pending = false;
   });
 
   pi.on("message_end", async (event, ctx) => {
-    if (!armed || pending || pi.getSessionName()) return;
+    if (!armed || pi.getSessionName()) return;
     if (event.message.role !== "user") return;
 
     const prompt = extractUserText(event.message.content);
+    // Disarm before dispatch so later messages cannot start another generation.
     armed = false;
     if (!prompt) return;
 
-    pending = true;
     const token = sessionToken;
     const controller = new AbortController();
     activeController = controller;
@@ -103,7 +104,6 @@ export default function sessionTitleExtension(pi: ExtensionAPI): void {
       .catch(() => undefined)
       .finally(() => {
         if (activeController === controller) activeController = undefined;
-        if (token === sessionToken) pending = false;
       });
   });
 }
@@ -117,42 +117,48 @@ async function generateSessionName(
   ctx: ExtensionContext,
   abortController: AbortController,
 ): Promise<string | undefined> {
-  const settings = readExtensionSettings<SessionTitleSettings>(SESSION_TITLE_SETTINGS_KEY, {
-    projectPath: projectSettingsPath(ctx.cwd),
-  });
+  const settings = ctx.isProjectTrusted()
+    ? readExtensionSettings<SessionTitleSettings>(SESSION_TITLE_SETTINGS_KEY, {
+        projectPath: projectSettingsPath(ctx.cwd),
+      })
+    : readGlobalExtensionSettings<SessionTitleSettings>(SESSION_TITLE_SETTINGS_KEY);
   const configuredModel = parseModelSpec(settings.model) ?? DEFAULT_TITLE_MODEL;
   const model = ctx.modelRegistry.find(configuredModel.provider, configuredModel.model);
-  if (!model) return undefined;
-
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (abortController.signal.aborted) return undefined;
-  if (!auth.ok || !auth.apiKey) return undefined;
+  if (!model || abortController.signal.aborted) return undefined;
 
   const timeout = setTimeout(() => abortController.abort(), TITLE_TIMEOUT_MS);
 
   try {
-    const response = await complete(
-      model,
-      {
-        systemPrompt: TITLE_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: [{ type: "text", text: prompt }],
-            timestamp: Date.now(),
-          },
-        ],
-        tools: [titleTool],
-      },
-      {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
-        reasoningEffort: configuredModel.thinkingLevel,
-        signal: abortController.signal,
-        timeoutMs: TITLE_TIMEOUT_MS,
-      },
-    );
+    const response = await ctx.modelRegistry
+      .streamSimple(
+        model,
+        {
+          systemPrompt: TITLE_SYSTEM_PROMPT,
+          messages: [
+            {
+              role: "user",
+              content: [{ type: "text", text: prompt }],
+              timestamp: Date.now(),
+            },
+          ],
+          tools: [titleTool],
+        },
+        {
+          reasoning:
+            configuredModel.thinkingLevel === "off" ? undefined : configuredModel.thinkingLevel,
+          signal: abortController.signal,
+          timeoutMs: TITLE_TIMEOUT_MS,
+        },
+      )
+      .result();
 
+    if (
+      abortController.signal.aborted ||
+      response.stopReason === "error" ||
+      response.stopReason === "aborted"
+    ) {
+      return undefined;
+    }
     return extractStructuredTitle(response.content) ?? extractTextTitle(response.content);
   } finally {
     clearTimeout(timeout);
@@ -162,7 +168,7 @@ async function generateSessionName(
 function extractStructuredTitle(content: unknown[]): string | undefined {
   for (const part of content) {
     if (!isTitleToolCall(part)) continue;
-    const title = sanitizeSessionName(part.arguments.title);
+    const title = sanitizeGeneratedTitle(part.arguments.title);
     if (title) return title;
   }
   return undefined;
@@ -187,5 +193,14 @@ function isTitleToolCall(
 }
 
 function extractTextTitle(content: unknown[]): string | undefined {
-  return sanitizeSessionName(extractTextBlocks(content).trim());
+  return sanitizeGeneratedTitle(extractTextBlocks(content).trim());
+}
+
+function sanitizeGeneratedTitle(value: string): string | undefined {
+  // Strip sequences before title selection and truncation. Preserve line breaks
+  // for the first-title-line rule; sanitizeSessionName removes them from the result.
+  const plainText = stripTerminalSequences(value).replace(/\p{Cc}/gu, (control) =>
+    control === "\n" ? "\n" : /\s/u.test(control) ? " " : "",
+  );
+  return sanitizeSessionName(plainText);
 }

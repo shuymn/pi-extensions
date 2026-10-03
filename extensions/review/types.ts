@@ -96,6 +96,21 @@ export type ReviewValidation = Static<typeof ReviewValidationSchema>;
 
 export const ReviewFixSchema = Type.Object(
   {
+    blockers: Type.Array(
+      Type.Object(
+        {
+          kind: StringEnum(["scope", "input", "environment", "external"]),
+          reason: text(),
+          nextAction: text(),
+        },
+        { additionalProperties: false },
+      ),
+      {
+        maxItems: 100,
+        description:
+          "Required unavailable scope, input, access, or external change. Recoverable in-scope check failures are work to continue, not blockers.",
+      },
+    ),
     changes: Type.Array(
       Type.Object({ path: text(), summary: text() }, { additionalProperties: false }),
       { maxItems: 500 },
@@ -120,6 +135,8 @@ export type ReviewFix = Static<typeof ReviewFixSchema>;
 export type ReviewAgentRequest = {
   label: string;
   prompt: string;
+  /** The host must append this artifact recovery reference to the child's system prompt. */
+  recoveryContext?: string;
   readOnly: boolean;
   allowedTools: string[];
   schema: TSchema;
@@ -165,7 +182,7 @@ export type ReviewRun = {
   status: "inspecting" | "ready" | "partial" | "aborted" | "fixing" | "fixed" | "fix_failed";
   scope: ReviewScope;
   targetFiles: string[];
-  /** False means static review permits a future authorized fix, not test success or consent. */
+  /** Inspection-only or blocked by static review/safety issues; readiness is not test success. */
   noFix: boolean;
   issues: string[];
   coverage: ReviewCoverage[];
@@ -233,10 +250,4 @@ export type ReviewControlsOptions = {
   runAgent: ReviewRunner;
   execGit: ReviewExec;
   execGh: ReviewExec;
-  /**
-   * Trusted host-only consent check. Bind actual user authorization to this run
-   * and its findings; never populate it from LLM arguments or returned prose.
-   * Missing authorization denies mutation. No UI is opened by these controls.
-   */
-  authorizeFix?: (run: ReviewRun, signal?: AbortSignal) => Promise<boolean>;
 };

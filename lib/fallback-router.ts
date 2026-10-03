@@ -67,29 +67,42 @@ export function createFallbackVirtualModel(
   }
 
   function first(request: ModelRouteRequest, attempted: readonly string[] = []) {
-    for (const spec of config) {
-      const id = formatModelSpec(spec);
-      if (attempted.includes(id)) continue;
-      const model = resolve(spec);
-      if (!model) continue;
-      return {
-        model,
-        thinkingLevel: spec.thinkingLevel ?? request.thinkingLevel,
-        ...(request.reason === "direct"
-          ? {}
-          : {
-              state: { attempted: [...attempted, id], current: id },
-            }),
-      };
+    // A continuation is not a failed request: after losing its sticky model, previously
+    // attempted candidates may have recovered. Prefer unattempted ones without erasing history.
+    const exclusions = request.reason === "continuation" ? [attempted, []] : [attempted];
+    for (const excluded of exclusions) {
+      for (const spec of config) {
+        const id = formatModelSpec(spec);
+        if (excluded.includes(id)) continue;
+        const model = resolve(spec);
+        if (!model) continue;
+        return {
+          model,
+          thinkingLevel: spec.thinkingLevel ?? request.thinkingLevel,
+          ...(request.reason === "direct"
+            ? {}
+            : {
+                state: {
+                  attempted: attempted.includes(id) ? [...attempted] : [...attempted, id],
+                  current: id,
+                },
+              }),
+        };
+      }
     }
-    // Exhausting candidates does not replace the provider failure with a router error.
-    // Let Pi spend any remaining native retry budget on the last physical model.
+    // Let Pi spend any remaining native retry budget on the last physical model,
+    // but only while it is still an explicitly configured catalog candidate.
     if (request.reason === "retry" && request.failed) {
-      return {
-        model: request.failed.model,
-        thinkingLevel: request.failed.thinkingLevel ?? request.thinkingLevel,
-        state: request.state,
-      };
+      const failedKey = key(request.failed.model);
+      const spec = config.find((candidate) => formatModelSpec(candidate) === failedKey);
+      const model = spec && resolve(spec);
+      if (model) {
+        return {
+          model,
+          thinkingLevel: request.failed.thinkingLevel ?? request.thinkingLevel,
+          state: request.state,
+        };
+      }
     }
     throw new Error(
       config.length === 0
@@ -124,15 +137,13 @@ export function createFallbackVirtualModel(
       const spec = config.find((candidate) => formatModelSpec(candidate) === current);
       if (spec) {
         const model = resolve(spec);
-        if (!model)
-          throw new Error(
-            `Fallback candidate ${formatModelSpec(spec)} is no longer in the catalog`,
-          );
-        return {
-          model,
-          thinkingLevel: sticky?.thinkingLevel ?? spec.thinkingLevel ?? request.thinkingLevel,
-          state: request.state,
-        };
+        if (model) {
+          return {
+            model,
+            thinkingLevel: sticky?.thinkingLevel ?? spec.thinkingLevel ?? request.thinkingLevel,
+            state: request.state,
+          };
+        }
       }
       return first(request, state?.attempted);
     },

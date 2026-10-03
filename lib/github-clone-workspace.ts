@@ -10,8 +10,6 @@ export const GITHUB_CLONE_WORKSPACE_TOOL_NAME = "github_clone_workspace";
 const GITHUB_CLONE_TIMEOUT_MS = 30_000;
 
 export const SAFE_GITHUB_PART = /^[A-Za-z0-9_.-]+$/;
-const SAFE_REF = /^[A-Za-z0-9._/-]+$/;
-const SAFE_DIR_NAME = /^[A-Za-z0-9_.-]+$/;
 
 export type CloneWorkspaceDir = {
   name: string;
@@ -57,7 +55,7 @@ export async function resolveExistingDirectory(
   input: string,
   cwd: string,
 ): Promise<CloneWorkspaceDir> {
-  const expanded = expandHome(input.trim());
+  const expanded = expandHome(input);
   const absolute = resolve(cwd, expanded);
   const canonical = await realpath(absolute);
   const stats = await stat(canonical);
@@ -127,12 +125,11 @@ function parseGitHubRepoUrl(input: string): ParsedGitHubUrl {
 }
 
 function sanitizeDirectoryName(input: string): string {
-  const name = input.trim();
-  if (!name) throw new Error("Directory name must not be empty.");
-  if (name === "." || name === ".." || name.includes("/") || !SAFE_DIR_NAME.test(name)) {
-    throw new Error("Directory name may only contain letters, numbers, '.', '_', and '-'.");
+  if (!input) throw new Error("Directory name must not be empty.");
+  if (input === "." || input === ".." || basename(input) !== input || input.includes("\0")) {
+    throw new Error("Directory name must be a single path component other than '.' or '..'.");
   }
-  return name;
+  return input;
 }
 
 function runGit(
@@ -184,17 +181,13 @@ async function resolveGitHubTarget(
   const refs = new Set(
     stdout
       .split("\n")
-      .map((line) => line.trim().split(/\s+/)[1])
-      .filter((ref): ref is string => Boolean(ref))
-      .flatMap((ref) => [ref.replace(/^refs\/heads\//, ""), ref.replace(/^refs\/tags\//, "")]),
+      .map((line) => line.split("\t")[1]?.replace(/^refs\/(?:heads|tags)\//, ""))
+      .filter((ref): ref is string => Boolean(ref)),
   );
 
   for (let length = segments.length; length > 0; length -= 1) {
     const ref = segments.slice(0, length).join("/");
     if (!refs.has(ref)) continue;
-    if (!SAFE_REF.test(ref)) {
-      throw new Error("GitHub ref contains unsupported characters.");
-    }
     return { ref, subPathSegments: segments.slice(length) };
   }
 
@@ -266,7 +259,7 @@ export function createGithubCloneWorkspaceTool(deps: GithubCloneWorkspaceToolDep
       directoryName: Type.Optional(
         Type.String({
           description:
-            "Optional clone directory name. Defaults to the repository name. For /tree/<ref>/<directory> URLs, the registered workspace name is the target directory basename. Must contain only letters, numbers, '.', '_', and '-'.",
+            "Optional clone directory name. Defaults to the repository name. For /tree/<ref>/<directory> URLs, the registered workspace name is the target directory basename. Must be a single path component other than '.' or '..'. Registered names are disambiguated on collision.",
         }),
       ),
     }),

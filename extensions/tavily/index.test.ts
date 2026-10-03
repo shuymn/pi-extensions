@@ -168,13 +168,31 @@ describe("tavily extension", () => {
     });
   });
 
-  test("search rejects overlong queries before executing tvly", async () => {
+  test("WHEN a longer query is supplied, search SHALL pass it to the CLI unchanged", async () => {
     const { pi, tools } = await loadTools();
+    const query = "x".repeat(1000);
+    await tools.get("tavily_search")!.execute("call", { query }, undefined, undefined);
+    expect(pi.execCalls[0]?.args).toEqual(["search", query, "--json"]);
+  });
 
-    await expect(
-      tools.get("tavily_search")!.execute("call", { query: "x".repeat(401) }, undefined, undefined),
-    ).rejects.toThrow("tavily_search query must be 400 characters or fewer");
-    expect(pi.execCalls).toEqual([]);
+  test.each([
+    "tavily_map",
+    "tavily_crawl",
+  ])("WHEN %s receives an explicit external-link choice, it SHALL preserve that choice", async (name) => {
+    const { pi, tools } = await loadTools();
+    for (const allowExternal of [undefined, true, false]) {
+      await tools
+        .get(name)!
+        .execute("call", { url: "https://example.com", allowExternal }, undefined, undefined);
+      expect(pi.execCalls.at(-1)?.args).toEqual([
+        name === "tavily_map" ? "map" : "crawl",
+        "https://example.com",
+        "--json",
+        ...(allowExternal === undefined
+          ? []
+          : [allowExternal ? "--allow-external" : "--no-external"]),
+      ]);
+    }
   });
 
   test("extract validates chunksPerSource dependency and computes timeout", async () => {
@@ -333,6 +351,7 @@ describe("tavily extension", () => {
         "docs.example.com",
         "--exclude-domains",
         "cdn.example.com",
+        "--no-external",
         "--include-images",
         "--timeout",
         "20",

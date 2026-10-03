@@ -9,10 +9,7 @@ import {
 } from "./github-clone-workspace";
 import { createTavilyToolDefinitions, TAVILY_TOOL_NAMES } from "./tavily-tools";
 
-/**
- * Investigation tools explicitly mounted into delegated sessions by spawn_subagent.
- * Order is stable so callers can assert it directly.
- */
+/** Investigation tools with detached workspace ownership in delegated sessions. */
 export const INVESTIGATION_TOOL_NAMES = [
   ...TAVILY_TOOL_NAMES,
   GITHUB_CLONE_WORKSPACE_TOOL_NAME,
@@ -20,33 +17,11 @@ export const INVESTIGATION_TOOL_NAMES = [
 
 export type InvestigationToolName = (typeof INVESTIGATION_TOOL_NAMES)[number];
 
-export const DEFAULT_ISOLATED_AGENT_TOOL_NAMES = [
-  "read",
-  "grep",
-  "find",
-  "ls",
-  "bash",
-  "edit",
-  "write",
-] as const;
-export const READ_ONLY_ISOLATED_AGENT_TOOL_NAMES = ["read", "grep", "find", "ls", "bash"] as const;
-
 export type InvestigationToolset = {
   tools: ToolDefinition[];
   toolNames: string[];
   cleanup: () => Promise<void>;
 };
-
-export function isolatedAgentToolNames(
-  toolset: Pick<InvestigationToolset, "toolNames">,
-  options: { readOnly?: boolean; extraTools?: readonly string[] } = {},
-): string[] {
-  return [
-    ...(options.readOnly ? READ_ONLY_ISOLATED_AGENT_TOOL_NAMES : DEFAULT_ISOLATED_AGENT_TOOL_NAMES),
-    ...toolset.toolNames,
-    ...(options.extraTools ?? []),
-  ];
-}
 
 /**
  * Build the shared investigation toolset. The Tavily tools run through the
@@ -56,11 +31,10 @@ export function isolatedAgentToolNames(
  */
 export function createInvestigationToolset({ exec }: { exec: CliExec }): InvestigationToolset {
   const tempRoots = new Set<string>();
-  let closed = false;
   let cleanupPromise: Promise<void> | undefined;
 
   const trackTempRoot = (tempRoot: string) => {
-    if (closed) {
+    if (cleanupPromise) {
       // The session is shutting down; do not retain new clones. Remove the
       // freshly created root immediately and surface the shutdown to the caller.
       void rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
@@ -75,7 +49,6 @@ export function createInvestigationToolset({ exec }: { exec: CliExec }): Investi
 
   const cleanup = (): Promise<void> => {
     if (cleanupPromise) return cleanupPromise;
-    closed = true;
     const roots = [...tempRoots];
     tempRoots.clear();
     cleanupPromise = Promise.allSettled(
@@ -90,7 +63,11 @@ export function createInvestigationToolset({ exec }: { exec: CliExec }): Investi
     untrackTempRoot,
   });
 
-  const tools: ToolDefinition[] = [...createTavilyToolDefinitions(exec), cloneTool];
+  const tools: ToolDefinition[] = [...createTavilyToolDefinitions(exec), cloneTool].map((tool) => ({
+    ...tool,
+    // Network reads and detached scratch clones do not mutate the caller's repository.
+    annotations: { ...tool.annotations, readOnlyHint: true },
+  }));
 
   return {
     tools,
