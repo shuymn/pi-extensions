@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { createFakePi } from "../../tests/support/fake-pi";
 import extension from "./index";
 import { type AskUserQuestionParams, FREE_INPUT_LABEL, type QuestionnaireResult } from "./types";
@@ -19,12 +19,12 @@ const params: AskUserQuestionParams = {
   })),
 };
 
-type UI = Pick<ExtensionContext["ui"], "select" | "input">;
+type UI = Pick<ExtensionToolContext["ui"], "select" | "input">;
 async function execute(ui?: Partial<UI>, signal?: AbortSignal, input: unknown = params) {
   const result = await tool.execute("call", input, signal, undefined, {
     hasUI: ui !== undefined,
     ui,
-  } as ExtensionContext);
+  } as ExtensionToolContext);
   // Providers send content to the model; details alone cannot convey an answer.
   const text = result.content.map((block) => (block.type === "text" ? block.text : "")).join("\n");
   const modelResult = JSON.parse(text) as QuestionnaireResult;

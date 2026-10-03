@@ -1,84 +1,79 @@
 # Pi Extensions
 
-This context describes the language for a pi extension package that collects personal workflow extensions for the pi coding agent.
+This context describes a Pi package of optional capabilities, skills, and prompt templates. Pi owns the conversation and execution lifecycle; this package supplies constrained delegation and task-specific controls.
 
 ## Language
 
 **Pi Extension Package**:
-A package that groups multiple **Pi Extensions** so pi can load them from one declared package resource.
-_Avoid_: Pi extensions repository, extension collection
+A package of independently selectable Pi Extensions, Skills, and Prompt Templates.
+_Avoid_: Extension collection, agent framework
 
 **Pi Extension**:
-An individual capability under the package that adds commands, tools, shortcuts, UI behavior, or workflow automation to pi.
-_Avoid_: Extension, tool
+A runtime capability that adds tools, user commands, provider integration, or UI behavior to Pi.
+_Avoid_: Workflow engine, skill
 
-**Workflow**:
-A multi-step unit of agent work that progresses through ordered **Phases** and may continue across multiple turns.
-_Avoid_: Run, command
+**Skill**:
+A discoverable task procedure and its judgment criteria, distinct from executable permission checks.
+_Avoid_: Workflow preset, permission policy
 
-**Phase**:
-An ordered part of a **Workflow** with a focused responsibility and a handoff to the next Phase.
-_Avoid_: Step, stage
-
-**Workflow Run**:
-A single execution of a **Workflow** with a specific input, target, progress state, and collected Phase outputs.
-_Avoid_: Run, session
-
-**Target Scope**:
-The set of files, diffs, branch comparisons, staged changes, or pull requests that a **Workflow Run** is responsible for inspecting or changing.
-_Avoid_: Target, input
+**Prompt Template**:
+A named prompt expanded by Pi with user arguments, without a separate execution lifecycle.
+_Avoid_: Command implementation, workflow
 
 **LLM Tool**:
-A structured capability exposed to the agent so it can request a bounded action with typed parameters.
-_Avoid_: Tool, function
+A typed runtime capability the agent can request directly or through native tool composition.
+_Avoid_: Skill, prompt
 
 **Deferred LLM Tool**:
-An **LLM Tool** that is registered but initially inactive, then activated additively through Tool Search when its capability is needed.
-_Avoid_: Hidden tool, unloaded tool
-
-**Tool Search**:
-The active **LLM Tool** that finds and enables matching **Deferred LLM Tools** without removing currently active tools.
-_Avoid_: Tool loader, dynamic tool
+A registered LLM Tool initially omitted from active declarations but available through native discovery or nested execution.
+_Avoid_: Disabled tool, permission boundary
 
 **Slash Command**:
-A user-facing entry point invoked from pi's input with a slash-prefixed name.
-_Avoid_: Command, prompt command
-
-**TUI Widget**:
-A status or progress display rendered inside pi's terminal UI, such as above or below the editor.
-_Avoid_: Widget, status UI
-
-**State**:
-The current data that represents a **Workflow Run**, **Goal**, or UI component at a point in time.
-_Avoid_: Progress, memory
-
-**Goal**:
-An explicitly started objective with completion conditions and an execution status, distinct from a mutable work plan.
-_Avoid_: Todo, task list
+A user-invoked runtime entry point, including actions that establish execution authorization.
+_Avoid_: Model tool, prompt template
 
 **Subagent Session**:
-An isolated agent session delegated from the parent session to complete a focused task.
-_Avoid_: Subagent, worker
+A child conversation with its own model routing state, tools, cancellation, and outcome, created for delegated work.
+_Avoid_: Workflow phase, shared parent session
+
+**Delegated Outcome**:
+The host-recorded completion, failure, or cancellation of a Subagent Session, including its result and available evidence.
+_Avoid_: Guaranteed success, replay checkpoint
+
+**Target Scope**:
+The host-resolved set of repository files or changes an inspection or authorized fix covers.
+_Avoid_: Prompt focus, review instructions
+
+**Review Run**:
+One host-checked inspection of a Target Scope with coverage receipts, candidate validation, and at most one separately authorized fix attempt.
+_Avoid_: Workflow Run, agent session
+
+**Goal**:
+A user-started objective with completion conditions and execution status; persisted objective state alone does not authorize autonomous continuation.
+_Avoid_: Task list, work plan
+
+**Virtual Fallback Model**:
+An explicitly selected model whose child-local or parent-local router chooses a configured physical candidate within Pi's native request retry budget.
+_Avoid_: Task retry, automatic provider switching
+
+**One-shot Run**:
+An explicitly invoked commit or PR procedure with a bounded tool set, human questions when needed, and automatic shutdown after settlement.
+_Avoid_: Print mode, Goal
 
 **Research Task**:
-A question or investigation request that a research **Workflow Run** is expected to answer with sourced evidence.
-_Avoid_: Task, question
+A question answered through bounded source collection and cited synthesis.
+_Avoid_: Research workflow, tool call
 
 **Research Source**:
-An external URL, document, or page collected as evidence for a **Research Task**.
-_Avoid_: Source, evidence
+A retrieved document or user-supplied source used as evidence, not as execution instructions.
+_Avoid_: Authorization, trusted instruction
 
 **Questionnaire**:
-A structured interaction that asks the user one or more questions and returns their selected or custom answers.
-_Avoid_: Question, clarification UI
+A sequence of native selection or text-input dialogs that records actual answers and unanswered questions separately.
+_Avoid_: Inferred consent, automatic approval
 
-## Example dialogue
+## Boundaries
 
-Dev: Should this Pi Extension expose an LLM Tool, a Slash Command, or both?
-Domain expert: Use both when the agent and the user need the same capability. Use only a Slash Command for user-driven actions, and only an LLM Tool for bounded agent actions.
+An inspection is not permission to fix. Review receipts record what ran and what was reported; they do not prove a finding or citation is true. Deferred exposure is not a capability restriction, and repository-write protection is not complete host or network isolation.
 
-Dev: Does a Research Task include the Research Sources collected later?
-Domain expert: No. The Research Task is the request being investigated; Research Sources are evidence collected while answering it.
-
-Dev: Can we call `review_flow` a tool in docs?
-Domain expert: No. `review_flow` is an extension-packaged Workflow selected through the deferred `workflow` LLM Tool or `/workflow` Slash Command; it has no standalone review Pi Extension, LLM Tool, or Slash Command.
+Native codemode composes tools; it does not replace Subagent Sessions. Native compaction manages context; it does not start or resume a Goal. See [the execution design](docs/design.md) for these responsibility boundaries.

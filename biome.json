@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!node_modules", "!dist", "!extensions/dynamic-workflows/workflows/*.js"]
+    "includes": ["**", "!node_modules", "!dist"]
   },
   "formatter": {
     "enabled": true,

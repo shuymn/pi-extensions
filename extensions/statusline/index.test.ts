@@ -1,389 +1,308 @@
-import { describe, expect, mock, test } from "bun:test";
-
+import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from "bun:test";
+import type { ContextUsage, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { CODEX_FAST_ICON, CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON } from "../../lib/codex-fast";
+import { createFakePi, type ExecCall, type ExecResult } from "../../tests/support/fake-pi";
+import statuslineExtension from "./index";
 
-mock.module("@earendil-works/pi-tui", () => ({
-  truncateToWidth: (text: string, width: number, suffix = "") =>
-    text.length > width ? `${text.slice(0, Math.max(0, width - suffix.length))}${suffix}` : text,
-}));
+type FooterFactory = NonNullable<Parameters<ExtensionContext["ui"]["setFooter"]>[0]>;
+type Footer = ReturnType<FooterFactory>;
 
-type EventHandler = (event: unknown, ctx: FakeContext) => Promise<void> | void;
-type FooterFactory = (
-  tui: { requestRender: () => void },
-  theme: unknown,
-  footerData: FooterData,
-) => FooterComponent;
-type FooterComponent = {
-  invalidate: () => void;
-  render: (width: number) => string[];
-  dispose: () => void;
-};
-type FooterData = {
-  getGitBranch: () => string | undefined;
-  getExtensionStatuses: () => ReadonlyMap<string, string>;
-  onBranchChange: (listener: () => void) => () => void;
-};
-type FakeContext = ReturnType<typeof createContext>;
-
-type ExecResult = { code: number; stdout: string; stderr: string };
-
-type Model = {
-  name?: string;
-  displayName?: string;
-  id?: string;
-  provider?: string;
-  contextWindow?: number;
-};
-
-const ESCAPE = String.fromCharCode(0x1b);
-const ANSI_SEQUENCE = new RegExp(`${ESCAPE}\\[[0-9;]*m`, "g");
-
-function stripAnsi(text: string): string {
-  return text.replace(ANSI_SEQUENCE, "");
-}
-
-function createFakePi(
-  execResult: ExecResult | Promise<ExecResult> | undefined = {
-    code: 0,
-    stdout: "/repo/root\n",
-    stderr: "",
-  },
-) {
-  const events = new Map<string, EventHandler[]>();
-  const execCalls: Array<{
-    command: string;
-    args: string[];
-    options: unknown;
-  }> = [];
-  let thinkingLevel = "medium";
-
-  return {
-    events,
-    execCalls,
-    setThinkingLevel(value: string) {
-      thinkingLevel = value;
-    },
-    on(eventName: string, handler: EventHandler) {
-      events.set(eventName, [...(events.get(eventName) ?? []), handler]);
-    },
-    async exec(command: string, args: string[], options: unknown) {
-      execCalls.push({ command, args, options });
-      if (execResult instanceof Error) throw execResult;
-      return execResult;
-    },
-    getThinkingLevel: () => thinkingLevel,
-  };
-}
-
-function createContext(
+function setup(
   options: {
     hasUI?: boolean;
+    mode?: ExtensionContext["mode"];
     cwd?: string;
-    model?: Model | unknown;
+    model?: unknown;
     models?: unknown[];
-    usage?: { tokens: number } | undefined;
-    idle?: boolean;
+    usage?: ContextUsage;
+    branch?: string;
+    thinkingLevel?: string;
+    exec?: (call: ExecCall) => ExecResult | Promise<ExecResult>;
   } = {},
 ) {
-  const footerFactories: FooterFactory[] = [];
+  const pi = createFakePi({
+    exec: options.exec ?? (() => ({ code: 0, stdout: "/work/my-project\n", stderr: "" })),
+    thinkingLevel: options.thinkingLevel,
+  });
+  statuslineExtension(pi as never);
+  let footer: Footer | undefined;
+  let branch = options.branch;
+  const statuses = new Map<string, string>();
+  const listeners = new Set<() => void>();
+  const unsubscribe = mock((listener: () => void) => listeners.delete(listener));
+  const requestRender = mock(() => {});
+  const setFooter = mock((factory: FooterFactory | undefined) => {
+    footer?.dispose?.();
+    footer = factory?.(
+      { requestRender } as unknown as Parameters<FooterFactory>[0],
+      {} as Parameters<FooterFactory>[1],
+      {
+        getGitBranch: () => branch ?? null,
+        getExtensionStatuses: () => statuses,
+        getAvailableProviderCount: () => 1,
+        onBranchChange(listener) {
+          listeners.add(listener);
+          return () => {
+            unsubscribe(listener);
+          };
+        },
+      },
+    );
+  });
   const model = Object.hasOwn(options, "model")
     ? options.model
     : { name: "claude", provider: "anthropic", contextWindow: 100_000 };
-
-  return {
+  const ctx = {
     hasUI: options.hasUI ?? true,
+    mode: options.mode ?? "tui",
     cwd: options.cwd ?? "/fallback/project",
     model,
     modelRegistry: { getAvailable: () => options.models ?? [model] },
     getContextUsage: () => options.usage,
-    isIdle: () => options.idle ?? true,
-    footerFactories,
-    ui: {
-      setFooter(factory: FooterFactory) {
-        footerFactories.push(factory);
-      },
-    },
+    isIdle: () => true,
+    ui: { setFooter },
   };
-}
-
-function instantiateFooter(
-  ctx: FakeContext,
-  branch?: string,
-  extensionStatuses: ReadonlyMap<string, string> = new Map(),
-) {
-  let renderCount = 0;
-  const branchListeners: Array<() => void> = [];
-  let disposed = false;
-  const footerData: FooterData = {
-    getGitBranch: () => branch,
-    getExtensionStatuses: () => extensionStatuses,
-    onBranchChange: (listener) => {
-      branchListeners.push(listener);
-      return () => {
-        disposed = true;
-      };
-    },
-  };
-  const component = ctx.footerFactories[0](
-    {
-      requestRender: () => {
-        renderCount += 1;
-      },
-    },
-    {},
-    footerData,
-  );
-
   return {
-    component,
-    branchListeners,
-    get renderCount() {
-      return renderCount;
+    pi,
+    ctx,
+    statuses,
+    requestRender,
+    unsubscribe,
+    listeners,
+    get footer() {
+      return footer;
     },
-    get disposed() {
-      return disposed;
+    async emit(event: string) {
+      for (const handler of pi.getEventHandlers(event)) await handler({}, ctx);
     },
-    setBranch(value: string | undefined) {
+    text(width = 500) {
+      if (!footer) throw new Error("No custom footer installed");
+      return Bun.stripANSI(footer.render(width)[0]);
+    },
+    setBranch(value: string) {
       branch = value;
+      for (const listener of listeners) listener();
     },
   };
 }
 
-async function loadExtension() {
-  return (await import("./index")).default;
+function at(hours: number, minutes = 0, seconds = 0) {
+  setSystemTime(new Date(2026, 0, 1, hours, minutes, seconds));
 }
 
-describe("statusline extension", () => {
-  test("registers lifecycle listeners only", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
+describe("statusline custom footer", () => {
+  beforeEach(() => at(12));
+  afterEach(() => setSystemTime());
 
-    extension(pi as never);
-
-    expect([...pi.events.keys()].sort()).toEqual([
-      "agent_settled",
-      "model_select",
-      "session_start",
-      "thinking_level_select",
-      "turn_end",
-      "turn_start",
-    ]);
-  });
-
-  test("does nothing on session_start without UI", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext({ hasUI: false });
-
-    await pi.events.get("session_start")![0]({}, ctx);
-
-    expect(pi.execCalls).toEqual([]);
-    expect(ctx.footerFactories).toEqual([]);
-  });
-
-  test("renders project, branch, model, thinking level, and context usage", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi({
-      code: 0,
-      stdout: "/work/my-project\n",
-      stderr: "",
-    });
-    pi.setThinkingLevel("high");
-    extension(pi as never);
-    const ctx = createContext({
+  test("When started, the footer shall restore project, branch, model, thinking and context display", async () => {
+    const f = setup({
       model: { name: "sonnet", provider: "anthropic", contextWindow: 100_000 },
       models: [
         { name: "sonnet", provider: "anthropic" },
         { name: "sonnet", provider: "openrouter" },
       ],
-      usage: { tokens: 25_000 },
+      thinkingLevel: "high",
+      branch: "feature/statusline",
+      usage: { tokens: 25_000, contextWindow: 100_000, percent: 25 },
     });
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(ctx, "feature/statusline");
-    const rendered = stripAnsi(footer.component.render(500)[0]);
-
-    expect(pi.execCalls).toEqual([
+    await f.emit("session_start");
+    expect(f.text()).toBe(
+      "12:00:00 | my-project on  feature/statusline via anthropic/sonnet・high | ctx ● 25%",
+    );
+    expect(f.footer!.render(500)[0]).toContain("\x1b[38;2;80;220;255m");
+    expect(f.pi.execCalls).toEqual([
       {
         command: "git",
         args: ["rev-parse", "--show-toplevel"],
         options: { timeout: 1000 },
       },
     ]);
-    expect(rendered).toContain("my-project on  feature/statusline via anthropic/sonnet・high");
-    expect(rendered).toContain("ctx ● 25%");
   });
 
-  test("renders codex fast lightning before model when codex-fast status is active", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext({
-      model: { name: "gpt-5.5", provider: "openai-codex", contextWindow: 100_000 },
-    });
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(
-      ctx,
-      undefined,
-      new Map([[CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON]]),
-    );
-    const rendered = stripAnsi(footer.component.render(500)[0]);
-
-    expect(rendered).toContain(`via ${CODEX_FAST_ICON} gpt-5.5・medium`);
+  test.each([
+    { model: { name: "gpt", provider: "openai-codex" }, indicator: true },
+    { model: { name: "gpt", provider: "custom", api: "openai-codex-responses" }, indicator: true },
+    { model: { name: "claude", provider: "anthropic" }, indicator: false },
+  ])("When Codex fast is enabled, its icon shall be limited to Codex models: %j", async ({
+    model,
+    indicator,
+  }) => {
+    const f = setup({ model });
+    await f.emit("session_start");
+    expect(f.text()).not.toContain(CODEX_FAST_ICON);
+    f.statuses.set(CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON);
+    expect(f.text().includes(CODEX_FAST_ICON)).toBe(indicator);
+    f.statuses.delete(CODEX_FAST_STATUS_KEY);
+    expect(f.text()).not.toContain(CODEX_FAST_ICON);
   });
 
-  test("does not render codex fast lightning for non-Codex models", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext({
-      model: { name: "claude", provider: "anthropic", contextWindow: 100_000 },
-    });
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(
-      ctx,
-      undefined,
-      new Map([[CODEX_FAST_STATUS_KEY, CODEX_FAST_STATUS_ON]]),
-    );
-    const rendered = stripAnsi(footer.component.render(500)[0]);
-
-    expect(rendered).toContain("via claude・medium");
-    expect(rendered).not.toContain(CODEX_FAST_ICON);
+  test.each([
+    [{ displayName: "Display Model" }, "Display Model"],
+    [{ id: "model-id" }, "model-id"],
+    [{}, "model"],
+    [undefined, "no model"],
+  ])("When a name is unavailable, the footer shall preserve fallback labels: %j", async (model, name) => {
+    const f = setup({ model });
+    await f.emit("session_start");
+    expect(f.text()).toContain(`via ${name}・medium`);
+    expect(f.text()).not.toContain(" on ");
   });
 
-  test("falls back to cwd basename when git root is unavailable", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi({ code: 1, stdout: "", stderr: "not git" });
-    extension(pi as never);
-    const ctx = createContext({
+  test.each([
+    "nonzero",
+    "empty",
+    "throw",
+  ])("When Git root lookup returns %s, the footer shall use cwd", async (result) => {
+    const f = setup({
       cwd: "/Users/me/project/",
-      model: { displayName: "Display Model" },
+      exec: () => {
+        if (result === "throw") throw new Error("Git unavailable");
+        return { code: result === "nonzero" ? 1 : 0, stdout: "", stderr: "" };
+      },
     });
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(ctx);
-    const rendered = stripAnsi(footer.component.render(300)[0]);
-
-    expect(rendered).toContain("project via Display Model・medium");
-    expect(rendered).not.toContain(" on  ");
-    expect(rendered).not.toContain("ctx ●");
+    await f.emit("session_start");
+    expect(f.text()).toContain(" | project via claude・medium");
   });
 
-  test("uses id or fallback model name and omits invalid context windows", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi(undefined);
-    extension(pi as never);
-    const idCtx = createContext({
-      model: { id: "model-id", contextWindow: 0 },
-      usage: { tokens: 500 },
+  test("When a virtual model has different limits, context usage shall use Pi's effective-model percentage", async () => {
+    const f = setup({
+      model: { name: "Fallback", provider: "fallback", contextWindow: 1_000_000 },
+      usage: { tokens: 25_000, contextWindow: 100_000, percent: 25 },
     });
-
-    await pi.events.get("session_start")![0]({}, idCtx);
-    let footer = instantiateFooter(idCtx);
-    expect(stripAnsi(footer.component.render(300)[0])).toContain("model-id・medium");
-    expect(stripAnsi(footer.component.render(300)[0])).not.toContain("ctx ●");
-
-    const fallbackCtx = createContext({ model: null, models: [null] });
-    await pi.events.get("session_start")![0]({}, fallbackCtx);
-    footer = instantiateFooter(fallbackCtx);
-    expect(stripAnsi(footer.component.render(300)[0])).toContain("no model・medium");
+    await f.emit("session_start");
+    expect(f.text()).toContain("ctx ● 25%");
+    expect(f.text()).not.toContain("ctx ● 3%");
   });
 
-  test("truncates the rendered footer to the available width", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi({
-      code: 0,
-      stdout: "/very/long/project-name\n",
-      stderr: "",
+  test("When native compaction leaves usage unknown, the footer shall omit it until known", async () => {
+    const f = setup({ usage: { tokens: null, contextWindow: 100_000, percent: null } });
+    await f.emit("session_start");
+    expect(f.text()).not.toContain("ctx ●");
+    f.ctx.getContextUsage = () => ({ tokens: 0, contextWindow: 100_000, percent: 0 });
+    expect(f.text()).toContain("ctx ● 0%");
+    f.ctx.getContextUsage = () => undefined;
+    expect(f.text()).not.toContain("ctx ●");
+  });
+
+  test.each([
+    0, 1, 8, 24, 80,
+  ])("When terminal width is %i, ANSI and wide characters shall remain within it", async (width) => {
+    const f = setup({
+      exec: () => ({ code: 0, stdout: "/仕事/長いプロジェクト🚀", stderr: "" }),
+      branch: "feature/日本語",
+      model: { name: "長いモデル名é", provider: "test" },
     });
-    extension(pi as never);
-    const ctx = createContext({
-      model: { name: "very-long-model-name", contextWindow: 1000 },
-      usage: { tokens: 900 },
-    });
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(ctx, "very-long-branch-name");
-    const rendered = footer.component.render(24)[0];
-
-    expect(rendered.length).toBeLessThanOrEqual(24);
+    await f.emit("session_start");
+    for (const line of f.footer!.render(width))
+      expect(visibleWidth(line)).toBeLessThanOrEqual(width);
   });
 
-  test("agent_settled and model/thinking selection request footer rerender", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext();
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(ctx);
-
-    await pi.events.get("agent_settled")![0]({}, createContext({ idle: false }));
-    expect(footer.renderCount).toBe(0);
-
-    await pi.events.get("agent_settled")![0]({}, ctx);
-    await pi.events.get("model_select")![0]({}, ctx);
-    await pi.events.get("thinking_level_select")![0]({}, ctx);
-
-    expect(footer.renderCount).toBe(3);
+  test("When turns finish, duration shall reset per turn and ready time shall update only when idle", async () => {
+    const f = setup();
+    await f.emit("session_start");
+    at(12, 0, 5);
+    await f.emit("turn_start");
+    at(12, 1, 7);
+    await f.emit("turn_end");
+    expect(f.text()).toContain("took 1m2s");
+    expect(f.text()).toStartWith("12:00:00");
+    f.ctx.isIdle = () => false;
+    at(12, 1, 10);
+    const renders = f.requestRender.mock.calls.length;
+    await f.emit("agent_settled");
+    expect(f.requestRender).toHaveBeenCalledTimes(renders);
+    expect(f.text()).toStartWith("12:00:00");
+    f.ctx.isIdle = () => true;
+    await f.emit("agent_settled");
+    expect(f.text()).toStartWith("12:01:10");
+    await f.emit("turn_start");
+    expect(f.text()).not.toContain("took");
+    at(12, 1, 13);
+    await f.emit("turn_end");
+    expect(f.text()).toContain("took 3s");
   });
 
-  test("branch changes request rerender and dispose clears listener", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext();
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(ctx, "main");
-
-    footer.branchListeners[0]();
-    expect(footer.renderCount).toBe(1);
-    footer.component.dispose();
-    expect(footer.disposed).toBe(true);
-
-    await pi.events.get("model_select")![0]({}, ctx);
-    expect(footer.renderCount).toBe(1);
+  test("When a turn exceeds one hour, duration shall keep hours and minutes", async () => {
+    const f = setup();
+    await f.emit("session_start");
+    await f.emit("turn_start");
+    at(13, 2, 3);
+    await f.emit("turn_end");
+    expect(f.text()).toContain("took 1h2m3s");
   });
 
-  test("turn_start and turn_end request footer rerender and show duration", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext();
-
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer = instantiateFooter(ctx);
-
-    await pi.events.get("turn_start")![0]({}, ctx);
-    expect(footer.renderCount).toBe(1);
-    let rendered = stripAnsi(footer.component.render(500)[0]);
-    expect(rendered).not.toContain(" took ");
-
-    await pi.events.get("turn_end")![0]({}, ctx);
-    expect(footer.renderCount).toBe(2);
-    rendered = stripAnsi(footer.component.render(500)[0]);
-    expect(rendered).toMatch(/ took \d+s/);
+  test("When the session restarts, ready time and duration shall reset and the old footer shall be disposed", async () => {
+    const f = setup();
+    await f.emit("session_start");
+    await f.emit("turn_start");
+    at(12, 0, 5);
+    await f.emit("turn_end");
+    expect(f.text()).toContain("took 5s");
+    await f.emit("turn_start");
+    at(13);
+    await f.emit("session_start");
+    await f.emit("turn_end");
+    expect(f.text()).toStartWith("13:00:00");
+    expect(f.text()).not.toContain("took");
+    expect(f.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(f.listeners.size).toBe(1);
   });
 
-  test("session_start resets stale turn duration", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-    const ctx = createContext();
+  test("When model, thinking or branch changes, the footer shall render current state", async () => {
+    const f = setup({ branch: "main" });
+    await f.emit("session_start");
+    f.ctx.model = { name: "new-model", provider: "test" };
+    await f.emit("model_select");
+    f.pi.getThinkingLevel = () => "high";
+    await f.emit("thinking_level_select");
+    f.setBranch("feature/new");
+    expect(f.requestRender).toHaveBeenCalledTimes(3);
+    expect(f.text()).toContain("feature/new via new-model・high");
+  });
 
-    await pi.events.get("session_start")![0]({}, ctx);
-    const footer1 = instantiateFooter(ctx);
-    await pi.events.get("turn_start")![0]({}, ctx);
-    await pi.events.get("turn_end")![0]({}, ctx);
-    expect(stripAnsi(footer1.component.render(500)[0])).toMatch(/ took \d+s/);
+  test("When shutdown occurs, the owned footer shall release its subscription and stop rendering", async () => {
+    const f = setup();
+    await f.emit("session_start");
+    await f.emit("session_shutdown");
+    await f.emit("session_shutdown");
+    expect(f.ctx.ui.setFooter).toHaveBeenCalledTimes(2);
+    expect(f.ctx.ui.setFooter).toHaveBeenLastCalledWith(undefined);
+    expect(f.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(f.listeners.size).toBe(0);
+    await f.emit("model_select");
+    expect(f.requestRender).not.toHaveBeenCalled();
+  });
 
-    const ctx2 = createContext();
-    await pi.events.get("session_start")![0]({}, ctx2);
-    const footer2 = instantiateFooter(ctx2);
-    expect(stripAnsi(footer2.component.render(500)[0])).not.toContain(" took ");
+  test("When another extension replaces the footer, shutdown shall leave its component alone", async () => {
+    const f = setup();
+    await f.emit("session_start");
+    const other = { render: () => ["other footer"], invalidate() {}, dispose: mock(() => {}) };
+    f.ctx.ui.setFooter(() => other);
+    await f.emit("session_shutdown");
+    expect(f.footer).toBe(other);
+    expect(f.ctx.ui.setFooter).toHaveBeenCalledTimes(2);
+    expect(f.unsubscribe).toHaveBeenCalledTimes(1);
+    expect(other.dispose).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    { hasUI: false, mode: "tui" },
+    { hasUI: true, mode: "rpc" },
+    { hasUI: false, mode: "print" },
+    { hasUI: false, mode: "json" },
+  ] as const)("While no TUI is attached, footer rendering and Git lookup shall be inert: %j", async (options) => {
+    const f = setup(options);
+    for (const event of [
+      "session_start",
+      "turn_start",
+      "turn_end",
+      "agent_settled",
+      "session_shutdown",
+    ]) {
+      await f.emit(event);
+    }
+    expect(f.ctx.ui.setFooter).not.toHaveBeenCalled();
+    expect(f.pi.execCalls).toEqual([]);
   });
 });

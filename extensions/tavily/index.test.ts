@@ -1,19 +1,10 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import {
   createFakePi as createSharedFakePi,
   type ExecCall,
   type ExecResult,
 } from "../../tests/support/fake-pi";
-import { installTypeboxMock } from "../../tests/support/typebox-mock";
 
-mock.module("@earendil-works/pi-ai", () => ({
-  StringEnum: (values: readonly string[], options = {}) => ({
-    enum: values,
-    ...options,
-  }),
-}));
-
-installTypeboxMock();
 type ToolDefinition = {
   name: string;
   label: string;
@@ -21,6 +12,7 @@ type ToolDefinition = {
   promptSnippet?: string;
   promptGuidelines?: string[];
   parameters: unknown;
+  outputSchema?: unknown;
   execute: (
     toolCallId: string,
     params: any,
@@ -29,6 +21,7 @@ type ToolDefinition = {
   ) => Promise<{
     content: Array<{ type: "text"; text: string }>;
     details: any;
+    structuredContent?: unknown;
   }>;
 };
 
@@ -76,15 +69,18 @@ describe("tavily extension", () => {
       label: "Tavily Search",
       parameters: {
         type: "object",
+        required: ["query"],
         properties: {
           query: { type: "string" },
           depth: {
             enum: ["ultra-fast", "fast", "basic", "advanced"],
-            optional: true,
           },
         },
       },
     });
+    for (const tool of tools.values()) {
+      expect(tool.outputSchema).toMatchObject({ type: "object", additionalProperties: true });
+    }
     expect(tools.get("tavily_search")!.promptSnippet).toBeUndefined();
     expect(tools.get("tavily_search")!.promptGuidelines).toBeUndefined();
     expect(tools.get("tavily_auth_status")!.parameters).toEqual({
@@ -93,7 +89,7 @@ describe("tavily extension", () => {
     });
   });
 
-  test("search builds tvly search args, emits progress, and returns parsed JSON details", async () => {
+  test("search builds tvly search args, emits progress, and returns structured JSON", async () => {
     const { pi, tools } = await loadTools();
     const updates: string[] = [];
     const signal = new AbortController().signal;
@@ -159,6 +155,11 @@ describe("tavily extension", () => {
         options: { signal, timeout: 120_000 },
       },
     ]);
+    expect(result.structuredContent).toEqual({
+      ok: true,
+      command: "search",
+      args: pi.execCalls[0].args,
+    });
     expect(result.content[0].text).toContain("Tavily result:\n\n{");
     expect(result.details).toMatchObject({
       command: ["tvly", ...pi.execCalls[0].args],
@@ -354,7 +355,7 @@ describe("tavily extension", () => {
     ]);
   });
 
-  test("non-JSON stdout is returned as text and stderr is included on command failure", async () => {
+  test("command failure preserves non-JSON stdout and stderr in the error", async () => {
     const { tools } = await loadTools(() => ({
       code: 2,
       stdout: "plain output",
@@ -380,17 +381,42 @@ describe("tavily extension", () => {
     );
   });
 
-  test("truncates oversized rendered output", async () => {
-    const longText = "x".repeat(60_010);
+  test.each([
+    "",
+    "not JSON",
+    "null",
+    "[]",
+    "42",
+    "true",
+    '"text"',
+  ])("rejects successful CLI output that is not a JSON object: %s", async (stdout) => {
+    const { tools } = await loadTools(() => ({ code: 0, stdout, stderr: "" }));
+    await expect(
+      tools.get("tavily_search")!.execute("call", { query: "test" }, undefined, undefined),
+    ).rejects.toThrow("Tavily CLI returned invalid JSON: expected an object.");
+  });
+
+  test.each([
+    ["tavily_search", { query: "test" }],
+    ["tavily_extract", { urls: ["https://example.com"] }],
+    ["tavily_map", { url: "https://example.com" }],
+    ["tavily_crawl", { url: "https://example.com" }],
+    ["tavily_auth_status", {}],
+  ] as const)("%s preserves complete JSON while truncating text", async (name, params) => {
+    const json = {
+      results: [{ url: "https://example.com", content: "x".repeat(60_010) }],
+      request_id: "after-truncation",
+    };
     const { tools } = await loadTools(() => ({
       code: 0,
-      stdout: longText,
+      stdout: JSON.stringify(json),
       stderr: "",
     }));
+    const result = await tools.get(name)!.execute("call", params, undefined, undefined);
 
-    const result = await tools.get("tavily_auth_status")!.execute("call", {}, undefined, undefined);
-
-    expect(result.content[0].text).toContain("[truncated by tavily extension: 26 chars omitted]");
-    expect(result.content[0].text.length).toBeGreaterThan(60_000);
+    expect(result.content[0].text).toContain("[truncated by tavily extension:");
+    expect(result.content[0].text).not.toContain("after-truncation");
+    expect(result.structuredContent).toEqual(json);
+    expect(result.details.json).toEqual(json);
   });
 });

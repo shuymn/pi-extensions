@@ -1,4 +1,4 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { type JsonValue, StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, type TSchema, Type } from "typebox";
 
@@ -16,6 +16,14 @@ const SEARCH_TIMEOUT_MS = 120_000;
 const AUTH_TIMEOUT_MS = 20_000;
 const DEFAULT_EXTRACT_TIMEOUT_SECONDS = 60;
 const DEFAULT_SITE_TIMEOUT_SECONDS = 150;
+const outputSchema = Type.Object(
+  {},
+  {
+    additionalProperties: true,
+    description:
+      "Complete, untruncated JSON object from tvly --json. Fields depend on the command.",
+  },
+);
 type ToolUpdateHandler =
   | ((update: {
       content: Array<{ type: "text"; text: string }>;
@@ -47,7 +55,14 @@ async function runTvly(
       "Failed to execute tvly. Ensure the Tavily CLI is installed and authenticated (tvly auth).",
   });
 
-  return cliResultForTool(result);
+  if (!result.json || typeof result.json !== "object" || Array.isArray(result.json)) {
+    throw new Error("Tavily CLI returned invalid JSON: expected an object.");
+  }
+
+  return {
+    ...cliResultForTool(result),
+    structuredContent: result.json as Record<string, JsonValue>,
+  };
 }
 
 const searchSchema = Type.Object({
@@ -430,6 +445,7 @@ export function createTavilyToolDefinitions(exec: CliExec): ToolDefinition[] {
       label: spec.label,
       description: spec.description,
       parameters: spec.parameters,
+      outputSchema,
       async execute(_toolCallId, params, signal, onUpdate) {
         spec.validate?.(params);
         const args = spec.buildArgs(params);

@@ -1,8 +1,12 @@
-import type { ExtensionAPI, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { createProvider, envApiKeyAuth, type Model } from "@earendil-works/pi-ai";
+import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messages.lazy";
+import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+type CommandCodeModelConfig = Model<"openai-completions" | "anthropic-messages">;
 
 export const COMMANDCODE_PROVIDER_ID = "commandcode";
 export const COMMANDCODE_DISPLAY_NAME = "Command Code";
-export const COMMANDCODE_API_KEY_CONFIG_FALLBACK = "$COMMANDCODE_API_KEY";
 export const COMMANDCODE_MODELS_URL = "https://api.commandcode.ai/provider/v1/models";
 export const COMMANDCODE_OPENAI_BASE_URL = "https://api.commandcode.ai/provider/v1";
 export const COMMANDCODE_ANTHROPIC_BASE_URL = "https://api.commandcode.ai/provider";
@@ -81,11 +85,11 @@ function needsForceAdaptiveThinking(modelId: string): boolean {
 export const COMMANDCODE_THINKING_LEVEL_MAP = {
   xhigh: "xhigh",
   max: "max",
-} satisfies ProviderModelConfig["thinkingLevelMap"];
+} satisfies CommandCodeModelConfig["thinkingLevelMap"];
 
 const COMMANDCODE_XHIGH_THINKING_LEVEL_MAP = {
   xhigh: "xhigh",
-} satisfies ProviderModelConfig["thinkingLevelMap"];
+} satisfies CommandCodeModelConfig["thinkingLevelMap"];
 
 function supportsMaxThinking(modelId: string): boolean {
   const normalized = modelId.toLowerCase();
@@ -107,7 +111,7 @@ export function createCommandCodeModelConfig(model: {
   name?: string;
   context_length?: number;
   max_tokens?: number;
-}): ProviderModelConfig {
+}): CommandCodeModelConfig {
   const anthropic = isAnthropicModel(model.id);
   const contextWindow = toPositiveInteger(model.context_length, DEFAULT_CONTEXT_WINDOW);
   const maxOutputTokens =
@@ -115,6 +119,7 @@ export function createCommandCodeModelConfig(model: {
 
   return {
     id: model.id,
+    provider: COMMANDCODE_PROVIDER_ID,
     name: model.name ?? model.id,
     api: anthropic ? COMMANDCODE_ANTHROPIC_API : COMMANDCODE_OPENAI_API,
     baseUrl: anthropic ? COMMANDCODE_ANTHROPIC_BASE_URL : COMMANDCODE_OPENAI_BASE_URL,
@@ -141,7 +146,7 @@ export function createCommandCodeModelConfig(model: {
 
 export function parseCommandCodeModels(
   payload: CommandCodeModelListResponse,
-): ProviderModelConfig[] {
+): CommandCodeModelConfig[] {
   return (payload.data ?? [])
     .filter(
       (model): model is { id: string; name?: string; context_length?: number } =>
@@ -159,7 +164,7 @@ export function parseCommandCodeModels(
 export async function fetchCommandCodeModels(
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
-): Promise<ProviderModelConfig[]> {
+): Promise<CommandCodeModelConfig[]> {
   const response = await fetchImpl(COMMANDCODE_MODELS_URL, { signal });
   if (!response.ok) throw new Error(`Command Code models request failed: ${response.status}`);
 
@@ -168,25 +173,37 @@ export async function fetchCommandCodeModels(
   return models;
 }
 
-export async function resolveCommandCodeModels(
-  fetchImpl: typeof fetch = fetch,
-): Promise<ProviderModelConfig[]> {
-  try {
-    return await fetchCommandCodeModels(
-      fetchImpl,
-      AbortSignal.timeout(COMMANDCODE_MODEL_DISCOVERY_TIMEOUT_MS),
-    );
-  } catch {
-    return COMMANDCODE_FALLBACK_MODELS.map(createCommandCodeModelConfig);
-  }
-}
-
-export default async function (pi: ExtensionAPI) {
-  pi.registerProvider(COMMANDCODE_PROVIDER_ID, {
+export default function (pi: ExtensionAPI) {
+  let catalog = COMMANDCODE_FALLBACK_MODELS.map(createCommandCodeModelConfig);
+  const provider = createProvider({
+    id: COMMANDCODE_PROVIDER_ID,
     name: COMMANDCODE_DISPLAY_NAME,
     baseUrl: COMMANDCODE_OPENAI_BASE_URL,
-    apiKey: COMMANDCODE_API_KEY_CONFIG_FALLBACK,
-    api: COMMANDCODE_OPENAI_API,
-    models: await resolveCommandCodeModels(),
+    auth: { apiKey: envApiKeyAuth("Command Code API key", ["COMMANDCODE_API_KEY"]) },
+    models: [],
+    api: {
+      [COMMANDCODE_OPENAI_API]: openAICompletionsApi(),
+      [COMMANDCODE_ANTHROPIC_API]: anthropicMessagesApi(),
+    },
+  });
+
+  pi.registerProvider({
+    ...provider,
+    getModels: () => catalog,
+    getAllModels: () => catalog,
+    async refreshModels(context) {
+      if (!context.allowNetwork) return;
+      const signal = AbortSignal.any([
+        context.signal,
+        AbortSignal.timeout(COMMANDCODE_MODEL_DISCOVERY_TIMEOUT_MS),
+      ]);
+      signal.throwIfAborted();
+      const discovered = await fetchCommandCodeModels(fetch, signal);
+      await context.publish({
+        update: () => {
+          catalog = discovered;
+        },
+      });
+    },
   });
 }

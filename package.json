@@ -17,9 +17,9 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.2",
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0",
     "@types/bun": "1.4.2",
     "@types/node": "26.6.3",
     "lefthook": "2.1.15",
@@ -37,6 +37,9 @@
     ],
     "prompts": [
       "./prompts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "peerDependencies": {
@@ -46,10 +49,10 @@
     "typebox": "*"
   },
   "overrides": {
-    "@earendil-works/pi-agent-core": "0.85.1",
-    "@earendil-works/pi-ai": "0.85.1",
-    "@earendil-works/pi-coding-agent": "0.85.1",
-    "@earendil-works/pi-tui": "0.85.1"
+    "@earendil-works/pi-agent-core": "1.0.0",
+    "@earendil-works/pi-ai": "1.0.0",
+    "@earendil-works/pi-coding-agent": "1.0.0",
+    "@earendil-works/pi-tui": "1.0.0"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.61"
