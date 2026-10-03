@@ -68,7 +68,7 @@ async function runTvly(
 const searchSchema = Type.Object({
   query: Type.String({
     description:
-      "Search query. Keep under 400 characters; use search-keyword style, not a long prompt.",
+      "Search query. Prefer concise search keywords; provider limits are handled by the CLI.",
   }),
   depth: Type.Optional(StringEnum(SEARCH_DEPTHS, { description: "Search depth. Default: basic." })),
   maxResults: Type.Optional(
@@ -291,13 +291,6 @@ const searchSpec = defineTavilyToolSpec<SearchParams>({
   label: "Tavily Search",
   description: "Search the web with LLM-optimized Tavily results via the tvly CLI.",
   parameters: searchSchema,
-  validate(params) {
-    if (params.query.trim().length > 400) {
-      throw new Error(
-        "tavily_search query must be 400 characters or fewer. Split complex questions into focused sub-queries.",
-      );
-    }
-  },
   buildArgs(params) {
     const args = ["search", params.query.trim(), "--json"];
     addOptions(args, [
@@ -371,6 +364,7 @@ const mapSpec = defineTavilyToolSpec<MapParams>({
       ["--select-paths", params.selectPaths],
       ["--exclude-paths", params.excludePaths],
       ["--allow-external", params.allowExternal],
+      ["--no-external", params.allowExternal === false],
       ["--timeout", params.timeoutSeconds],
     ]);
     return args;
@@ -408,6 +402,7 @@ const crawlSpec = defineTavilyToolSpec<CrawlParams>({
       ["--select-domains", params.selectDomains],
       ["--exclude-domains", params.excludeDomains],
       ["--allow-external", params.allowExternal],
+      ["--no-external", params.allowExternal === false],
       ["--include-images", params.includeImages],
       ["--timeout", params.timeoutSeconds],
     ]);
