@@ -151,6 +151,7 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
   let enabled = readPersistedEnabled();
   let sock: Socket | undefined;
   let startupPromise: Promise<boolean> | undefined;
+  let lifecycleVersion = 0;
   let removeTimer: ReturnType<typeof setTimeout> | undefined;
   let statusVersion = 0;
   let lastStatus = "";
@@ -182,9 +183,18 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
     lastStatus = "";
   }
 
-  function connectToCompanion(): Promise<boolean> {
+  function isCurrent(version: number): boolean {
+    return enabled && version === lifecycleVersion;
+  }
+
+  function connectToCompanion(version: number): Promise<boolean> {
     return new Promise((resolve) => {
       const nextSocket = connectSocket(socketPath, () => {
+        if (!isCurrent(version)) {
+          nextSocket.end();
+          resolve(false);
+          return;
+        }
         if (sock && sock !== nextSocket && !sock.destroyed) sock.end();
         sock = nextSocket;
         resolve(true);
@@ -195,6 +205,7 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
       });
       nextSocket.on("close", () => {
         if (sock === nextSocket) sock = undefined;
+        resolve(false);
       });
     });
   }
@@ -208,7 +219,8 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
     return child;
   }
 
-  async function startAndConnect(): Promise<boolean> {
+  async function startAndConnect(version: number): Promise<boolean> {
+    if (!isCurrent(version)) return false;
     let spawnFailed = false;
     const child = startCompanionProcess();
     child.once("error", () => {
@@ -216,43 +228,49 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
     });
 
     for (let attempt = 0; attempt < 20; attempt++) {
-      if (spawnFailed) return false;
+      if (!isCurrent(version) || spawnFailed) return false;
       await sleep(100);
-      if (await connectToCompanion()) return true;
+      if (!isCurrent(version) || spawnFailed) return false;
+      if (await connectToCompanion(version)) return true;
     }
     return false;
   }
 
   async function ensureConnected(): Promise<boolean> {
+    const version = lifecycleVersion;
+    if (!isCurrent(version)) return false;
     if (sock && !sock.destroyed) return true;
-    if (await connectToCompanion()) return true;
-    startupPromise ??= startAndConnect().finally(() => {
-      startupPromise = undefined;
-    });
-    return startupPromise;
+    startupPromise ??= (async () => {
+      if (await connectToCompanion(version)) return true;
+      return startAndConnect(version);
+    })();
+    const pending = startupPromise;
+    try {
+      return (await pending) && isCurrent(version);
+    } finally {
+      // An invalidated attempt must not clear a newer lifecycle's connection attempt.
+      if (startupPromise === pending) startupPromise = undefined;
+    }
   }
 
   function disconnect(): void {
+    lifecycleVersion++;
+    startupPromise = undefined;
     sendRemove();
     if (sock && !sock.destroyed) sock.end();
     sock = undefined;
     lastStatus = "";
+    lastCtx = undefined;
     if (removeTimer) clearTimeout(removeTimer);
     removeTimer = undefined;
   }
 
   async function enable(ctx: StatusContext): Promise<boolean> {
-    const connected = await ensureConnected();
-    if (!connected) {
-      enabled = false;
-      persistEnabled(false);
-      setStatus(ctx, false);
-      return false;
-    }
+    // Persist user intent, not socket health. Lifecycle events can retry a failed startup.
     enabled = true;
     persistEnabled(true);
     setStatus(ctx, true);
-    return true;
+    return ensureConnected();
   }
 
   function disable(ctx: StatusContext): void {
@@ -307,9 +325,10 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
 
   pi.on("agent_start", async (_event, ctx) => {
     if (!enabled) return;
+    const version = lifecycleVersion;
     lastCtx = ctx;
     await ensureConnected();
-    send("starting");
+    if (isCurrent(version)) send("starting");
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
@@ -343,6 +362,7 @@ export default function companionExtension(pi: ExtensionAPI, runtime: CompanionR
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    enabled = false;
     disconnect();
     setStatus(ctx, false);
   });
