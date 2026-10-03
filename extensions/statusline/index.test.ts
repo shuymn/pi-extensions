@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from "bun:test";
 import type { ContextUsage, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import {
   OPENAI_FAST_ICON,
   OPENAI_FAST_STATUS_KEY,
@@ -122,6 +122,43 @@ describe("statusline custom footer", () => {
         options: { timeout: 1000 },
       },
     ]);
+  });
+
+  test.each([
+    "git-root",
+    "cwd",
+  ])("When external footer fields contain controls, the footer shall keep one physical line and only its own styling: %s", async (source) => {
+    const name = "bad\nmodel\x1b[1m";
+    const project = "my\nproject\x1b]0;injected title\x07";
+    const f = setup({
+      cwd: `/work/${project}`,
+      exec: () => ({
+        code: source === "git-root" ? 0 : 1,
+        stdout: `/work/${project}\n`,
+        stderr: "",
+      }),
+      branch: "feature\tbad\x1b[2J\u0085branch",
+      model: { name, provider: "test\rprovider\x1b]8;;https://example.invalid\x1b\\" },
+      models: [{ name }, { name }],
+    });
+    await f.emit("session_start");
+    const lines = f.footer!.render(500);
+    expect(lines).toHaveLength(1);
+    const line = lines[0]!;
+    const plain = line
+      .replaceAll("\x1b[38;2;255;200;60m", "")
+      .replaceAll("\x1b[38;2;80;220;255m", "")
+      .replaceAll("\x1b[38;2;220;120;255m", "")
+      .replaceAll("\x1b[38;2;255;80;80m", "")
+      .replaceAll("\x1b[0m", "");
+    expect(plain).toBe(
+      "12:00:00 | my project on  feature bad branch via test provider/bad model・medium",
+    );
+    expect(line).toContain("\x1b[38;2;80;220;255m");
+    expect(visibleWidth(line)).toBeLessThanOrEqual(500);
+    f.setBranch("new\nbranch\x1b[2J");
+    expect(f.text()).toContain(" on  new branch via ");
+    expect(stripTerminalSequences(f.footer!.render(24)[0]!)).not.toMatch(/[\p{Cc}\p{Zl}\p{Zp}]/u);
   });
 
   test.each([

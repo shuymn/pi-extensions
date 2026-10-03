@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 
 import {
   isOpenAIResponsesModel,
@@ -10,6 +10,10 @@ import { isTuiMode } from "../../lib/tui";
 
 const ICON_BRANCH = "";
 const SEP = " | ";
+
+function displayText(text: string): string {
+  return stripTerminalSequences(text).replace(/[\p{Cc}\p{Zl}\p{Zp}]+/gu, " ");
+}
 
 function rgb(r: number, g: number, b: number, text: string): string {
   return `\x1b[38;2;${r};${g};${b}m${text}\x1b[0m`;
@@ -111,7 +115,7 @@ export default function (pi: ExtensionAPI) {
       .exec("git", ["rev-parse", "--show-toplevel"], { timeout: 1000 })
       .catch(() => undefined);
     const rootPath = root?.code === 0 ? root.stdout.trim() : "";
-    projectName = basename(rootPath || ctx.cwd);
+    projectName = displayText(basename(rootPath || ctx.cwd));
 
     const modelNameCounts = new Map<string, number>();
     for (const model of ctx.modelRegistry.getAvailable()) {
@@ -136,12 +140,13 @@ export default function (pi: ExtensionAPI) {
 
           const branch = footerData.getGitBranch();
           if (branch) {
-            parts[parts.length - 1] += ` on ${rgb(220, 120, 255, `${ICON_BRANCH} ${branch}`)}`;
+            const branchText = `${ICON_BRANCH} ${displayText(branch)}`;
+            parts[parts.length - 1] += ` on ${rgb(220, 120, 255, branchText)}`;
           }
 
           const effort = pi.getThinkingLevel();
           const modelStatusPrefix = modelPrefix(ctx.model, footerData.getExtensionStatuses());
-          const displayModel = modelName(ctx.model, ambiguousModelNames);
+          const displayModel = displayText(modelName(ctx.model, ambiguousModelNames));
           const effortModel = `${modelStatusPrefix}${displayModel}・${effort}`;
           const durationPart =
             lastTurnDuration !== undefined
