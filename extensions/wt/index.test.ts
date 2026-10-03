@@ -51,6 +51,15 @@ function createFakePi(
 ) {
   return createSharedFakePi<never, CommandDefinition>({
     exec: ({ command, args, options }) => {
+      if (command === "git") {
+        // check-ref-format does not need a repository; use real Git despite the fake context cwd.
+        const result = Bun.spawnSync([command, ...args]);
+        return {
+          code: result.exitCode,
+          stdout: result.stdout.toString(),
+          stderr: result.stderr.toString(),
+        };
+      }
       if (typeof execBehavior === "function") return execBehavior(command, args, options);
       return execBehavior;
     },
@@ -135,28 +144,23 @@ afterEach(() => {
 });
 
 describe("wt command helpers", () => {
-  test("parses empty arguments into a deterministic default worktree name", async () => {
-    const { parseWtArguments } = await loadWtModule();
-
-    expect(parseWtArguments("", { now: new Date(2026, 5, 24, 2, 18, 15) })).toEqual({
-      worktreeName: "wip/20260624-021815",
-      startPoint: undefined,
-    });
-  });
-
-  test("parses an explicit worktree name and optional start point", async () => {
-    const { parseWtArguments } = await loadWtModule();
-
-    expect(parseWtArguments(" fix-login   origin/main ")).toEqual({
-      worktreeName: "fix-login",
-      startPoint: "origin/main",
-    });
-  });
-
   test("accepts ordinary git branch names and refs", async () => {
     const { parseWtArguments } = await loadWtModule();
 
-    for (const value of ["wip/20260624-021815", "fix-login", "main", "origin/main", "dc4569f"]) {
+    for (const value of [
+      "wip/20260624-021815",
+      "fix-login",
+      "main",
+      "origin/main",
+      "dc4569f",
+      "@recovery",
+      "修復+調査",
+      "bad\u200Bname",
+      "bad\u200Cname",
+      "bad\u200Dname",
+      "bad\uFEFFname",
+      "bad\u00A0name",
+    ]) {
       expect(parseWtArguments(value).worktreeName).toBe(value);
       expect(parseWtArguments(`branch ${value}`).startPoint).toBe(value);
     }
@@ -165,38 +169,26 @@ describe("wt command helpers", () => {
   test.each([
     ["too many arguments", "one two three"],
     ["leading dash", "-bad"],
-    ["leading at sign", "@bad"],
-    ["double dots", "bad..name"],
-    ["reflog syntax", "bad@{1}"],
-    ["trailing slash", "bad/"],
-    ["trailing dot", "bad."],
-    ["lock suffix", "bad.lock"],
-    ["control character", "bad\u0007name"],
-    ["zero width space", "bad\u200Bname"],
-    ["zero width non-joiner", "bad\u200Cname"],
-    ["zero width joiner", "bad\u200Dname"],
-    ["byte-order mark", "bad\uFEFFname"],
-    ["no-break space", "bad\u00A0name"],
+    ["start point option", "branch --delete"],
+    ["NUL in branch", "bad\0name"],
+    ["NUL in start point", "branch HEAD\0"],
   ])("rejects unsafe argument values: %s", async (_label, input) => {
     const { parseWtArguments } = await loadWtModule();
 
     expect(() => parseWtArguments(input)).toThrow();
   });
 
-  test("parses git-wt create stdout as a plain path", async () => {
-    const { parseGitWtCreatePath } = await loadWtModule();
-
-    expect(parseGitWtCreatePath("/tmp/project-worktrees/fix-login\n")).toBe(
-      "/tmp/project-worktrees/fix-login",
-    );
-  });
-
-  test("parses git-wt create stdout as JSON when a future version emits structured output", async () => {
-    const { parseGitWtCreatePath } = await loadWtModule();
-
-    expect(parseGitWtCreatePath('{"worktree":{"path":"/tmp/project-worktrees/json"}}')).toBe(
-      "/tmp/project-worktrees/json",
-    );
+  test.each([
+    "HEAD@{1}",
+    "@{-1}",
+    "HEAD~1",
+    "HEAD^{commit}",
+  ])("keeps revision expression %s intact as the start point", async (startPoint) => {
+    const { parseWtArguments } = await loadWtModule();
+    expect(parseWtArguments(`@recovery ${startPoint}`)).toEqual({
+      worktreeName: "@recovery",
+      startPoint,
+    });
   });
 
   test("prioritizes worktree paths in ambiguous future JSON output", async () => {
@@ -233,18 +225,6 @@ describe("wt command helpers", () => {
 });
 
 describe("wt command", () => {
-  test("registers the /wt command with an English description", async () => {
-    const { default: wtExtension } = await loadWtModule();
-    const pi = createFakePi();
-
-    wtExtension(pi as never);
-
-    expect([...pi.commands.keys()]).toEqual(["wt"]);
-    expect(pi.commands.get("wt")?.description).toBe(
-      "Create a git-wt worktree and continue this persisted session there",
-    );
-  });
-
   test("promotes a persisted session with a generated default worktree name", async () => {
     const { default: wtExtension } = await loadWtModule();
     const pi = createFakePi({
@@ -259,6 +239,10 @@ describe("wt command", () => {
       return manager;
     };
     wtExtension(pi as never, { now: () => new Date(2026, 5, 24, 2, 18, 15) });
+    expect([...pi.commands.keys()]).toEqual(["wt"]);
+    expect(pi.commands.get("wt")?.description).toBe(
+      "Create a git-wt worktree and continue this persisted session there",
+    );
     const { ctx, notifications, switchCalls } = createCommandContext({
       cwd: "/repo/current",
       sessionFile: "/sessions/current.jsonl",
@@ -268,8 +252,13 @@ describe("wt command", () => {
 
     expect(pi.execCalls).toEqual([
       {
+        command: "git",
+        args: ["check-ref-format", "refs/heads/wip/20260624-021815"],
+        options: { cwd: "/repo/current", timeout: 120_000 },
+      },
+      {
         command: "git-wt",
-        args: ["--nocd", "--json", "wip/20260624-021815"],
+        args: ["--nocd", "--json", "--", "wip/20260624-021815"],
         options: { cwd: "/repo/current", timeout: 120_000 },
       },
     ]);
@@ -300,19 +289,23 @@ describe("wt command", () => {
     ]);
   });
 
-  test("passes an explicit worktree name and start point to git-wt", async () => {
+  test("passes a whitespace-padded name and start point to git-wt and promotes its JSON path", async () => {
     const { default: wtExtension } = await loadWtModule();
-    const pi = createFakePi({ code: 0, stdout: "/repo-worktrees/fix-login\n", stderr: "" });
+    const pi = createFakePi({
+      code: 0,
+      stdout: '{"worktree":{"path":"/repo-worktrees/fix-login"}}',
+      stderr: "",
+    });
     const { manager, customMessages } = createForkedSessionManager();
     forkFromImplementation = () => manager;
     wtExtension(pi as never);
     const { ctx } = createCommandContext({ sessionFile: "/sessions/current.jsonl" });
 
-    await pi.commands.get("wt")!.handler("fix-login origin/main", ctx);
+    await pi.commands.get("wt")!.handler(" fix-login   origin/main ", ctx);
 
-    expect(pi.execCalls[0]).toEqual({
+    expect(pi.execCalls[1]).toEqual({
       command: "git-wt",
-      args: ["--nocd", "--json", "fix-login", "origin/main"],
+      args: ["--nocd", "--json", "--", "fix-login", "origin/main"],
       options: { cwd: "/repo/current", timeout: 120_000 },
     });
     expect(customMessages[0]!.details).toMatchObject({
@@ -321,6 +314,63 @@ describe("wt command", () => {
       worktreeName: "fix-login",
       startPoint: "origin/main",
     });
+  });
+
+  test.each([
+    ["@recovery", "HEAD@{1}"],
+    ["修復+調査", "origin/日本語"],
+    ["join\u200Ber", "HEAD^{commit}"],
+    ["no\u00A0break", "@{-1}"],
+  ])("uses native Git validity for %s and keeps revision start points positional", async (worktreeName, startPoint) => {
+    const { default: wtExtension } = await loadWtModule();
+    const pi = createFakePi();
+    const { manager, customMessages } = createForkedSessionManager();
+    forkFromImplementation = () => manager;
+    wtExtension(pi as never);
+    const { ctx, switchCalls, notifications } = createCommandContext({
+      sessionFile: "/sessions/current.jsonl",
+    });
+
+    await pi.commands.get("wt")!.handler(`${worktreeName} ${startPoint}`, ctx);
+
+    expect(pi.execCalls[1]).toMatchObject({
+      command: "git-wt",
+      args: ["--nocd", "--json", "--", worktreeName, startPoint],
+    });
+    expect(customMessages[0]?.details).toMatchObject({ worktreeName, startPoint });
+    expect(switchCalls).toHaveLength(1);
+    expect(notifications[0]?.level).toBe("info");
+  });
+
+  test.each([
+    "bad..name",
+    "bad@{1}",
+    "bad/",
+    "bad.",
+    "bad.lock",
+    "bad\\name",
+    "bad:name",
+    "bad?name",
+    "bad*name",
+    "bad[name",
+    "bad\u0007name",
+    "../escape",
+    "/absolute",
+    "@{-1}",
+  ])("rejects invalid literal branch %j using native Git before creating anything", async (worktreeName) => {
+    const { default: wtExtension } = await loadWtModule();
+    const pi = createFakePi();
+    wtExtension(pi as never);
+    const { ctx, notifications, switchCalls } = createCommandContext({
+      sessionFile: "/sessions/current.jsonl",
+    });
+
+    await pi.commands.get("wt")!.handler(worktreeName, ctx);
+
+    expect(pi.execCalls.map((call) => call.command)).toEqual(["git"]);
+    expect(notifications[0]?.message).toContain("有効な Git branch 名ではありません");
+    expect(notifications[0]?.level).toBe("error");
+    expect(switchCalls).toEqual([]);
   });
 
   test("fails before git-wt when the current session is not persisted", async () => {

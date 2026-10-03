@@ -10,7 +10,6 @@ import {
   GITHUB_CLONE_PREFIX,
   isPathInside,
   resolveExistingDirectory,
-  SAFE_GITHUB_PART,
 } from "../../lib/github-clone-workspace";
 
 const STATE_TYPE = "add-dir-state";
@@ -157,21 +156,6 @@ function validateGhqQuery(input: string): string {
     throw new Error("ghq: の後にリポジトリ名を指定してください。例: /add-dir ghq:<repo>");
   }
 
-  const segments = query.split("/");
-  if (segments.length > 2 || segments.some((segment) => segment.length === 0)) {
-    throw new Error(
-      "domain を含む ghq 指定は未対応です。ghq:<repo> または ghq:<org>/<repo> の形式で指定してください。",
-    );
-  }
-
-  if (
-    segments.some(
-      (segment) => segment === "." || segment === ".." || !SAFE_GITHUB_PART.test(segment),
-    )
-  ) {
-    throw new Error("ghq 指定には英数字、'.'、'_'、'-' のみ使用できます。例: /add-dir ghq:<repo>");
-  }
-
   return query;
 }
 
@@ -274,11 +258,9 @@ export default function (pi: ExtensionAPI) {
       return { dir: samePath, alreadyAdded: true };
     }
 
-    const sameName = dirs.find((existing) => existing.name === dir.name);
-    if (sameName) {
-      throw new Error(
-        `Cannot add ${dir.path}: directory name "${dir.name}" is already registered for ${sameName.path}. Remove it first with /remove-dir ${dir.name}.`,
-      );
+    const registeredNames = new Set(dirs.map((existing) => existing.name));
+    for (let suffix = 2; registeredNames.has(dir.name); suffix += 1) {
+      dir.name = `${resolvedDir.name}-${suffix}`;
     }
 
     const nextDirs = [...dirs, dir];
@@ -375,7 +357,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.registerCommand("add-dir", {
     description:
-      "Register an additional directory name for this session, including ghq repositories with ghq:<repo> or ghq:<org>/<repo>",
+      "Register an additional directory name for this session, including exact ghq queries such as ghq:<repo>, ghq:<org>/<repo>, or ghq:<host>/<org>/<repo>",
     getArgumentCompletions: async (argumentPrefix) => {
       if (!sessionCwd) return null;
 
@@ -418,9 +400,18 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("remove-dir", {
-    description: "Remove an additional directory from this session",
+    description:
+      "Remove an additional directory from this session; JSON-quote names or paths with boundary whitespace",
     handler: async (args, ctx) => {
-      const input = args.trim();
+      let input = args.trim();
+      if (input.startsWith('"') && input.endsWith('"')) {
+        try {
+          input = JSON.parse(input) as string;
+        } catch {
+          ctx.ui.notify("引用符付きの名前・パスは JSON 文字列で指定してください。", "error");
+          return;
+        }
+      }
       if (!input) {
         ctx.ui.notify("使い方: /remove-dir <directory-name-or-path>", "error");
         return;

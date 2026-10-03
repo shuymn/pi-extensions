@@ -5,18 +5,12 @@ import {
   formatJsonTarget,
   isExplicitFileMode,
   normalizeBaseBranch,
-  normalizeFileArg,
   parseNameStatus,
   targetPathsForDiff,
   uniqueTargets,
 } from "./git";
 
 describe("git helpers", () => {
-  test("normalizes agent file mentions", () => {
-    expect(normalizeFileArg("@src/app.ts")).toBe("src/app.ts");
-    expect(normalizeFileArg("docs/readme.md")).toBe("docs/readme.md");
-  });
-
   test("parses name-status output and can preserve rename old paths", () => {
     const stdout = "M\0src/app.ts\0R100\0old.ts\0new.ts\0";
 
@@ -80,14 +74,10 @@ describe("git helpers", () => {
   test("validates base branch names", () => {
     expect(normalizeBaseBranch(" origin/main ")).toBe("origin/main");
     expect(normalizeBaseBranch(" ")).toBeUndefined();
-    for (const value of [
-      "-main",
-      "@main",
-      "main\n## injected",
-      "main..other",
-      "main^",
-      "main lock",
-    ]) {
+    for (const value of ["@recovery", "日本語+feature", "origin/修正", "\u00a0base\u00a0"]) {
+      expect(normalizeBaseBranch(value)).toBe(value);
+    }
+    for (const value of ["-main", "@", "main\n## injected", "main..other", "main^", "main lock"]) {
       expect(() => normalizeBaseBranch(value)).toThrow("Invalid base branch");
     }
   });

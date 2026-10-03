@@ -51,6 +51,11 @@ type ToolDefinition = {
   ) => Promise<unknown>;
 };
 
+type CloneResult = {
+  content: Array<{ type: "text"; text: string }>;
+  details: { name: string; path: string; ref?: string; subPath?: string; tempRoot: string };
+};
+
 type FakeCommandContext = {
   cwd: string;
   ui: { notify: (message: string, level: NotifyLevel) => void };
@@ -423,6 +428,10 @@ describe("add-dir extension", () => {
   test.each([
     ["repo name", "ghq", "ghq:ghq"],
     ["org/repo name", "x-motemen/ghq", "ghq:x-motemen/ghq"],
+    ["host/org/repo name", "github.com/x-motemen/ghq", "ghq:github.com/x-motemen/ghq"],
+    ["nested group name", "gitlab.example/team/group/ghq", "ghq:gitlab.example/team/group/ghq"],
+    ["Unicode and punctuation", "会社/調査+用 repo", "ghq:会社/調査+用 repo"],
+    ["option-like query", "--help", "ghq:--help"],
   ])("registers a ghq repository by %s", async (_label, query, input) => {
     const extension = await loadExtension();
     const pi = createFakePi();
@@ -475,45 +484,19 @@ describe("add-dir extension", () => {
     ]);
   });
 
-  test("rejects invalid ghq queries before lookup", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-
+  test("rejects an empty ghq query before lookup", async () => {
     const cwd = await createTempDir();
-    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
+    const pi = await createStartedPi(cwd);
     execFileImplementation = () => {
       throw new Error("ghq lookup should not run");
     };
 
     const { ctx, notifications } = createCommandContext(cwd);
-    await pi.commands.get("add-dir")!.handler("ghq:github.com/org/repo", ctx);
-    await pi.commands.get("add-dir")!.handler("ghq:", ctx);
-    await pi.commands.get("add-dir")!.handler("ghq:one/two/three", ctx);
-    await pi.commands.get("add-dir")!.handler("ghq:bad\tname", ctx);
-    await pi.commands.get("add-dir")!.handler("ghq:.", ctx);
+    await pi.commands.get("add-dir")!.handler("ghq:   ", ctx);
 
     expect(notifications).toEqual([
       {
-        message:
-          "domain を含む ghq 指定は未対応です。ghq:<repo> または ghq:<org>/<repo> の形式で指定してください。",
-        level: "error",
-      },
-      {
         message: "ghq: の後にリポジトリ名を指定してください。例: /add-dir ghq:<repo>",
-        level: "error",
-      },
-      {
-        message:
-          "domain を含む ghq 指定は未対応です。ghq:<repo> または ghq:<org>/<repo> の形式で指定してください。",
-        level: "error",
-      },
-      {
-        message: "ghq 指定には英数字、'.'、'_'、'-' のみ使用できます。例: /add-dir ghq:<repo>",
-        level: "error",
-      },
-      {
-        message: "ghq 指定には英数字、'.'、'_'、'-' のみ使用できます。例: /add-dir ghq:<repo>",
         level: "error",
       },
     ]);
@@ -644,22 +627,19 @@ describe("add-dir extension", () => {
 
     const cwd = await createTempDir();
     const left = join(cwd, "left", "same-name");
-    const right = join(cwd, "right", "same-name");
+    const missing = join(cwd, "missing", "same-name");
     await mkdir(left, { recursive: true });
-    await mkdir(right, { recursive: true });
-    const canonicalLeft = await realpath(left);
-    const canonicalRight = await realpath(right);
     await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
 
     const { ctx, notifications } = createCommandContext(cwd);
     await pi.commands.get("add-dir")!.handler("left/same-name", ctx);
-    mockGhqList("same-name", `${canonicalRight}\n`);
+    mockGhqList("same-name", `${missing}\n`);
     await pi.commands.get("add-dir")!.handler("ghq:same-name", ctx);
 
-    expect(notifications.at(-1)).toEqual({
-      message: `ディレクトリの登録に失敗しました (${canonicalRight}): Cannot add ${canonicalRight}: directory name "same-name" is already registered for ${canonicalLeft}. Remove it first with /remove-dir same-name.`,
-      level: "error",
-    });
+    expect(notifications.at(-1)?.level).toBe("error");
+    expect(notifications.at(-1)?.message).toStartWith(
+      `ディレクトリの登録に失敗しました (${missing}):`,
+    );
     expect(pi.appendedEntries).toHaveLength(1);
   });
 
@@ -708,51 +688,50 @@ describe("add-dir extension", () => {
     });
   });
 
-  test("does not duplicate an already registered path", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-
-    const cwd = await createTempDir();
-    const project = join(cwd, "project");
-    await mkdir(project);
-    const canonicalProject = await realpath(project);
-    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
-
-    const { ctx, notifications } = createCommandContext(cwd);
-    await pi.commands.get("add-dir")!.handler("project", ctx);
-    await pi.commands.get("add-dir")!.handler(canonicalProject, ctx);
-
-    expect(notifications.at(-1)).toEqual({
-      message: `すでに登録済みです: project: ${canonicalProject}`,
-      level: "info",
-    });
-    expect(pi.appendedEntries).toHaveLength(1);
-  });
-
-  test("rejects two different directories with the same registered name", async () => {
-    const extension = await loadExtension();
-    const pi = createFakePi();
-    extension(pi as never);
-
+  test("disambiguates duplicate basenames, skips occupied suffixes, and deduplicates by path", async () => {
     const cwd = await createTempDir();
     const left = join(cwd, "left", "same-name");
     const right = join(cwd, "right", "same-name");
+    const occupied = join(cwd, "same-name-2");
     await mkdir(left, { recursive: true });
     await mkdir(right, { recursive: true });
+    await mkdir(occupied);
     const canonicalLeft = await realpath(left);
     const canonicalRight = await realpath(right);
-    await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
-
+    const canonicalOccupied = await realpath(occupied);
+    const pi = await createStartedPi(cwd);
     const { ctx, notifications } = createCommandContext(cwd);
-    await pi.commands.get("add-dir")!.handler("left/same-name", ctx);
-    await pi.commands.get("add-dir")!.handler("right/same-name", ctx);
 
+    await pi.commands.get("add-dir")!.handler("left/same-name", ctx);
+    await pi.commands.get("add-dir")!.handler("same-name-2", ctx);
+    mockGhqList("same-name", `${canonicalRight}\n`);
+    await pi.commands.get("add-dir")!.handler("ghq:same-name", ctx);
     expect(notifications.at(-1)).toEqual({
-      message: `Cannot add ${canonicalRight}: directory name "same-name" is already registered for ${canonicalLeft}. Remove it first with /remove-dir same-name.`,
-      level: "error",
+      message: `ディレクトリを追加しました: same-name-3: ${canonicalRight}`,
+      level: "info",
     });
-    expect(pi.appendedEntries).toHaveLength(1);
+    expect(pi.appendedEntries.at(-1)).toEqual({
+      type: "add-dir-state",
+      data: {
+        dirs: [
+          { name: "same-name", path: canonicalLeft },
+          { name: "same-name-2", path: canonicalOccupied },
+          { name: "same-name-3", path: canonicalRight },
+        ],
+      },
+    });
+
+    await pi.commands.get("add-dir")!.handler("right/same-name", ctx);
+    expect(notifications.at(-1)?.message).toBe(
+      `すでに登録済みです: same-name-3: ${canonicalRight}`,
+    );
+    expect(pi.appendedEntries).toHaveLength(3);
+    await pi.commands.get("remove-dir")!.handler("same-name-3", ctx);
+    await pi.commands.get("list-dir")!.handler("", ctx);
+    expect(notifications.at(-1)?.message).toBe(
+      `- same-name: ${canonicalLeft}\n- same-name-2: ${canonicalOccupied}`,
+    );
+    await expect(stat(right)).resolves.toBeTruthy();
   });
 
   test("removes by name or path and persists the remaining directories", async () => {
@@ -765,7 +744,6 @@ describe("add-dir extension", () => {
     const beta = join(cwd, "beta");
     await mkdir(alpha);
     await mkdir(beta);
-    const canonicalAlpha = await realpath(alpha);
     const canonicalBeta = await realpath(beta);
     await pi.events.get("session_start")![0]({}, { sessionManager: { getEntries: () => [] } });
 
@@ -788,7 +766,6 @@ describe("add-dir extension", () => {
       message: "ディレクトリを削除しました。追加ディレクトリはありません。",
       level: "info",
     });
-    expect(canonicalAlpha).toEndWith("alpha");
   });
 
   test("restores only valid session entries and drops stale temporary directories", async () => {
@@ -845,7 +822,6 @@ describe("add-dir extension", () => {
     const pi = createFakePi();
     extension(pi as never);
 
-    const cwd = await createTempDir();
     const tempRoot = await createTempDir("pi-github-workspace-");
     const clone = join(tempRoot, "repo");
     await mkdir(clone);
@@ -871,7 +847,6 @@ describe("add-dir extension", () => {
 
     await pi.events.get("session_shutdown")![0]({ reason: "exit" });
     await expect(stat(tempRoot)).rejects.toThrow();
-    expect(cwd).toBeString();
   });
 
   test("removing a temporary clone root deletes it before reload can orphan it", async () => {
@@ -1081,6 +1056,149 @@ describe("add-dir extension", () => {
     });
   });
 
+  test.each([
+    ["refs/heads/機能/調査+改善", "機能/調査+改善", "調査用 (copy)+1"],
+    ["refs/tags/v1+補修", "v1+補修", "repo;literal"],
+    ["refs/heads/調査\u00A0用", "調査\u00A0用", " leading and trailing "],
+  ])("clones advertised ref %s into a normal single-component directory name", async (advertised, ref, directoryName) => {
+    const cwd = await createTempDir();
+    const pi = await createStartedPi(cwd);
+    const gitCalls: string[][] = [];
+    execFileImplementation = (file, args, options, callback) => {
+      expect(file).toBe("git");
+      expect(options).toMatchObject({ timeout: 30_000 });
+      gitCalls.push(args);
+      const child = new EventEmitter();
+      if (args[0] === "ls-remote") {
+        callback(null, `0123456789abcdef\t${advertised}\n`, "");
+      } else if (args[0] === "clone") {
+        mkdir(args.at(-1)!, { recursive: true }).then(
+          () => callback(null, "", ""),
+          (error) => callback(error, "", ""),
+        );
+      } else {
+        callback(new Error(`Unexpected command: ${args.join(" ")}`), "", "");
+      }
+      return child;
+    };
+
+    const result = (await pi.tools
+      .get("github_clone_workspace")!
+      .execute(
+        "call",
+        { url: `https://github.com/owner/repo/tree/${encodeURIComponent(ref)}`, directoryName },
+        undefined,
+        undefined,
+        { cwd },
+      )) as CloneResult;
+    tempDirs.push(result.details.tempRoot);
+
+    expect(result.details.name).toBe(directoryName);
+    expect(result.details.path).toBe(join(await realpath(result.details.tempRoot), directoryName));
+    expect(result.details.ref).toBe(ref);
+    expect(gitCalls[1]).toEqual([
+      "clone",
+      "--depth",
+      "1",
+      "--filter=blob:none",
+      "--single-branch",
+      "--branch",
+      ref,
+      "https://github.com/owner/repo.git",
+      join(result.details.tempRoot, directoryName),
+    ]);
+    const { ctx } = createCommandContext(cwd);
+    await pi.commands.get("remove-dir")!.handler(JSON.stringify(result.details.name), ctx);
+    expect((pi.appendedEntries.at(-1)?.data as { dirs: unknown[] }).dirs).toEqual([]);
+    await expect(stat(result.details.tempRoot)).rejects.toThrow();
+  });
+
+  test("duplicate cloned subtree names retain existing workspaces and clean only their owned roots", async () => {
+    const cwd = await createTempDir();
+    const existing = join(cwd, "shared");
+    await mkdir(existing);
+    const canonicalExisting = await realpath(existing);
+    const pi = await createStartedPi(cwd);
+    const { ctx, notifications } = createCommandContext(cwd);
+    await pi.commands.get("add-dir")!.handler("shared", ctx);
+    execFileImplementation = (_file, args, _options, callback) => {
+      const child = new EventEmitter();
+      if (args[0] === "ls-remote") {
+        callback(null, "0123456789abcdef\trefs/heads/main\n", "");
+      } else if (args[0] === "clone") {
+        mkdir(join(args.at(-1)!, "packages", "shared"), { recursive: true }).then(
+          () => callback(null, "", ""),
+          (error) => callback(error, "", ""),
+        );
+      } else {
+        callback(new Error(`Unexpected command: ${args.join(" ")}`), "", "");
+      }
+      return child;
+    };
+
+    const tool = pi.tools.get("github_clone_workspace")!;
+    const params = { url: "https://github.com/owner/repo/tree/main/packages/shared" };
+    const first = (await tool.execute("first", params, undefined, undefined, {
+      cwd,
+    })) as CloneResult;
+    const second = (await tool.execute("second", params, undefined, undefined, {
+      cwd,
+    })) as CloneResult;
+    tempDirs.push(first.details.tempRoot, second.details.tempRoot);
+    expect(first.details.name).toBe("shared-2");
+    expect(second.details.name).toBe("shared-3");
+    const context = await pi.events.get("before_agent_start")![0]({ systemPrompt: "base" });
+    expect(context.systemPrompt).toContain(`- shared: ${canonicalExisting}`);
+    expect(context.systemPrompt).toContain(`- shared-2: ${first.details.path}`);
+    expect(context.systemPrompt).toContain(`- shared-3: ${second.details.path}`);
+
+    await pi.commands.get("remove-dir")!.handler("shared-2", ctx);
+    await expect(stat(first.details.tempRoot)).rejects.toThrow();
+    await expect(stat(second.details.path)).resolves.toBeTruthy();
+    await expect(stat(existing)).resolves.toBeTruthy();
+    await pi.commands.get("list-dir")!.handler("", ctx);
+    expect(notifications.at(-1)?.message).toBe(
+      `- shared: ${canonicalExisting}\n- shared-3: ${second.details.path}`,
+    );
+    await pi.events.get("session_shutdown")![0]({ reason: "reload" });
+    await expect(stat(second.details.path)).resolves.toBeTruthy();
+    await pi.events.get("session_shutdown")![0]({ reason: "exit" });
+    await expect(stat(second.details.tempRoot)).rejects.toThrow();
+    await expect(stat(existing)).resolves.toBeTruthy();
+  });
+
+  test.each([
+    "",
+    ".",
+    "..",
+    "../escape",
+    "sub/directory",
+    "/absolute",
+    "bad\0name",
+  ])("rejects directoryName %j before invoking Git", async (directoryName) => {
+    const cwd = await createTempDir();
+    const pi = await createStartedPi(cwd);
+    const calls: string[][] = [];
+    execFileImplementation = (_file, args, _options, callback) => {
+      calls.push(args);
+      callback(new Error("Git must not run"), "", "");
+      return new EventEmitter();
+    };
+    await expect(
+      pi.tools
+        .get("github_clone_workspace")!
+        .execute(
+          "call",
+          { url: "https://github.com/owner/repo", directoryName },
+          undefined,
+          undefined,
+          { cwd },
+        ),
+    ).rejects.toThrow("Directory name");
+    expect(calls).toEqual([]);
+    expect(pi.appendedEntries).toEqual([]);
+  });
+
   test("github clone tool rejects subdirectories that resolve outside the clone", async () => {
     const extension = await loadExtension();
     const pi = createFakePi();
@@ -1131,7 +1249,7 @@ describe("add-dir extension", () => {
     expect(pi.appendedEntries).toEqual([]);
   });
 
-  test("github clone tool rejects unsupported URLs and unsafe directory names before cloning", async () => {
+  test("github clone tool rejects unsupported URLs before cloning", async () => {
     const extension = await loadExtension();
     const pi = createFakePi();
     extension(pi as never);
@@ -1160,14 +1278,5 @@ describe("add-dir extension", () => {
     ).rejects.toThrow(
       "GitHub blob URLs point to files and are not supported. Use the repository URL or a /tree/<ref>/<directory> URL instead.",
     );
-    await expect(
-      tool.execute(
-        "call",
-        { url: "https://github.com/owner/repo", directoryName: "../repo" },
-        undefined,
-        undefined,
-        { cwd },
-      ),
-    ).rejects.toThrow("Directory name may only contain letters, numbers, '.', '_', and '-'.");
   });
 });

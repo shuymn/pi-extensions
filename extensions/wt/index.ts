@@ -4,13 +4,10 @@ import {
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-import { hasWhitespaceOrControl } from "../../lib/text";
-
 const COMMAND_NAME = "wt";
 const COMMAND_DESCRIPTION = "Create a git-wt worktree and continue this persisted session there";
 const GIT_WT_TIMEOUT_MS = 120_000;
 const SESSION_MOVE_MESSAGE_TYPE = "wt-session-move";
-const DEFAULT_IGNORABLE_CHARACTER_PATTERN = /\p{Default_Ignorable_Code_Point}/u;
 
 export type WtArguments = {
   worktreeName: string;
@@ -38,26 +35,13 @@ export function createDefaultWorktreeName(now = new Date()): string {
   ].join("");
 }
 
-function hasUnsafeCharacter(value: string): boolean {
-  return hasWhitespaceOrControl(value) || DEFAULT_IGNORABLE_CHARACTER_PATTERN.test(value);
-}
-
-function assertSafeGitArgument(value: string, label: string): void {
+function assertPositionalGitArgument(value: string, label: string): void {
   if (!value) throw new Error(`${label} を指定してください。`);
-  if (hasUnsafeCharacter(value)) {
-    throw new Error(`${label} に空白文字・制御文字・不可視文字は使用できません: ${value}`);
+  if (value.includes("\0")) {
+    throw new Error(`${label} に NUL 文字は使用できません。`);
   }
-  if (value.startsWith("-") || value.startsWith("@")) {
-    throw new Error(`${label} は '-' または '@' で開始できません: ${value}`);
-  }
-  if (value.includes("..") || value.includes("@{")) {
-    throw new Error(`${label} に unsafe な git ref 構文は使用できません: ${value}`);
-  }
-  if (value.endsWith("/") || value.endsWith(".")) {
-    throw new Error(`${label} は '/' または '.' で終了できません: ${value}`);
-  }
-  if (value.endsWith(".lock")) {
-    throw new Error(`${label} は .lock で終了できません: ${value}`);
+  if (value.startsWith("-")) {
+    throw new Error(`${label} は '-' で開始できません: ${value}`);
   }
 }
 
@@ -74,8 +58,8 @@ export function parseWtArguments(args: string, options: ParseWtArgumentsOptions 
 
   const worktreeName = tokens[0] ?? createDefaultWorktreeName(options.now);
   const startPoint = tokens[1];
-  assertSafeGitArgument(worktreeName, "worktree name");
-  if (startPoint !== undefined) assertSafeGitArgument(startPoint, "start point");
+  assertPositionalGitArgument(worktreeName, "worktree name");
+  if (startPoint !== undefined) assertPositionalGitArgument(startPoint, "start point");
 
   return { worktreeName, startPoint };
 }
@@ -229,11 +213,25 @@ export default function wtExtension(pi: ExtensionAPI, options: WtExtensionOption
         return;
       }
 
-      const gitWtArgs = ["--nocd", "--json", parsed.worktreeName];
+      const gitWtArgs = ["--nocd", "--json", "--", parsed.worktreeName];
       if (parsed.startPoint) gitWtArgs.push(parsed.startPoint);
 
       let result: ExecResult;
       try {
+        // Validate a literal branch name, not a revision expression or filesystem path.
+        const validation = await pi.exec(
+          "git",
+          ["check-ref-format", `refs/heads/${parsed.worktreeName}`],
+          { cwd: ctx.cwd, timeout: GIT_WT_TIMEOUT_MS },
+        );
+        if (validation.code !== 0) {
+          ctx.ui.notify(
+            `worktree name は有効な Git branch 名ではありません: ${parsed.worktreeName}`,
+            "error",
+          );
+          return;
+        }
+
         result = await pi.exec("git-wt", gitWtArgs, {
           cwd: ctx.cwd,
           timeout: GIT_WT_TIMEOUT_MS,

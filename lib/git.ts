@@ -1,5 +1,4 @@
 import { type ExecGit, formatCommandFailure } from "./command";
-import { hasWhitespaceOrControl } from "./text";
 
 export type TargetSource = "diff" | "explicit" | "pr";
 
@@ -26,13 +25,16 @@ export function readablePathGitArgs(args: string[]): string[] {
 }
 
 export function normalizeBaseBranch(base: string | undefined): string | undefined {
-  const trimmed = base?.trim();
+  const trimmed = base?.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "");
   if (!trimmed) return undefined;
   if (
     trimmed.startsWith("-") ||
-    trimmed.startsWith("@") ||
-    hasWhitespaceOrControl(trimmed) ||
-    !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(trimmed) ||
+    trimmed === "@" ||
+    [...trimmed].some((character) => {
+      const code = character.charCodeAt(0);
+      return code <= 0x20 || code === 0x7f;
+    }) ||
+    /[~^:?*[\\]/.test(trimmed) ||
     trimmed.includes("..") ||
     trimmed.includes("//") ||
     trimmed.includes("@{") ||
@@ -41,7 +43,7 @@ export function normalizeBaseBranch(base: string | undefined): string | undefine
     trimmed.endsWith(".lock")
   ) {
     throw new Error(
-      "Invalid base branch. Use a branch/ref name such as main or origin/main; whitespace, control characters, leading '-'/'@', and revision syntax are not allowed.",
+      "Invalid base branch. Use a branch/ref name such as main or origin/main; invalid Git ref characters, leading options, and revision syntax are not allowed.",
     );
   }
   return trimmed;
