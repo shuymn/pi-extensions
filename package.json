@@ -23,7 +23,7 @@
     "@types/bun": "1.4.3",
     "@types/node": "26.6.5",
     "lefthook": "2.2.1",
-    "typebox": "1.3.36",
+    "typebox": "1.3.37",
     "typescript": "6.0.3"
   },
   "keywords": [
